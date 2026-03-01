@@ -117,6 +117,7 @@
         return getTitle(params);
       case "click":
       case "fill":
+      case "snapshot":
       case "scrape":
       case "scroll":
       case "hover":

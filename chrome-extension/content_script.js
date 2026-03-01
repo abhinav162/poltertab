@@ -1,5 +1,5 @@
 // ZeroClaw Content Script — DOM extractor + action executor
-// Injected into every page to handle scrape/click/fill/scroll/hover/get_text commands.
+// Injected into every page to handle snapshot/scrape/click/fill/scroll/hover/get_text commands.
 
 (() => {
   "use strict";
@@ -39,6 +39,69 @@
     return null;
   }
 
+  function snapshot(params) {
+    const { interactive_only = false, compact = true, max_depth = null, max_nodes = 400 } = params;
+    const nodes = [];
+    const root = document.body || document.documentElement;
+    let counter = 0;
+
+    const isVisible = (el) => {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const isInteractive = (el) => {
+      if (el.matches("a,button,input,select,textarea,summary,[role],*[tabindex]")) return true;
+      return typeof el.onclick === "function";
+    };
+
+    const describe = (el, depth) => {
+      const interactive = isInteractive(el);
+      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 140);
+      if (interactive_only && !interactive) return;
+      if (compact && !interactive && !text) return;
+
+      const ref = "@e" + (++counter);
+      el.setAttribute("data-zc-ref", ref);
+      const node = { ref, depth, tag: el.tagName.toLowerCase(), interactive };
+      if (el.id) node.id = el.id;
+      const role = el.getAttribute("role");
+      if (role) node.role = role;
+      if (text) node.text = text;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+        if (el.type) node.type = el.type;
+        if (el.placeholder) node.placeholder = el.placeholder;
+        if (el.value) node.value = el.value.slice(0, 100);
+      }
+      if (el.tagName === "A" && el.href) node.href = el.href;
+      nodes.push(node);
+    };
+
+    const walk = (el, depth) => {
+      if (!(el instanceof Element)) return;
+      if (max_depth !== null && depth > max_depth) return;
+      if (nodes.length >= max_nodes) return;
+      const tag = el.tagName.toLowerCase();
+      if (tag === "script" || tag === "style" || tag === "noscript" || tag === "svg") return;
+      if (isVisible(el)) describe(el, depth);
+      for (const child of el.children) {
+        walk(child, depth + 1);
+        if (nodes.length >= max_nodes) return;
+      }
+    };
+
+    if (root) walk(root, 0);
+
+    return {
+      title: document.title,
+      url: location.href,
+      count: nodes.length,
+      nodes,
+    };
+  }
+
   function scrape(params) {
     const { selector, attribute, multiple } = params;
 
@@ -51,8 +114,7 @@
         if (attribute) return el.getAttribute(attribute);
         return {
           tag: el.tagName.toLowerCase(),
-          text: el.textContent.trim().slice(0, 2000),
-          html: el.outerHTML.slice(0, 5000),
+          text: el.textContent.trim().slice(0, 500),
           attributes: Object.fromEntries(
             Array.from(el.attributes).map((a) => [a.name, a.value])
           ),
@@ -212,6 +274,9 @@
     try {
       let result;
       switch (action) {
+        case "snapshot":
+          result = snapshot(params);
+          break;
         case "scrape":
           result = scrape(params);
           break;
