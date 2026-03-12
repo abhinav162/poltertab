@@ -11,8 +11,352 @@
   const WS_URL = "ws://localhost:7822";
   const RECONNECT_ALARM = "zeroclaw-reconnect";
   const KEEPALIVE_ALARM = "zeroclaw-keepalive";
+  const STORAGE_KEY = "zc_sessions";
 
   let ws = null;
+
+  // --- Session Manager ---
+
+  class SessionManager {
+    constructor() {
+      this.sessions = {};
+      this.activeSession = null;
+      this.groupId = null;
+      this.loaded = false;
+      // Implicit tab tracking: remembers the last tab we navigated,
+      // so subsequent commands target it even without explicit sessions.
+      this.lastNavigatedTabId = null;
+    }
+
+    async load() {
+      if (this.loaded) return;
+      try {
+        const result = await chrome.storage.local.get(STORAGE_KEY);
+        if (result[STORAGE_KEY]) {
+          this.sessions = result[STORAGE_KEY];
+          // Mark all tabs as potentially stale (will be validated on use)
+        }
+      } catch (err) {
+        console.error("[ZeroClaw] Failed to load sessions:", err.message);
+      }
+      this.loaded = true;
+    }
+
+    async persist() {
+      try {
+        await chrome.storage.local.set({ [STORAGE_KEY]: this.sessions });
+      } catch (err) {
+        console.error("[ZeroClaw] Failed to persist sessions:", err.message);
+      }
+    }
+
+    async ensureTabGroup() {
+      if (this.groupId !== null) {
+        try {
+          await chrome.tabGroups.get(this.groupId);
+          return this.groupId;
+        } catch {
+          this.groupId = null;
+        }
+      }
+      try {
+        const groups = await chrome.tabGroups.query({ title: "ZeroClaw" });
+        if (groups.length > 0) {
+          this.groupId = groups[0].id;
+          return this.groupId;
+        }
+      } catch {
+        // tabGroups API may not be available
+      }
+      return null;
+    }
+
+    async addTabToGroup(tabId) {
+      try {
+        const existingGroupId = await this.ensureTabGroup();
+        if (existingGroupId) {
+          await chrome.tabs.group({ tabIds: tabId, groupId: existingGroupId });
+        } else {
+          const newGroupId = await chrome.tabs.group({ tabIds: tabId });
+          await chrome.tabGroups.update(newGroupId, {
+            title: "ZeroClaw",
+            color: "blue",
+            collapsed: false,
+          });
+          this.groupId = newGroupId;
+        }
+      } catch (err) {
+        console.warn("[ZeroClaw] Failed to add tab to group:", err.message);
+      }
+    }
+
+    async create(name, url) {
+      await this.load();
+      if (!name) throw new Error("session_create requires a 'name' parameter");
+
+      let tab;
+      if (url) {
+        const targetUrl = url.startsWith("http") ? url : `https://${url}`;
+        tab = await chrome.tabs.create({ url: targetUrl });
+        await waitForTabLoad(tab.id);
+        tab = await chrome.tabs.get(tab.id);
+      } else {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!activeTab) throw new Error("No active tab to bind session to");
+        tab = activeTab;
+      }
+
+      await this.addTabToGroup(tab.id);
+
+      this.sessions[name] = {
+        tabId: tab.id,
+        url: tab.url,
+        title: tab.title,
+        createdAt: Date.now(),
+        lastUsedAt: Date.now(),
+      };
+      this.activeSession = name;
+      await this.persist();
+
+      return { name, tabId: tab.id, url: tab.url, title: tab.title };
+    }
+
+    async switch(name) {
+      await this.load();
+      const session = this.sessions[name];
+      if (!session) throw new Error(`Session "${name}" not found`);
+
+      // Validate tab still exists
+      if (session.tabId !== null) {
+        try {
+          const tab = await chrome.tabs.get(session.tabId);
+          session.url = tab.url;
+          session.title = tab.title;
+        } catch {
+          session.tabId = null; // Tab no longer exists
+        }
+      }
+
+      // Auto-recover if tab is stale
+      if (session.tabId === null) {
+        await this.recoverSession(name);
+      }
+
+      session.lastUsedAt = Date.now();
+      this.activeSession = name;
+      await this.persist();
+
+      return { name, tabId: session.tabId, url: session.url, title: session.title };
+    }
+
+    async recoverSession(name) {
+      const session = this.sessions[name];
+      if (!session || !session.url) throw new Error(`Session "${name}" has no URL to recover`);
+
+      const tab = await chrome.tabs.create({ url: session.url });
+      await waitForTabLoad(tab.id);
+      const updated = await chrome.tabs.get(tab.id);
+
+      await this.addTabToGroup(updated.id);
+
+      session.tabId = updated.id;
+      session.url = updated.url;
+      session.title = updated.title;
+      session.lastUsedAt = Date.now();
+      await this.persist();
+
+      return session;
+    }
+
+    async resolve(params) {
+      await this.load();
+
+      // 1. Explicit tabId — escape hatch
+      if (params.tabId) return params.tabId;
+
+      // 2. Explicit session param — look up and set active
+      if (params.session) {
+        const session = this.sessions[params.session];
+        if (session) {
+          if (session.tabId !== null) {
+            try {
+              await chrome.tabs.get(session.tabId);
+              this.activeSession = params.session;
+              session.lastUsedAt = Date.now();
+              await this.persist();
+              return session.tabId;
+            } catch {
+              session.tabId = null;
+            }
+          }
+          // Auto-recover
+          await this.recoverSession(params.session);
+          this.activeSession = params.session;
+          return session.tabId;
+        }
+        // Session doesn't exist yet — fall through
+      }
+
+      // 3. Active session
+      if (this.activeSession) {
+        const session = this.sessions[this.activeSession];
+        if (session && session.tabId !== null) {
+          try {
+            await chrome.tabs.get(session.tabId);
+            session.lastUsedAt = Date.now();
+            return session.tabId;
+          } catch {
+            session.tabId = null;
+            this.activeSession = null;
+          }
+        } else {
+          this.activeSession = null;
+        }
+      }
+
+      // 4. Implicit tab tracking — last tab we navigated to
+      if (this.lastNavigatedTabId !== null) {
+        try {
+          await chrome.tabs.get(this.lastNavigatedTabId);
+          return this.lastNavigatedTabId;
+        } catch {
+          this.lastNavigatedTabId = null;
+        }
+      }
+
+      // 5. Legacy fallback — active Chrome tab
+      return null;
+    }
+
+    async resolveOrFallback(params) {
+      const resolved = await this.resolve(params);
+      if (resolved) return resolved;
+
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!activeTab) throw new Error("No active tab found");
+      return activeTab.id;
+    }
+
+    async list() {
+      await this.load();
+      const entries = [];
+
+      for (const [name, session] of Object.entries(this.sessions)) {
+        let status = "alive";
+        if (session.tabId === null) {
+          status = session.url ? "recoverable" : "expired";
+        } else {
+          try {
+            await chrome.tabs.get(session.tabId);
+          } catch {
+            session.tabId = null;
+            status = session.url ? "recoverable" : "expired";
+          }
+        }
+        entries.push({
+          name,
+          tabId: session.tabId,
+          url: session.url,
+          title: session.title,
+          status,
+          createdAt: session.createdAt,
+          lastUsedAt: session.lastUsedAt,
+        });
+      }
+
+      await this.persist();
+      return { sessions: entries, active: this.activeSession };
+    }
+
+    async close(name) {
+      await this.load();
+      const session = this.sessions[name];
+      if (!session) throw new Error(`Session "${name}" not found`);
+
+      if (session.tabId !== null) {
+        try {
+          await chrome.tabs.remove(session.tabId);
+        } catch {
+          // Tab may already be closed
+        }
+      }
+
+      delete this.sessions[name];
+      if (this.activeSession === name) {
+        this.activeSession = null;
+      }
+      await this.persist();
+
+      return { closed: name };
+    }
+
+    async context() {
+      await this.load();
+      let tabInfo = null;
+
+      if (this.activeSession) {
+        const session = this.sessions[this.activeSession];
+        if (session && session.tabId !== null) {
+          try {
+            const tab = await chrome.tabs.get(session.tabId);
+            tabInfo = { tabId: tab.id, url: tab.url, title: tab.title };
+            session.url = tab.url;
+            session.title = tab.title;
+          } catch {
+            session.tabId = null;
+            this.activeSession = null;
+          }
+        } else {
+          this.activeSession = null;
+        }
+      }
+
+      const sessionNames = Object.keys(this.sessions);
+      return {
+        active: this.activeSession,
+        tabId: tabInfo?.tabId ?? null,
+        url: tabInfo?.url ?? null,
+        title: tabInfo?.title ?? null,
+        sessions: sessionNames,
+      };
+    }
+
+    handleTabRemoved(closedTabId) {
+      if (this.lastNavigatedTabId === closedTabId) {
+        this.lastNavigatedTabId = null;
+      }
+      let changed = false;
+      for (const [name, session] of Object.entries(this.sessions)) {
+        if (session.tabId === closedTabId) {
+          session.tabId = null;
+          changed = true;
+        }
+      }
+      if (this.activeSession && this.sessions[this.activeSession]?.tabId === null) {
+        this.activeSession = null;
+      }
+      if (changed) this.persist();
+    }
+
+    handleTabUpdated(tabId, changeInfo) {
+      let changed = false;
+      for (const [name, session] of Object.entries(this.sessions)) {
+        if (session.tabId === tabId) {
+          if (changeInfo.url) {
+            session.url = changeInfo.url;
+            changed = true;
+          }
+          if (changeInfo.title) {
+            session.title = changeInfo.title;
+            changed = true;
+          }
+        }
+      }
+      if (changed) this.persist();
+    }
+  }
+
+  const sessionManager = new SessionManager();
 
   // --- WebSocket connection management ---
 
@@ -105,6 +449,16 @@
     }
   });
 
+  // --- Tab lifecycle listeners ---
+
+  chrome.tabs.onRemoved.addListener((closedTabId) => {
+    sessionManager.handleTabRemoved(closedTabId);
+  });
+
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    sessionManager.handleTabUpdated(tabId, changeInfo);
+  });
+
   // --- Command routing ---
 
   async function handleCommand(action, params) {
@@ -123,6 +477,20 @@
       case "hover":
       case "get_text":
         return forwardToContentScript(action, params);
+      // Background-handled: get_url
+      case "get_url":
+        return getUrl(params);
+      // Session management actions (accept "name" or "session" as the session identifier)
+      case "session_create":
+        return sessionManager.create(params.name || params.session, params.url);
+      case "session_switch":
+        return sessionManager.switch(params.name || params.session);
+      case "session_list":
+        return sessionManager.list();
+      case "session_close":
+        return sessionManager.close(params.name || params.session);
+      case "session_context":
+        return sessionManager.context();
       default:
         throw new Error(`Unknown action: ${action}`);
     }
@@ -131,29 +499,60 @@
   // --- Background-handled commands ---
 
   async function navigate(params) {
-    const { url, tabId } = params;
+    const { url } = params;
     if (!url) throw new Error("navigate requires a 'url' parameter");
 
     const targetUrl = url.startsWith("http") ? url : `https://${url}`;
 
-    if (tabId) {
-      const tab = await chrome.tabs.update(tabId, { url: targetUrl });
+    // Resolve tab via session manager
+    const resolvedTabId = await sessionManager.resolve(params);
+
+    let tab;
+    if (resolvedTabId) {
+      tab = await chrome.tabs.update(resolvedTabId, { url: targetUrl });
       await waitForTabLoad(tab.id);
-      return { tabId: tab.id, url: tab.url, title: tab.title };
+      tab = await chrome.tabs.get(tab.id);
+    } else {
+      // No session context — use active tab or create new
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab) {
+        tab = await chrome.tabs.update(activeTab.id, { url: targetUrl });
+        await waitForTabLoad(tab.id);
+        tab = await chrome.tabs.get(tab.id);
+      } else {
+        tab = await chrome.tabs.create({ url: targetUrl });
+        await waitForTabLoad(tab.id);
+        tab = await chrome.tabs.get(tab.id);
+      }
     }
 
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTab) {
-      const tab = await chrome.tabs.update(activeTab.id, { url: targetUrl });
-      await waitForTabLoad(tab.id);
-      const updated = await chrome.tabs.get(tab.id);
-      return { tabId: updated.id, url: updated.url, title: updated.title };
+    // Always track the last navigated tab for implicit fallback
+    sessionManager.lastNavigatedTabId = tab.id;
+
+    // If a session param was provided, create/update the named session for this tab
+    if (params.session) {
+      await sessionManager.load();
+      const existing = sessionManager.sessions[params.session];
+      if (existing) {
+        existing.tabId = tab.id;
+        existing.url = tab.url;
+        existing.title = tab.title;
+        existing.lastUsedAt = Date.now();
+      } else {
+        sessionManager.sessions[params.session] = {
+          tabId: tab.id,
+          url: tab.url,
+          title: tab.title,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now(),
+        };
+        await sessionManager.addTabToGroup(tab.id);
+      }
+      sessionManager.activeSession = params.session;
+      await sessionManager.persist();
     }
 
-    const tab = await chrome.tabs.create({ url: targetUrl });
-    await waitForTabLoad(tab.id);
-    const updated = await chrome.tabs.get(tab.id);
-    return { tabId: updated.id, url: updated.url, title: updated.title };
+    return { tabId: tab.id, url: tab.url, title: tab.title };
   }
 
   function waitForTabLoad(tabId, timeoutMs = 30000) {
@@ -176,14 +575,7 @@
   }
 
   async function screenshot(params) {
-    const { tabId } = params;
-    let targetTabId = tabId;
-
-    if (!targetTabId) {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab) throw new Error("No active tab found");
-      targetTabId = activeTab.id;
-    }
+    const targetTabId = await sessionManager.resolveOrFallback(params);
 
     await chrome.tabs.update(targetTabId, { active: true });
     await new Promise((r) => setTimeout(r, 300));
@@ -197,28 +589,21 @@
   }
 
   async function getTitle(params) {
-    const { tabId } = params;
+    const targetTabId = await sessionManager.resolveOrFallback(params);
+    const tab = await chrome.tabs.get(targetTabId);
+    return { title: tab.title, url: tab.url, tabId: tab.id };
+  }
 
-    if (tabId) {
-      const tab = await chrome.tabs.get(tabId);
-      return { title: tab.title, url: tab.url, tabId: tab.id };
-    }
-
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!activeTab) throw new Error("No active tab found");
-    return { title: activeTab.title, url: activeTab.url, tabId: activeTab.id };
+  async function getUrl(params) {
+    const targetTabId = await sessionManager.resolveOrFallback(params);
+    const tab = await chrome.tabs.get(targetTabId);
+    return { url: tab.url, title: tab.title, tabId: tab.id };
   }
 
   // --- Content script forwarding ---
 
   async function forwardToContentScript(action, params) {
-    let targetTabId = params.tabId;
-
-    if (!targetTabId) {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab) throw new Error("No active tab found");
-      targetTabId = activeTab.id;
-    }
+    const targetTabId = await sessionManager.resolveOrFallback(params);
 
     try {
       await chrome.scripting.executeScript({
