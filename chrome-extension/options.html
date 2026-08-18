@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <head>
+    <title>ZeroClaw Browser Control Options</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 20px;
+      }
+      .container {
+        max-width: 400px;
+      }
+      label {
+        font-weight: bold;
+      }
+      input {
+        margin-top: 5px;
+        margin-bottom: 15px;
+        padding: 5px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      button {
+        padding: 8px 15px;
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 10px;
+        color: green;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>ZeroClaw MCP Settings</h2>
+      <label for="wsPort">WebSocket Port (default: 7822)</label>
+      <input
+        type="number"
+        id="wsPort"
+        min="1024"
+        max="65535"
+        placeholder="7822"
+      />
+      <button id="saveBtn">Save</button>
+      <div id="status"></div>
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>

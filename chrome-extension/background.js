@@ -6,9 +6,8 @@
 // whenever the bridge server restarts.
 
 (() => {
-  "use strict";
-
-  const WS_URL = "ws://localhost:7822";
+  let WS_PORT = 7822;
+  let WS_URL = `ws://localhost:${WS_PORT}`;
   const RECONNECT_ALARM = "zeroclaw-reconnect";
   const KEEPALIVE_ALARM = "zeroclaw-keepalive";
   const STORAGE_KEY = "zc_sessions";
@@ -101,7 +100,10 @@
         await waitForTabLoad(tab.id);
         tab = await chrome.tabs.get(tab.id);
       } else {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [activeTab] = await chrome.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
         if (!activeTab) throw new Error("No active tab to bind session to");
         tab = activeTab;
       }
@@ -146,12 +148,18 @@
       this.activeSession = name;
       await this.persist();
 
-      return { name, tabId: session.tabId, url: session.url, title: session.title };
+      return {
+        name,
+        tabId: session.tabId,
+        url: session.url,
+        title: session.title,
+      };
     }
 
     async recoverSession(name) {
       const session = this.sessions[name];
-      if (!session || !session.url) throw new Error(`Session "${name}" has no URL to recover`);
+      if (!session || !session.url)
+        throw new Error(`Session "${name}" has no URL to recover`);
 
       const tab = await chrome.tabs.create({ url: session.url });
       await waitForTabLoad(tab.id);
@@ -232,7 +240,10 @@
       const resolved = await this.resolve(params);
       if (resolved) return resolved;
 
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
       if (!activeTab) throw new Error("No active tab found");
       return activeTab.id;
     }
@@ -332,7 +343,10 @@
           changed = true;
         }
       }
-      if (this.activeSession && this.sessions[this.activeSession]?.tabId === null) {
+      if (
+        this.activeSession &&
+        this.sessions[this.activeSession]?.tabId === null
+      ) {
         this.activeSession = null;
       }
       if (changed) this.persist();
@@ -361,7 +375,11 @@
   // --- WebSocket connection management ---
 
   function connect() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      ws &&
+      (ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
@@ -379,7 +397,10 @@
       chrome.alarms.clear(RECONNECT_ALARM);
       // Start keep-alive to prevent service worker suspension while connected
       chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24s
-      send({ type: "extension_ready", version: chrome.runtime.getManifest().version });
+      send({
+        type: "extension_ready",
+        version: chrome.runtime.getManifest().version,
+      });
     };
 
     ws.onmessage = async (event) => {
@@ -401,7 +422,10 @@
     };
 
     ws.onerror = (err) => {
-      console.error("[ZeroClaw] WebSocket error:", err.message || "connection error");
+      console.error(
+        "[ZeroClaw] WebSocket error:",
+        err.message || "connection error",
+      );
     };
 
     ws.onclose = () => {
@@ -425,8 +449,8 @@
       if (!alarm) {
         // Poll every 5s to reconnect
         chrome.alarms.create(RECONNECT_ALARM, {
-          delayInMinutes: 0.08,       // first attempt in ~5s
-          periodInMinutes: 0.08,      // then every ~5s
+          delayInMinutes: 0.08, // first attempt in ~5s
+          periodInMinutes: 0.08, // then every ~5s
         });
       }
     });
@@ -514,7 +538,10 @@
       tab = await chrome.tabs.get(tab.id);
     } else {
       // No session context — use active tab or create new
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
       if (activeTab) {
         tab = await chrome.tabs.update(activeTab.id, { url: targetUrl });
         await waitForTabLoad(tab.id);
@@ -610,7 +637,16 @@
         target: { tabId: targetTabId },
         files: ["content_script.js"],
       });
-    } catch {
+    } catch (err) {
+      if (
+        err.message &&
+        (err.message.includes("Cannot access") ||
+          err.message.includes("restricted"))
+      ) {
+        throw new Error(
+          "Cannot interact with this page (restricted Chrome page)",
+        );
+      }
       // Content script may already be injected or page doesn't allow injection
     }
 
@@ -626,7 +662,19 @@
           clearTimeout(timeout);
 
           if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
+            const msg = chrome.runtime.lastError.message;
+            if (
+              msg.includes("Receiving end does not exist") ||
+              msg.includes("Cannot access")
+            ) {
+              reject(
+                new Error(
+                  "Cannot interact with this page (restricted Chrome page or script failed)",
+                ),
+              );
+            } else {
+              reject(new Error(msg));
+            }
             return;
           }
 
@@ -640,15 +688,42 @@
           } else {
             reject(new Error(response.error || "Content script error"));
           }
-        }
+        },
       );
     });
   }
 
   // --- Startup ---
-  connect();
+  function init() {
+    chrome.storage.local.get(["wsPort"], (result) => {
+      if (result.wsPort) {
+        WS_PORT = result.wsPort;
+        WS_URL = `ws://localhost:${WS_PORT}`;
+      }
+      connect();
+    });
+  }
+
+  init();
 
   // Re-connect on service worker wake-up events
-  chrome.runtime.onStartup.addListener(connect);
-  chrome.runtime.onInstalled.addListener(connect);
+  chrome.runtime.onStartup.addListener(init);
+  chrome.runtime.onInstalled.addListener(init);
+
+  // Hot-swap connection if port changes in options
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.wsPort) {
+      WS_PORT = changes.wsPort.newValue;
+      WS_URL = `ws://localhost:${WS_PORT}`;
+
+      if (ws) {
+        ws.onclose = null; // Disable auto-reconnect temporarily
+        ws.close();
+        ws = null;
+      }
+      chrome.alarms.clear(KEEPALIVE_ALARM);
+      chrome.alarms.clear(RECONNECT_ALARM);
+      connect();
+    }
+  });
 })();

@@ -1,15 +1,15 @@
-# ZeroClaw Browser Control — Chrome Extension
+# ZeroClaw Browser Control MCP Server
 
-Chrome extension that allows [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) AI agent to control and scrape Chrome tabs via commands.
+A generic Model Context Protocol (MCP) server and Chrome extension that allows any MCP-compatible AI agent (Claude Desktop, Cursor, ZeroClaw, custom agents) to control and scrape Chrome tabs.
 
 ## How It Works
 
 ```
-ZeroClaw Agent
-       │  HTTP POST (port 7823)
+Any MCP Agent (Claude Desktop, Cursor, ZeroClaw)
+       │  Stdio (MCP Protocol)
        ▼
-Bridge Server (auto-spawned by ZeroClaw)
-       │  WebSocket (port 7822)
+Node.js MCP Server (mcp-server/index.js)
+       │  WebSocket (port 7822 by default)
        ▼
 This Chrome Extension
        │  Chrome APIs + DOM
@@ -17,57 +17,63 @@ This Chrome Extension
   Your Browser
 ```
 
-ZeroClaw auto-starts the bridge server internally. This repo contains **only the Chrome extension** — you just need to load it once.
-
 ## Setup
+
+### 1. Install the Chrome Extension
 
 1. Open Chrome → `chrome://extensions/`
 2. Enable **Developer mode** (top right toggle)
 3. Click **Load unpacked**
 4. Select the `chrome-extension/` directory from this repo
 
-That's it. The extension auto-connects to the bridge server when ZeroClaw starts.
+### 2. Configure Your Agent (Claude Desktop / Cursor)
 
-## ZeroClaw Configuration
+You need to have `node` installed on your machine.
 
-In `~/.zeroclaw/config.toml`:
+**For Claude Desktop:**
+Add this to your `claude_desktop_config.json`:
 
-```toml
-[browser]
-enabled = true
-backend = "bridge"
-allowed_domains = ["*"]
-
-[browser.bridge]
-endpoint = "http://127.0.0.1:7823/command"
-timeout_ms = 30000
-auto_start = true
+```json
+{
+  "mcpServers": {
+    "chrome-browser-control": {
+      "command": "node",
+      "args": ["/absolute/path/to/zeroclaw-extension/mcp-server/index.js"]
+    }
+  }
+}
 ```
 
-## Supported Commands
+**For ZeroClaw (Legacy REST Bridge):**
+ZeroClaw still supports this extension via its built-in legacy bridge. Ensure `backend = "bridge"` is set in `~/.zeroclaw/config.toml`.
+
+## Supported MCP Tools
+
+The server exposes the following tools to the LLM (all prefixed with `browser_`):
 
 | Action | Parameters | Description |
-|--------|-----------|-------------|
-| `navigate` | `url` (required), `tabId` | Navigate to a URL |
-| `click` | `selector` (required), `tabId` | Click an element (CSS/XPath/text) |
-| `fill` | `selector`, `value` (required), `submit`, `tabId` | Fill an input field |
-| `scrape` | `selector`, `attribute`, `multiple`, `tabId` | Scrape page or specific elements |
-| `screenshot` | `tabId` | Capture visible tab as base64 PNG |
-| `scroll` | `direction`, `amount`, `selector`, `tabId` | Scroll the page |
-| `hover` | `selector` (required), `tabId` | Hover over an element |
-| `get_text` | `selector` (required), `tabId` | Get text content of an element |
-| `get_title` | `tabId` | Get page title and URL |
+| -------- | ----------- | ------------- |
+| `browser_navigate` | `url` (required), `tabId`, `session` | Navigate to a URL |
+| `browser_click` | `selector` (required), `tabId`, `session` | Click an element (CSS/XPath/text) |
+| `browser_fill` | `selector`, `value` (required), `submit`, `tabId`, `session` | Fill an input field |
+| `browser_scrape` | `selector`, `attribute`, `multiple`, `tabId`, `session` | Scrape page or specific elements |
+| `browser_screenshot` | `tabId`, `session` | Capture visible tab as base64 PNG (focuses tab) |
+| `browser_scroll` | `direction` (required), `amount`, `selector`, `tabId`, `session` | Scroll the page |
+| `browser_hover` | `selector` (required), `tabId`, `session` | Hover over an element |
+| `browser_get_text` | `selector` (required), `tabId`, `session` | Get text content of an element |
+| `browser_get_title` | `tabId`, `session` | Get page title and URL |
 
 ### Selector Resolution
 
 Selectors are resolved in order:
+
 1. **CSS selector** — `#id`, `.class`, `div > span`
 2. **XPath** — `//div[@class="foo"]`
 3. **Text match** — exact text content of an element
 
-## CLI Wrapper
+## CLI Wrapper (Legacy)
 
-`zc-browser.sh` lets you send commands directly to the bridge server for testing:
+`zc-browser.sh` lets you send commands directly to the legacy ZeroClaw REST bridge for testing:
 
 ```bash
 ./zc-browser.sh navigate url=https://example.com
@@ -76,26 +82,45 @@ Selectors are resolved in order:
 ./zc-browser.sh health
 ```
 
-## Troubleshooting
+## Troubleshooting & Options
+
+**Changing the WebSocket Port:**
+If port `7822` is in use, the MCP Server will exit with an `EADDRINUSE` error.
+
+1. Click the Extension icon in Chrome -> **Options**.
+2. Change the WebSocket Port to a free port (e.g. `7824`) and click **Save**.
+3. Update your MCP Server configuration to pass the new port.
+   - Using env var: `MCP_BROWSER_WS_PORT=7824 node index.js`
+   - Using CLI arg: `node index.js --port 7824`
+   - In Claude Desktop config:
+
+   ```json
+   "args": ["/absolute/path/to/zeroclaw-extension/mcp-server/index.js", "--port", "7824"]
+   ```
 
 **Extension not connecting:**
-- Ensure ZeroClaw is running with `backend = "bridge"`
-- Check `curl http://localhost:7823/health` — should show `extensionConnected: true`
+
+- Ensure the MCP Server is running and pointing to the correct port.
 - Reload the extension from `chrome://extensions/`
 
-**Commands timing out:**
-- Ensure you have an active tab open in Chrome
-- Some pages block content script injection (`chrome://` pages, extension pages)
+**Commands timing out / Restricted Pages:**
+
+- Ensure you have an active tab open in Chrome.
+- Chrome extensions **cannot** interact with `chrome://` URLs, the Chrome Web Store, or certain restricted pages. The MCP server will cleanly report "Cannot interact with this page" back to the agent in these cases.
 
 ## Project Structure
 
 ```
 zeroclaw-browser-control/
+├── mcp-server/
+│   ├── index.js               # Node.js MCP Server (Stdio)
+│   └── package.json
 ├── chrome-extension/
 │   ├── manifest.json          # MV3 manifest
 │   ├── background.js          # WebSocket client + command router
 │   ├── content_script.js      # DOM extractor + action executor
+│   ├── options.html/js        # Port configuration UI
 │   └── icons/
-├── zc-browser.sh              # CLI wrapper (optional)
+├── zc-browser.sh              # CLI wrapper (legacy)
 └── README.md
 ```
