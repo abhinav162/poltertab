@@ -473,6 +473,25 @@
     }
   });
 
+  // --- Background Message Listener ---
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Intercepted Network Data from MAIN world (via content script)
+    if (message && message.type === "ZC_NETWORK_DATA") {
+      const tabId = sender.tab
+        ? sender.tab.id
+        : sessionManager.lastNavigatedTabId;
+      if (tabId) {
+        send({
+          type: "network_data",
+          tabId: tabId,
+          url: message.url,
+          body: message.body,
+        });
+      }
+      return;
+    }
+  });
+
   // --- Tab lifecycle listeners ---
 
   chrome.tabs.onRemoved.addListener((closedTabId) => {
@@ -501,6 +520,24 @@
       case "hover":
       case "get_text":
         return forwardToContentScript(action, params);
+      case "update_patterns":
+        return forwardToContentScript(action, params);
+      case "set_intercept_patterns":
+        await chrome.storage.local.set({
+          zc_intercept_patterns: params.patterns,
+        });
+        chrome.tabs.query({}, (tabs) => {
+          tabs.forEach((t) =>
+            chrome.tabs
+              .sendMessage(t.id, {
+                source: "zeroclaw",
+                action: "update_patterns",
+                params,
+              })
+              .catch(() => {}),
+          );
+        });
+        return { success: true, patterns: params.patterns };
       // Background-handled: get_url
       case "get_url":
         return getUrl(params);

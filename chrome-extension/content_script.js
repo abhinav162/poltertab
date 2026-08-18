@@ -2,7 +2,40 @@
 // Injected into every page to handle snapshot/scrape/click/fill/scroll/hover/get_text commands.
 
 (() => {
-  "use strict";
+  // --- Inject Interceptor into MAIN world ---
+  try {
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("interceptor.js");
+    script.onload = function () {
+      this.remove(); // Clean up DOM after execution
+
+      // Fetch initial patterns and send to MAIN world
+      chrome.storage.local.get(["zc_intercept_patterns"], (res) => {
+        if (res.zc_intercept_patterns) {
+          window.postMessage(
+            { type: "ZC_UPDATE_PATTERNS", patterns: res.zc_intercept_patterns },
+            "*",
+          );
+        }
+      });
+    };
+    (document.head || document.documentElement).appendChild(script);
+  } catch (err) {
+    console.error("[ZeroClaw] Failed to inject interceptor script:", err);
+  }
+
+  // --- Listen for intercepted data from MAIN world ---
+  window.addEventListener("message", (event) => {
+    // We only accept messages from ourselves
+    if (event.source !== window) return;
+
+    if (event.data && event.data.type === "ZC_NETWORK_DATA") {
+      // Forward the intercepted data up to the background script
+      chrome.runtime.sendMessage(event.data).catch(() => {
+        // Ignore connection errors if background is suspended
+      });
+    }
+  });
 
   function resolveElement(selector) {
     if (!selector) return null;
@@ -22,7 +55,7 @@
         document,
         null,
         XPathResult.FIRST_ORDERED_NODE_TYPE,
-        null
+        null,
       );
       if (result.singleNodeValue) return result.singleNodeValue;
     } catch (_) {
@@ -30,7 +63,10 @@
     }
 
     // Try text content match — find element containing exact text
-    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    const walk = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_ELEMENT,
+    );
     let node;
     while ((node = walk.nextNode())) {
       if (node.textContent.trim() === selector.trim()) return node;
@@ -40,37 +76,57 @@
   }
 
   function snapshot(params) {
-    const { interactive_only = false, compact = true, max_depth = null, max_nodes = 400 } = params;
+    const {
+      interactive_only = false,
+      compact = true,
+      max_depth = null,
+      max_nodes = 400,
+    } = params;
     const nodes = [];
     const root = document.body || document.documentElement;
     let counter = 0;
 
     const isVisible = (el) => {
       const style = window.getComputedStyle(el);
-      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) return false;
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        Number(style.opacity || 1) === 0
+      )
+        return false;
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     };
 
     const isInteractive = (el) => {
-      if (el.matches("a,button,input,select,textarea,summary,[role],*[tabindex]")) return true;
+      if (
+        el.matches("a,button,input,select,textarea,summary,[role],*[tabindex]")
+      )
+        return true;
       return typeof el.onclick === "function";
     };
 
     const describe = (el, depth) => {
       const interactive = isInteractive(el);
-      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 140);
+      const text = (el.innerText || el.textContent || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 140);
       if (interactive_only && !interactive) return;
       if (compact && !interactive && !text) return;
 
-      const ref = "@e" + (++counter);
+      const ref = "@e" + ++counter;
       el.setAttribute("data-zc-ref", ref);
       const node = { ref, depth, tag: el.tagName.toLowerCase(), interactive };
       if (el.id) node.id = el.id;
       const role = el.getAttribute("role");
       if (role) node.role = role;
       if (text) node.text = text;
-      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+      if (
+        el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT"
+      ) {
         if (el.type) node.type = el.type;
         if (el.placeholder) node.placeholder = el.placeholder;
         if (el.value) node.value = el.value.slice(0, 100);
@@ -84,7 +140,13 @@
       if (max_depth !== null && depth > max_depth) return;
       if (nodes.length >= max_nodes) return;
       const tag = el.tagName.toLowerCase();
-      if (tag === "script" || tag === "style" || tag === "noscript" || tag === "svg") return;
+      if (
+        tag === "script" ||
+        tag === "style" ||
+        tag === "noscript" ||
+        tag === "svg"
+      )
+        return;
       if (isVisible(el)) describe(el, depth);
       for (const child of el.children) {
         walk(child, depth + 1);
@@ -116,7 +178,7 @@
           tag: el.tagName.toLowerCase(),
           text: el.textContent.trim().slice(0, 500),
           attributes: Object.fromEntries(
-            Array.from(el.attributes).map((a) => [a.name, a.value])
+            Array.from(el.attributes).map((a) => [a.name, a.value]),
           ),
         };
       });
@@ -135,7 +197,9 @@
       .slice(0, 200)
       .map((a) => ({ text: a.textContent.trim().slice(0, 200), href: a.href }));
 
-    const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+    const headings = Array.from(
+      document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+    )
       .slice(0, 100)
       .map((h) => ({
         level: parseInt(h.tagName[1]),
@@ -171,8 +235,10 @@
 
     // Clear existing value
     const nativeInputValueSetter =
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set ||
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
+        ?.set ||
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
+        ?.set;
 
     if (nativeInputValueSetter) {
       nativeInputValueSetter.call(el, params.value);
@@ -221,7 +287,10 @@
         return { scrolled: "top" };
       case "bottom":
         if (target === window) {
-          window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+          window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior: "smooth",
+          });
           return { scrolled: "bottom" };
         }
         target.scrollTop = target.scrollHeight;
@@ -274,6 +343,13 @@
     try {
       let result;
       switch (action) {
+        case "update_patterns":
+          window.postMessage(
+            { type: "ZC_UPDATE_PATTERNS", patterns: params.patterns },
+            "*",
+          );
+          sendResponse({ success: true });
+          return true;
         case "snapshot":
           result = snapshot(params);
           break;
@@ -299,7 +375,10 @@
           result = getTitle();
           break;
         default:
-          sendResponse({ success: false, error: `Unknown content action: ${action}` });
+          sendResponse({
+            success: false,
+            error: `Unknown content action: ${action}`,
+          });
           return true;
       }
       sendResponse({ success: true, data: result });

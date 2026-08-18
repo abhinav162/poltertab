@@ -10,6 +10,13 @@ const {
 } = require("@modelcontextprotocol/sdk/types.js");
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+
+const MEMORY_DIR = path.join(__dirname, "navigation_memory");
+if (!fs.existsSync(MEMORY_DIR)) {
+  fs.mkdirSync(MEMORY_DIR);
+}
 
 // Port configuration: use MCP_BROWSER_WS_PORT env, or --port CLI arg, or 7822 fallback
 let WS_PORT = process.env.MCP_BROWSER_WS_PORT
@@ -23,6 +30,7 @@ if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
 // Global state
 let extensionSocket = null;
 const pendingCommands = new Map();
+const networkState = new Map(); // tabId -> array of JSON payloads
 
 // Setup WebSocket server
 const wss = new WebSocket.WebSocketServer({ port: WS_PORT });
@@ -65,6 +73,31 @@ wss.on("connection", (ws) => {
 
       // Handle keepalive pings
       if (msg.type === "ping" || msg.type === "extension_ready") {
+        return;
+      }
+
+      // Handle captured network data
+      if (msg.type === "network_data") {
+        const { tabId, url, body } = msg;
+        if (!networkState.has(tabId)) {
+          networkState.set(tabId, []);
+        }
+
+        try {
+          // Attempt to parse JSON. If it fails, ignore or store as raw.
+          const jsonBody = JSON.parse(body);
+          networkState
+            .get(tabId)
+            .push({ url, timestamp: Date.now(), data: jsonBody });
+        } catch (e) {
+          // Keep raw if not JSON
+          networkState
+            .get(tabId)
+            .push({ url, timestamp: Date.now(), data: body });
+        }
+
+        // If a smart_scroll command is waiting for data, we can optionally notify it.
+        // For simplicity, we just keep pushing to the buffer.
         return;
       }
 
@@ -300,6 +333,38 @@ const BROWSER_TOOLS = [
     },
   },
   {
+    name: "browser_get_network_state",
+    description:
+      "Get captured raw JSON data (GraphQL/XHR) for the current tab, bypassing DOM virtualization",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: { type: "number" },
+        session: { type: "string" },
+        clear: {
+          type: "boolean",
+          description: "Clear the buffer after reading (default: true)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_smart_scroll",
+    description:
+      "Scroll the page and wait for new network data to load (handles lazy-loading)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        direction: { type: "string", enum: ["up", "down"] },
+        amount: { type: "number" },
+        tabId: { type: "number" },
+        session: { type: "string" },
+      },
+      required: ["direction"],
+    },
+  },
+  {
     name: "browser_session_create",
     description: "Create or track a named browser session (tab)",
     inputSchema: {
@@ -351,6 +416,35 @@ const BROWSER_TOOLS = [
       required: [],
     },
   },
+  {
+    name: "browser_get_site_memory",
+    description:
+      "Get navigation memory, obstacles, and fixes for a specific website domain",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hostname: { type: "string", description: "e.g., 'www.linkedin.com'" },
+      },
+      required: ["hostname"],
+    },
+  },
+  {
+    name: "browser_save_site_memory",
+    description:
+      "Save a new navigation memory, obstacle, or fix for a specific website domain",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hostname: { type: "string", description: "e.g., 'www.linkedin.com'" },
+        obstacle: {
+          type: "string",
+          description: "What broke or was difficult?",
+        },
+        solution: { type: "string", description: "How did you solve it?" },
+      },
+      required: ["hostname", "obstacle", "solution"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -369,6 +463,99 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const action = name.replace("browser_", "");
 
   try {
+    // Custom handling for network state tool
+    if (action === "get_network_state") {
+      // First, we need to resolve the active tab ID. We can do a dummy 'get_url' command to ask the extension what the current tabId is.
+      const tabInfo = await sendCommand("get_url", args || {});
+      const tabId = tabInfo.tabId;
+
+      let data = [];
+      if (tabId && networkState.has(tabId)) {
+        data = networkState.get(tabId);
+        if (args.clear !== false) {
+          networkState.set(tabId, []);
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { tabId, capturedRequests: data.length, data },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    // Custom handling for smart scroll
+    if (action === "smart_scroll") {
+      const scrollResult = await sendCommand("scroll", args || {});
+
+      // Wait for network requests to arrive (lazy loading)
+      await new Promise((r) => setTimeout(r, 2000));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ...scrollResult,
+                note: "Waited 2s for network data. Use browser_get_network_state to read.",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    // Custom handling for setting intercept patterns globally via storage, then updating current tab
+    if (action === "set_intercept_patterns") {
+      const result = await sendCommand("set_intercept_patterns", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+
+    if (action === "get_site_memory") {
+      const file = path.join(MEMORY_DIR, `${args.hostname}.json`);
+      let data = [];
+      if (fs.existsSync(file)) {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    }
+
+    if (action === "save_site_memory") {
+      const file = path.join(MEMORY_DIR, `${args.hostname}.json`);
+      let data = [];
+      if (fs.existsSync(file)) {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      }
+      data.push({
+        obstacle: args.obstacle,
+        solution: args.solution,
+        timestamp: Date.now(),
+      });
+      fs.writeFileSync(file, JSON.stringify(data, null, 2));
+      return {
+        content: [{ type: "text", text: "Memory successfully saved." }],
+      };
+    }
+
     const result = await sendCommand(action, args || {});
 
     // Check if error result string (graceful error handling)
