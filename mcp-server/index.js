@@ -655,9 +655,10 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        hostname: { type: "string", description: "e.g., 'www.linkedin.com'" },
+        hostname: { type: "string", description: "e.g., 'www.linkedin.com' or 'x.com'" },
+        domain: { type: "string", description: "Alias for hostname" }
       },
-      required: ["hostname"],
+      required: [],
     },
   },
   {
@@ -668,13 +669,14 @@ const BROWSER_TOOLS = [
       type: "object",
       properties: {
         hostname: { type: "string", description: "e.g., 'www.linkedin.com'" },
+        domain: { type: "string", description: "Alias for hostname" },
         obstacle: {
           type: "string",
           description: "What broke or was difficult?",
         },
         solution: { type: "string", description: "How did you solve it?" },
       },
-      required: ["hostname", "obstacle", "solution"],
+      required: ["obstacle", "solution"],
     },
   },
 ];
@@ -771,7 +773,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (action === "get_site_memory") {
-      const file = path.join(MEMORY_DIR, `${args.hostname}.json`);
+      const host = args.hostname || args.domain || args.url;
+      if (!host) throw new Error("Missing 'hostname' parameter");
+      const file = path.join(MEMORY_DIR, `${host}.json`);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -782,7 +786,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (action === "save_site_memory") {
-      const file = path.join(MEMORY_DIR, `${args.hostname}.json`);
+      const host = args.hostname || args.domain || args.url;
+      if (!host) throw new Error("Missing 'hostname' parameter");
+      const file = path.join(MEMORY_DIR, `${host}.json`);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
