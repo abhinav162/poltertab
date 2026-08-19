@@ -13,6 +13,8 @@
   const STORAGE_KEY = "zc_sessions";
 
   let ws = null;
+  let isConnected = false;
+  let activeSessions = [];
 
   // --- Session Manager ---
 
@@ -393,14 +395,17 @@
 
     ws.onopen = () => {
       console.log("[ZeroClaw] Connected to bridge server");
+      isConnected = true;
       // Stop reconnect polling — we're connected
       chrome.alarms.clear(RECONNECT_ALARM);
       // Start keep-alive to prevent service worker suspension while connected
-      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 }); // ~24s
+      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.33 }); // ~20s
       send({
         type: "extension_ready",
         version: chrome.runtime.getManifest().version,
       });
+      send({ type: "request_full_state" });
+      broadcastState();
     };
 
     ws.onmessage = async (event) => {
@@ -409,6 +414,12 @@
         msg = JSON.parse(event.data);
       } catch {
         send({ success: false, error: "Invalid JSON from bridge server" });
+        return;
+      }
+
+      if (msg.type === "state_update") {
+        activeSessions = msg.sessions || [];
+        broadcastState();
         return;
       }
 
@@ -431,6 +442,9 @@
     ws.onclose = () => {
       console.log("[ZeroClaw] Disconnected from bridge server");
       ws = null;
+      isConnected = false;
+      activeSessions = [];
+      broadcastState();
       // Stop keep-alive, start reconnect polling
       chrome.alarms.clear(KEEPALIVE_ALARM);
       ensureReconnectAlarm();
@@ -441,6 +455,10 @@
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
     }
+  }
+  
+  function broadcastState() {
+    chrome.runtime.sendMessage({ type: "state_update", state: { connected: isConnected, sessions: activeSessions } }).catch(() => {});
   }
 
   // Alarm-based reconnection: survives service worker suspension
@@ -475,6 +493,24 @@
 
   // --- Background Message Listener ---
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "get_status") {
+      if (!isConnected) {
+        connect();
+      }
+      sendResponse({ connected: isConnected, sessions: activeSessions });
+      return true;
+    }
+    
+    if (message.type === "force_refresh") {
+      if (isConnected) {
+        send({ type: "request_full_state" });
+      } else {
+        connect();
+      }
+      sendResponse({ connected: isConnected, sessions: activeSessions });
+      return true;
+    }
+  
     // Intercepted Network Data from MAIN world (via content script)
     if (message && message.type === "ZC_NETWORK_DATA") {
       const tabId = sender.tab
@@ -496,6 +532,7 @@
 
   chrome.tabs.onRemoved.addListener((closedTabId) => {
     sessionManager.handleTabRemoved(closedTabId);
+    send({ type: "tab_closed", tabId: closedTabId });
   });
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -522,22 +559,22 @@
         return forwardToContentScript(action, params);
       case "update_patterns":
         return forwardToContentScript(action, params);
-      case "set_intercept_patterns":
+      case "set_intercept_patterns": {
         await chrome.storage.local.set({
           zc_intercept_patterns: params.patterns,
         });
-        chrome.tabs.query({}, (tabs) => {
-          tabs.forEach((t) =>
-            chrome.tabs
-              .sendMessage(t.id, {
-                source: "zeroclaw",
-                action: "update_patterns",
-                params,
-              })
-              .catch(() => {}),
-          );
-        });
+        const allTabs = await chrome.tabs.query({});
+        allTabs.forEach((t) =>
+          chrome.tabs
+            .sendMessage(t.id, {
+              source: "zeroclaw",
+              action: "update_patterns",
+              params,
+            })
+            .catch(() => {}),
+        );
         return { success: true, patterns: params.patterns };
+      }
       // Background-handled: get_url
       case "get_url":
         return getUrl(params);

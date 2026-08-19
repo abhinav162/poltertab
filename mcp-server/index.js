@@ -30,13 +30,30 @@ if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
 // Global state
 let extensionSocket = null;
 const pendingCommands = new Map();
-const networkState = new Map(); // tabId -> array of JSON payloads
+const networkState = new Map(); // tabId -> { lastUpdated: number, requests: array }
 const secondaryClients = new Map();
 
 let isSecondary = false;
 let nodeId = null;
 let wss = null;
 let httpServer = null;
+
+function broadcastSessionState() {
+  if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
+    const sessions = [];
+    for (const [nodeId, clientWs] of secondaryClients.entries()) {
+      sessions.push({
+        id: "Secondary Agent",
+        nodeId: nodeId,
+        lastTabId: clientWs.lastTabId || null
+      });
+    }
+    extensionSocket.send(JSON.stringify({
+      type: "state_update",
+      sessions
+    }));
+  }
+}
 
 function setupPrimaryServer() {
   const http = require("http");
@@ -57,7 +74,52 @@ function setupPrimaryServer() {
     console.error(
       `[ZeroClaw MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
     );
-    wss = new WebSocket.WebSocketServer({ server: httpServer });
+    wss = new WebSocket.WebSocketServer({ 
+      server: httpServer,
+      perMessageDeflate: {
+        zlibDeflateOptions: {
+          chunkSize: 1024,
+          memLevel: 7,
+          level: 1
+        },
+        zlibInflateOptions: {
+          chunkSize: 10 * 1024
+        },
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true,
+        serverMaxWindowBits: 10,
+        concurrencyLimit: 10,
+        threshold: 1024
+      }
+    });
+    
+    // Heartbeat mechanism to detect dead connections
+    const interval = setInterval(() => {
+      wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+          console.error(`[ZeroClaw MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`);
+          return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping();
+      });
+    }, 60000); // 60 seconds
+    
+    wss.on("close", () => {
+      clearInterval(interval);
+    });
+
+    // Network State Garbage Collector (TTL: 5 minutes)
+    setInterval(() => {
+      const now = Date.now();
+      for (const [tabId, state] of networkState.entries()) {
+        if (now - state.lastUpdated > 5 * 60 * 1000) {
+          console.log(`[ZeroClaw MCP] Garbage collecting network state for tab ${tabId}`);
+          networkState.delete(tabId);
+        }
+      }
+    }, 60000);
+
     setupPrimaryWss(wss);
   });
 }
@@ -73,7 +135,9 @@ function startSecondaryMode() {
 }
 
 function connectToPrimary() {
-  extensionSocket = new WebSocket(`ws://localhost:${WS_PORT}`);
+  extensionSocket = new WebSocket(`ws://localhost:${WS_PORT}`, {
+    perMessageDeflate: true
+  });
 
   extensionSocket.on("open", () => {
     console.error("[ZeroClaw MCP] Connected to Primary MCP Server.");
@@ -112,11 +176,14 @@ function connectToPrimary() {
       pendingCommands.delete(id);
     }
 
-    // Try to become primary
+    // Try to become primary with exponential backoff & jitter
+    const jitter = Math.floor(Math.random() * 2000);
+    const delay = 500 + jitter;
+    
     setTimeout(() => {
       isSecondary = false;
       setupPrimaryServer();
-    }, 1000);
+    }, delay);
   });
 
   extensionSocket.on("error", (err) => {
@@ -126,6 +193,11 @@ function connectToPrimary() {
 
 function setupPrimaryWss(wss) {
   wss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
     ws.on("message", (message) => {
       try {
         const msg = JSON.parse(message);
@@ -143,11 +215,21 @@ function setupPrimaryWss(wss) {
           console.error(
             `[ZeroClaw MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
           );
+          broadcastSessionState();
+          return;
+        }
+
+        if (msg.type === "request_full_state") {
+          broadcastSessionState();
           return;
         }
 
         if (msg.type === "proxy_command") {
           const { id, action, params } = msg;
+          if (params && params.tabId) {
+             ws.lastTabId = params.tabId;
+             broadcastSessionState();
+          }
 
           if (action === "get_network_state") {
             (async () => {
@@ -159,9 +241,9 @@ function setupPrimaryWss(wss) {
                 }
                 let data = [];
                 if (tabId && networkState.has(tabId)) {
-                  data = networkState.get(tabId);
+                  data = networkState.get(tabId).requests;
                   if (params.clear !== false) {
-                    networkState.set(tabId, []);
+                    networkState.get(tabId).requests = [];
                   }
                 }
                 if (ws.readyState === WebSocket.OPEN) {
@@ -244,17 +326,37 @@ function setupPrimaryWss(wss) {
         if (msg.type === "network_data") {
           const { tabId, url, body } = msg;
           if (!networkState.has(tabId)) {
-            networkState.set(tabId, []);
+            networkState.set(tabId, { lastUpdated: Date.now(), requests: [] });
           }
+          const state = networkState.get(tabId);
+          state.lastUpdated = Date.now();
+          
           try {
-            const jsonBody = JSON.parse(body);
-            networkState
-              .get(tabId)
-              .push({ url, timestamp: Date.now(), data: jsonBody });
+            // Truncate bodies over 1MB
+            let processedBody = body;
+            if (body && body.length > 1024 * 1024) {
+               processedBody = '{"error": "Payload exceeded 1MB limit and was truncated"}';
+            }
+            
+            const jsonBody = JSON.parse(processedBody);
+            state.requests.push({ url, timestamp: Date.now(), data: jsonBody });
           } catch (e) {
-            networkState
-              .get(tabId)
-              .push({ url, timestamp: Date.now(), data: body });
+            state.requests.push({ url, timestamp: Date.now(), data: body });
+          }
+          
+          // Cap at 500 requests
+          if (state.requests.length > 500) {
+             state.requests.shift();
+          }
+          return;
+        }
+
+        // Handle tab closed
+        if (msg.type === "tab_closed") {
+          const { tabId } = msg;
+          if (networkState.has(tabId)) {
+            console.log(`[ZeroClaw MCP] Clearing network state for closed tab ${tabId}`);
+            networkState.delete(tabId);
           }
           return;
         }
@@ -286,6 +388,7 @@ function setupPrimaryWss(wss) {
           `[ZeroClaw MCP] Secondary node disconnected: ${ws.nodeId}`,
         );
         secondaryClients.delete(ws.nodeId);
+        broadcastSessionState();
       } else if (extensionSocket === ws) {
         console.error("[ZeroClaw MCP] Chrome extension disconnected.");
         extensionSocket = null;
@@ -558,6 +661,10 @@ const BROWSER_TOOLS = [
           type: "boolean",
           description: "Clear the buffer after reading (default: true)",
         },
+        output_file: {
+          type: "string",
+          description: "Optional filename to save the data directly to disk to avoid flooding the context window (e.g., 'data.json')",
+        },
       },
       required: [],
     },
@@ -718,21 +825,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       let data = [];
       if (tabId && networkState.has(tabId)) {
-        data = networkState.get(tabId);
+        data = networkState.get(tabId).requests;
         if (args.clear !== false) {
-          networkState.set(tabId, []);
+          networkState.get(tabId).requests = [];
         }
+      }
+
+      const responsePayload = { tabId, capturedRequests: data.length, data };
+
+      if (args.output_file) {
+        // Sanitize the file name to prevent Path Traversal
+        const safeName = path.basename(args.output_file);
+        // Add timestamp to prevent collisions
+        const parts = safeName.split('.');
+        const ext = parts.length > 1 ? `.${parts.pop()}` : '';
+        const base = parts.join('.');
+        const finalName = `${base}_${Date.now()}${ext}`;
+        
+        const downloadsDir = path.join(__dirname, 'downloads');
+        if (!fs.existsSync(downloadsDir)) {
+          fs.mkdirSync(downloadsDir, { recursive: true });
+        }
+        
+        const safePath = path.join(downloadsDir, finalName);
+        fs.writeFileSync(safePath, JSON.stringify(responsePayload, null, 2));
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Data successfully written to ${safePath}. Captured ${data.length} requests.`,
+            },
+          ],
+        };
       }
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(
-              { tabId, capturedRequests: data.length, data },
-              null,
-              2,
-            ),
+            text: JSON.stringify(responsePayload, null, 2),
           },
         ],
       };
