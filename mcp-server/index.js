@@ -655,8 +655,11 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        hostname: { type: "string", description: "e.g., 'www.linkedin.com' or 'x.com'" },
-        domain: { type: "string", description: "Alias for hostname" }
+        hostname: {
+          type: "string",
+          description: "e.g., 'www.linkedin.com' or 'x.com'",
+        },
+        domain: { type: "string", description: "Alias for hostname" },
       },
       required: [],
     },
