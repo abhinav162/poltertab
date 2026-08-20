@@ -2,6 +2,17 @@
 // Injected into every page to handle snapshot/scrape/click/fill/scroll/hover/get_text commands.
 
 (() => {
+  // background.js re-injects this file before every DOM command so tabs that
+  // were already open when the extension loaded still get a content script
+  // without the user reloading them. Re-execution must therefore be a no-op:
+  // unguarded, each injection adds another chrome.runtime.onMessage listener
+  // and another interceptor copy, so one command fires N clicks and every
+  // intercepted response is captured N times over. The isolated world's
+  // globals persist across injections but are wiped on real page loads, which
+  // is exactly the lifetime we want.
+  if (window.__polterTabInjected) return;
+  window.__polterTabInjected = true;
+
   // --- Inject Interceptor into MAIN world ---
   try {
     const script = document.createElement("script");
