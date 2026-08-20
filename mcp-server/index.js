@@ -428,10 +428,24 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+// Helper to wait for WebSocket connection
+async function waitForConnection(timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
 // Helper to send command to the extension
 async function sendCommand(action, params) {
+  const isConnected = await waitForConnection(5000);
+
   if (isSecondary) {
-    if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
+    if (!isConnected) {
       throw new Error("Secondary node not connected to Primary MCP server.");
     }
 
@@ -467,7 +481,7 @@ async function sendCommand(action, params) {
     });
   }
 
-  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
+  if (!isConnected) {
     throw new Error(
       "Browser extension not connected. Please ensure the extension is installed, enabled, and pointing to the correct port (default: 7822).",
     );
