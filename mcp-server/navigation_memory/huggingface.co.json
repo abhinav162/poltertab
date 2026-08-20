@@ -1,0 +1,7 @@
+[
+  {
+    "obstacle": "Login: Chrome native password autofill cannot be triggered programmatically (focus/click leaves username/password empty); space app content lives in an iframe that shows 'Refreshing'. Also the extension controls only ONE tab, so named sessions all share the same tabId.",
+    "solution": "For login, have user pick the saved credential in the real browser window, or paste creds to fill input[name='username'] and input[type='password']. For a Space's use case, read the page-level meta[name='description'] / og:description instead of scraping the iframe. Trending space order = document order of <article> cards under /spaces (hrefs like /spaces/USER/NAME).",
+    "timestamp": 1787227968774
+  }
+]

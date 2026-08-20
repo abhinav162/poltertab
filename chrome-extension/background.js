@@ -456,9 +456,14 @@
       ws.send(JSON.stringify(data));
     }
   }
-  
+
   function broadcastState() {
-    chrome.runtime.sendMessage({ type: "state_update", state: { connected: isConnected, sessions: activeSessions } }).catch(() => {});
+    chrome.runtime
+      .sendMessage({
+        type: "state_update",
+        state: { connected: isConnected, sessions: activeSessions },
+      })
+      .catch(() => {});
   }
 
   // Alarm-based reconnection: survives service worker suspension
@@ -500,7 +505,7 @@
       sendResponse({ connected: isConnected, sessions: activeSessions });
       return true;
     }
-    
+
     if (message.type === "force_refresh") {
       if (isConnected) {
         send({ type: "request_full_state" });
@@ -510,7 +515,7 @@
       sendResponse({ connected: isConnected, sessions: activeSessions });
       return true;
     }
-  
+
     // Intercepted Network Data from MAIN world (via content script)
     if (message && message.type === "ZC_NETWORK_DATA") {
       const tabId = sender.tab
