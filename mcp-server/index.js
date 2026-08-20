@@ -32,6 +32,7 @@ let extensionSocket = null;
 const pendingCommands = new Map();
 const networkState = new Map(); // tabId -> { lastUpdated: number, requests: array }
 const secondaryClients = new Map();
+let primaryLastTabId = null;
 
 let isSecondary = false;
 let nodeId = null;
@@ -41,17 +42,24 @@ let httpServer = null;
 function broadcastSessionState() {
   if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
     const sessions = [];
+    sessions.push({
+      id: "Primary Agent",
+      nodeId: "primary",
+      lastTabId: primaryLastTabId || null,
+    });
     for (const [nodeId, clientWs] of secondaryClients.entries()) {
       sessions.push({
         id: "Secondary Agent",
         nodeId: nodeId,
-        lastTabId: clientWs.lastTabId || null
+        lastTabId: clientWs.lastTabId || null,
       });
     }
-    extensionSocket.send(JSON.stringify({
-      type: "state_update",
-      sessions
-    }));
+    extensionSocket.send(
+      JSON.stringify({
+        type: "state_update",
+        sessions,
+      }),
+    );
   }
 }
 
@@ -74,37 +82,39 @@ function setupPrimaryServer() {
     console.error(
       `[ZeroClaw MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
     );
-    wss = new WebSocket.WebSocketServer({ 
+    wss = new WebSocket.WebSocketServer({
       server: httpServer,
       perMessageDeflate: {
         zlibDeflateOptions: {
           chunkSize: 1024,
           memLevel: 7,
-          level: 1
+          level: 1,
         },
         zlibInflateOptions: {
-          chunkSize: 10 * 1024
+          chunkSize: 10 * 1024,
         },
         clientNoContextTakeover: true,
         serverNoContextTakeover: true,
         serverMaxWindowBits: 10,
         concurrencyLimit: 10,
-        threshold: 1024
-      }
+        threshold: 1024,
+      },
     });
-    
+
     // Heartbeat mechanism to detect dead connections
     const interval = setInterval(() => {
       wss.clients.forEach((ws) => {
         if (ws.isAlive === false) {
-          console.error(`[ZeroClaw MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`);
+          console.error(
+            `[ZeroClaw MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`,
+          );
           return ws.terminate();
         }
         ws.isAlive = false;
         ws.ping();
       });
     }, 60000); // 60 seconds
-    
+
     wss.on("close", () => {
       clearInterval(interval);
     });
@@ -114,7 +124,9 @@ function setupPrimaryServer() {
       const now = Date.now();
       for (const [tabId, state] of networkState.entries()) {
         if (now - state.lastUpdated > 5 * 60 * 1000) {
-          console.log(`[ZeroClaw MCP] Garbage collecting network state for tab ${tabId}`);
+          console.log(
+            `[ZeroClaw MCP] Garbage collecting network state for tab ${tabId}`,
+          );
           networkState.delete(tabId);
         }
       }
@@ -136,7 +148,7 @@ function startSecondaryMode() {
 
 function connectToPrimary() {
   extensionSocket = new WebSocket(`ws://localhost:${WS_PORT}`, {
-    perMessageDeflate: true
+    perMessageDeflate: true,
   });
 
   extensionSocket.on("open", () => {
@@ -179,7 +191,7 @@ function connectToPrimary() {
     // Try to become primary with exponential backoff & jitter
     const jitter = Math.floor(Math.random() * 2000);
     const delay = 500 + jitter;
-    
+
     setTimeout(() => {
       isSecondary = false;
       setupPrimaryServer();
@@ -227,8 +239,8 @@ function setupPrimaryWss(wss) {
         if (msg.type === "proxy_command") {
           const { id, action, params } = msg;
           if (params && params.tabId) {
-             ws.lastTabId = params.tabId;
-             broadcastSessionState();
+            ws.lastTabId = params.tabId;
+            broadcastSessionState();
           }
 
           if (action === "get_network_state") {
@@ -330,23 +342,24 @@ function setupPrimaryWss(wss) {
           }
           const state = networkState.get(tabId);
           state.lastUpdated = Date.now();
-          
+
           try {
             // Truncate bodies over 1MB
             let processedBody = body;
             if (body && body.length > 1024 * 1024) {
-               processedBody = '{"error": "Payload exceeded 1MB limit and was truncated"}';
+              processedBody =
+                '{"error": "Payload exceeded 1MB limit and was truncated"}';
             }
-            
+
             const jsonBody = JSON.parse(processedBody);
             state.requests.push({ url, timestamp: Date.now(), data: jsonBody });
           } catch (e) {
             state.requests.push({ url, timestamp: Date.now(), data: body });
           }
-          
+
           // Cap at 500 requests
           if (state.requests.length > 500) {
-             state.requests.shift();
+            state.requests.shift();
           }
           return;
         }
@@ -355,7 +368,9 @@ function setupPrimaryWss(wss) {
         if (msg.type === "tab_closed") {
           const { tabId } = msg;
           if (networkState.has(tabId)) {
-            console.log(`[ZeroClaw MCP] Clearing network state for closed tab ${tabId}`);
+            console.log(
+              `[ZeroClaw MCP] Clearing network state for closed tab ${tabId}`,
+            );
             networkState.delete(tabId);
           }
           return;
@@ -663,7 +678,8 @@ const BROWSER_TOOLS = [
         },
         output_file: {
           type: "string",
-          description: "Optional filename to save the data directly to disk to avoid flooding the context window (e.g., 'data.json')",
+          description:
+            "Optional filename to save the data directly to disk to avoid flooding the context window (e.g., 'data.json')",
         },
       },
       required: [],
@@ -823,6 +839,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const tabInfo = await sendCommand("get_url", args || {});
       const tabId = tabInfo.tabId;
 
+      if (!isSecondary) {
+        primaryLastTabId = tabId;
+        broadcastSessionState();
+      }
+
       let data = [];
       if (tabId && networkState.has(tabId)) {
         data = networkState.get(tabId).requests;
@@ -837,19 +858,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Sanitize the file name to prevent Path Traversal
         const safeName = path.basename(args.output_file);
         // Add timestamp to prevent collisions
-        const parts = safeName.split('.');
-        const ext = parts.length > 1 ? `.${parts.pop()}` : '';
-        const base = parts.join('.');
+        const parts = safeName.split(".");
+        const ext = parts.length > 1 ? `.${parts.pop()}` : "";
+        const base = parts.join(".");
         const finalName = `${base}_${Date.now()}${ext}`;
-        
-        const downloadsDir = path.join(__dirname, 'downloads');
+
+        const downloadsDir = path.join(__dirname, "downloads");
         if (!fs.existsSync(downloadsDir)) {
           fs.mkdirSync(downloadsDir, { recursive: true });
         }
-        
+
         const safePath = path.join(downloadsDir, finalName);
         fs.writeFileSync(safePath, JSON.stringify(responsePayload, null, 2));
-        
+
         return {
           content: [
             {
@@ -873,6 +894,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Custom handling for smart scroll
     if (action === "smart_scroll") {
       const scrollResult = await sendCommand("scroll", args || {});
+
+      if (!isSecondary && scrollResult && scrollResult.tabId) {
+        primaryLastTabId = scrollResult.tabId;
+        broadcastSessionState();
+      }
 
       // Wait for network requests to arrive (lazy loading)
       await new Promise((r) => setTimeout(r, 2000));
@@ -940,6 +966,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const result = await sendCommand(action, args || {});
+
+    if (!isSecondary) {
+      // Track primary's active tab
+      if (result && result.tabId) {
+        primaryLastTabId = result.tabId;
+        broadcastSessionState();
+      } else if (args && args.tabId) {
+        primaryLastTabId = args.tabId;
+        broadcastSessionState();
+      }
+    }
 
     // Check if error result string (graceful error handling)
     if (
