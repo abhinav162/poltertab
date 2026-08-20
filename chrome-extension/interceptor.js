@@ -9,7 +9,7 @@
       if (Array.isArray(event.data.patterns)) {
         interceptPatterns = event.data.patterns;
         console.log(
-          "[ZeroClaw Interceptor] Updated patterns:",
+          "[PolterTab Interceptor] Updated patterns:",
           interceptPatterns,
         );
       }
@@ -46,13 +46,13 @@
           })
           .catch((err) => {
             console.error(
-              "[ZeroClaw Interceptor] Failed to read fetch clone body:",
+              "[PolterTab Interceptor] Failed to read fetch clone body:",
               err,
             );
           });
       }
     } catch (err) {
-      console.error("[ZeroClaw Interceptor] Error processing fetch:", err);
+      console.error("[PolterTab Interceptor] Error processing fetch:", err);
     }
 
     return response;
@@ -80,14 +80,14 @@
             "*",
           );
         } catch (err) {
-          console.error("[ZeroClaw Interceptor] Error processing XHR:", err);
+          console.error("[PolterTab Interceptor] Error processing XHR:", err);
         }
       }
     });
     return originalXhrSend.apply(this, body);
   };
 
-  console.log("[ZeroClaw] Network interceptor injected into MAIN world.");
+  console.log("[PolterTab] Network interceptor injected into MAIN world.");
   window.postMessage(
     { type: "ZC_NETWORK_DATA", url: "TEST_INIT", body: "Interceptor loaded" },
     "*",

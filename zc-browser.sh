@@ -29,7 +29,7 @@ NC='\033[0m'
 
 usage() {
   cat <<EOF
-${CYAN}ZeroClaw Browser Control${NC}
+${CYAN}PolterTab Browser Control${NC}
 
 Usage: $(basename "$0") <action> [key=value ...]
 

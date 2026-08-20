@@ -1,4 +1,4 @@
-// ZeroClaw Background Service Worker — WebSocket client + command router
+// PolterTab Background Service Worker — WebSocket client + command router
 // Connects to bridge-server at ws://localhost:7822 and routes commands to content scripts or Chrome APIs.
 //
 // MV3 service workers get suspended after ~30s of inactivity.
@@ -8,8 +8,8 @@
 (() => {
   let WS_PORT = 7822;
   let WS_URL = `ws://localhost:${WS_PORT}`;
-  const RECONNECT_ALARM = "zeroclaw-reconnect";
-  const KEEPALIVE_ALARM = "zeroclaw-keepalive";
+  const RECONNECT_ALARM = "poltertab-reconnect";
+  const KEEPALIVE_ALARM = "poltertab-keepalive";
   const STORAGE_KEY = "zc_sessions";
 
   let ws = null;
@@ -38,7 +38,7 @@
           // Mark all tabs as potentially stale (will be validated on use)
         }
       } catch (err) {
-        console.error("[ZeroClaw] Failed to load sessions:", err.message);
+        console.error("[PolterTab] Failed to load sessions:", err.message);
       }
       this.loaded = true;
     }
@@ -47,7 +47,7 @@
       try {
         await chrome.storage.local.set({ [STORAGE_KEY]: this.sessions });
       } catch (err) {
-        console.error("[ZeroClaw] Failed to persist sessions:", err.message);
+        console.error("[PolterTab] Failed to persist sessions:", err.message);
       }
     }
 
@@ -61,7 +61,7 @@
         }
       }
       try {
-        const groups = await chrome.tabGroups.query({ title: "ZeroClaw" });
+        const groups = await chrome.tabGroups.query({ title: "PolterTab" });
         if (groups.length > 0) {
           this.groupId = groups[0].id;
           return this.groupId;
@@ -80,14 +80,14 @@
         } else {
           const newGroupId = await chrome.tabs.group({ tabIds: tabId });
           await chrome.tabGroups.update(newGroupId, {
-            title: "ZeroClaw",
+            title: "PolterTab",
             color: "blue",
             collapsed: false,
           });
           this.groupId = newGroupId;
         }
       } catch (err) {
-        console.warn("[ZeroClaw] Failed to add tab to group:", err.message);
+        console.warn("[PolterTab] Failed to add tab to group:", err.message);
       }
     }
 
@@ -388,13 +388,13 @@
     try {
       ws = new WebSocket(WS_URL);
     } catch (err) {
-      console.error("[ZeroClaw] WebSocket creation failed:", err.message);
+      console.error("[PolterTab] WebSocket creation failed:", err.message);
       ensureReconnectAlarm();
       return;
     }
 
     ws.onopen = () => {
-      console.log("[ZeroClaw] Connected to bridge server");
+      console.log("[PolterTab] Connected to bridge server");
       isConnected = true;
       // Stop reconnect polling — we're connected
       chrome.alarms.clear(RECONNECT_ALARM);
@@ -434,13 +434,13 @@
 
     ws.onerror = (err) => {
       console.error(
-        "[ZeroClaw] WebSocket error:",
+        "[PolterTab] WebSocket error:",
         err.message || "connection error",
       );
     };
 
     ws.onclose = () => {
-      console.log("[ZeroClaw] Disconnected from bridge server");
+      console.log("[PolterTab] Disconnected from bridge server");
       ws = null;
       isConnected = false;
       activeSessions = [];
@@ -572,7 +572,7 @@
         allTabs.forEach((t) =>
           chrome.tabs
             .sendMessage(t.id, {
-              source: "zeroclaw",
+              source: "poltertab",
               action: "update_patterns",
               params,
             })
@@ -736,7 +736,7 @@
 
       chrome.tabs.sendMessage(
         targetTabId,
-        { source: "zeroclaw", action, params },
+        { source: "poltertab", action, params },
         (response) => {
           clearTimeout(timeout);
 

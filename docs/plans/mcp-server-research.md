@@ -19,7 +19,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 // Initialize the server
 const server = new Server(
   {
-    name: "zeroclaw-browser-mcp",
+    name: "poltertab-mcp",
     version: "1.0.0",
   },
   {

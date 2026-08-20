@@ -1,20 +1,28 @@
-# ZeroClaw Browser Control MCP Server
+# PolterTab — Browser Control for Any AI
 
-A generic Model Context Protocol (MCP) server and Chrome extension that allows any MCP-compatible AI agent (Claude Desktop, Cursor, ZeroClaw, custom agents) to control and scrape Chrome tabs.
+**PolterTab lets any AI assistant drive and scrape your *existing* Chrome profile — no headless browser, no separate automation setup, no re-logging into anything.**
+
+A Chrome extension + Model Context Protocol (MCP) server. The AI acts inside the browser you already use: your real profile, your cookies, your logged-in sessions. Install the extension, point your MCP client at the server, done — it works with Claude Desktop, Cursor, or any MCP-compatible agent.
+
+## Why PolterTab
+
+- **Your real profile** — runs in the Chrome you're already signed into. No fresh headless browser that's logged out of everything.
+- **No complex setup** — load the unpacked extension, add one MCP entry. That's it.
+- **Any AI tool** — any MCP-compatible client can connect.
 
 ## How It Works
 
 ```
-Any MCP Agent (Claude Desktop, Cursor, ZeroClaw)
+Any MCP Agent (Claude Desktop, Cursor, custom agents)
        │  Stdio (MCP Protocol)
        ▼
 Node.js MCP Server (mcp-server/index.js)
        │  WebSocket (port 7822 by default)
        ▼
-This Chrome Extension
+PolterTab Chrome Extension
        │  Chrome APIs + DOM
        ▼
-  Your Browser
+  Your existing Chrome profile
 ```
 
 ## Setup
@@ -38,14 +46,15 @@ Add this to your `claude_desktop_config.json`:
   "mcpServers": {
     "chrome-browser-control": {
       "command": "node",
-      "args": ["/absolute/path/to/zeroclaw-extension/mcp-server/index.js"]
+      "args": ["/absolute/path/to/poltertab/mcp-server/index.js"]
     }
   }
 }
 ```
 
-**For ZeroClaw (Legacy REST Bridge):**
-ZeroClaw still supports this extension via its built-in legacy bridge. Ensure `backend = "bridge"` is set in `~/.zeroclaw/config.toml`.
+Any other MCP-compatible client works the same way — point it at `mcp-server/index.js` over stdio.
+
+> **Legacy:** This extension began as a ZeroClaw plugin and still speaks ZeroClaw's built-in REST bridge (`backend = "bridge"` in `~/.zeroclaw/config.toml`). That path is optional and not required for the MCP setup above.
 
 ## Supported MCP Tools
 
@@ -73,7 +82,7 @@ Selectors are resolved in order:
 
 ## CLI Wrapper (Legacy)
 
-`zc-browser.sh` lets you send commands directly to the legacy ZeroClaw REST bridge for testing:
+`zc-browser.sh` lets you send commands directly to the legacy ZeroClaw REST bridge for testing (only relevant if you use the optional ZeroClaw bridge path above):
 
 ```bash
 ./zc-browser.sh navigate url=https://example.com
@@ -95,7 +104,7 @@ If port `7822` is in use, the MCP Server will exit with an `EADDRINUSE` error.
    - In Claude Desktop config:
 
    ```json
-   "args": ["/absolute/path/to/zeroclaw-extension/mcp-server/index.js", "--port", "7824"]
+   "args": ["/absolute/path/to/poltertab/mcp-server/index.js", "--port", "7824"]
    ```
 
 **Extension not connecting:**
@@ -111,7 +120,7 @@ If port `7822` is in use, the MCP Server will exit with an `EADDRINUSE` error.
 ## Project Structure
 
 ```
-zeroclaw-browser-control/
+poltertab/
 ├── mcp-server/
 │   ├── index.js               # Node.js MCP Server (Stdio)
 │   └── package.json

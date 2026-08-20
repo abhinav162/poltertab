@@ -1,8 +1,8 @@
-# Plan: Making ZeroClaw Browser Extension a Pluggable MCP Server
+# Plan: Making PolterTab Browser Extension a Pluggable MCP Server
 
 ## Context
 
-We are converting the ZeroClaw browser control system into a generic Model Context Protocol (MCP) server so that any MCP-compatible client (Claude Desktop, Cursor, custom agents) can control a Chrome browser. The core architecture uses a Node.js MCP server over Stdio, which then communicates with a Chrome extension via WebSocket.
+We are converting the PolterTab browser control system into a generic Model Context Protocol (MCP) server so that any MCP-compatible client (Claude Desktop, Cursor, custom agents) can control a Chrome browser. The core architecture uses a Node.js MCP server over Stdio, which then communicates with a Chrome extension via WebSocket.
 
 While the technical mapping (REST to MCP Tools) is straightforward, exposing this to general users introduces UX friction and edge cases that need to be addressed to make it truly seamless.
 

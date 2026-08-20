@@ -1,7 +1,7 @@
 {
-  "name": "mcp-server",
+  "name": "poltertab-mcp",
   "version": "1.0.0",
-  "description": "",
+  "description": "MCP server that lets any AI assistant drive and scrape your existing Chrome profile via the PolterTab extension — no headless browser, no complex setup.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

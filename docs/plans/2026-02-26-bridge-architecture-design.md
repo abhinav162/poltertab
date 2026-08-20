@@ -10,7 +10,7 @@ The browser bridge has two repos with diverged code, a buggy custom WebSocket im
 ## Decision
 
 - **Bridge server lives in ZeroClaw repo only** (`zeroclaw/bridge-server/server.js`)
-- **Extension repo is Chrome extension only** (`zeroclaw-browser-control/chrome-extension/`)
+- **Extension repo is Chrome extension only** (`poltertab/chrome-extension/`)
 - Bridge server uses `ws` npm package (auto-installed) + Node built-in `http` (no Express)
 - ZeroClaw auto-spawns the bridge server on first browser tool use
 - Dependencies install to `~/.zeroclaw/bridge-deps/` (persistent across restarts)
@@ -36,7 +36,7 @@ Chrome Extension (loaded by user)
 - Rewrite: ws + built-in http, auto-install ws to ~/.zeroclaw/bridge-deps/
 - Update browser.rs: write to ~/.zeroclaw/bridge-server/ instead of /tmp/
 
-### zeroclaw-browser-control repo
+### poltertab repo
 - Remove bridge-server/ directory entirely
 - Keep: chrome-extension/, zc-browser.sh, README.md
 - Update README to reflect new setup

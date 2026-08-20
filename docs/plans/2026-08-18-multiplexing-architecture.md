@@ -1,4 +1,4 @@
-# Plan: Multi-Session Multiplexing for ZeroClaw MCP Server
+# Plan: Multi-Session Multiplexing for PolterTab MCP Server
 
 ## Context
 
