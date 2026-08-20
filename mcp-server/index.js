@@ -70,17 +70,17 @@ function setupPrimaryServer() {
   httpServer.on("error", (e) => {
     if (e.code === "EADDRINUSE") {
       console.error(
-        `[ZeroClaw MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
+        `[PolterTab MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
       );
       startSecondaryMode();
     } else {
-      console.error(`[ZeroClaw MCP] HTTP server error: ${e.message}`);
+      console.error(`[PolterTab MCP] HTTP server error: ${e.message}`);
     }
   });
 
   httpServer.listen(WS_PORT, () => {
     console.error(
-      `[ZeroClaw MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
+      `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
     );
     wss = new WebSocket.WebSocketServer({
       server: httpServer,
@@ -106,7 +106,7 @@ function setupPrimaryServer() {
       wss.clients.forEach((ws) => {
         if (ws.isAlive === false) {
           console.error(
-            `[ZeroClaw MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`,
+            `[PolterTab MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`,
           );
           return ws.terminate();
         }
@@ -125,7 +125,7 @@ function setupPrimaryServer() {
       for (const [tabId, state] of networkState.entries()) {
         if (now - state.lastUpdated > 5 * 60 * 1000) {
           console.log(
-            `[ZeroClaw MCP] Garbage collecting network state for tab ${tabId}`,
+            `[PolterTab MCP] Garbage collecting network state for tab ${tabId}`,
           );
           networkState.delete(tabId);
         }
@@ -140,7 +140,7 @@ function startSecondaryMode() {
   isSecondary = true;
   nodeId = crypto.randomUUID();
   console.error(
-    `[ZeroClaw MCP] Node ${nodeId} running as Secondary. Connecting to Primary...`,
+    `[PolterTab MCP] Node ${nodeId} running as Secondary. Connecting to Primary...`,
   );
 
   connectToPrimary();
@@ -152,7 +152,7 @@ function connectToPrimary() {
   });
 
   extensionSocket.on("open", () => {
-    console.error("[ZeroClaw MCP] Connected to Primary MCP Server.");
+    console.error("[PolterTab MCP] Connected to Primary MCP Server.");
     extensionSocket.send(JSON.stringify({ type: "secondary_mcp", nodeId }));
   });
 
@@ -171,13 +171,16 @@ function connectToPrimary() {
         }
       }
     } catch (err) {
-      console.error("[ZeroClaw MCP] Failed to parse message from Primary", err);
+      console.error(
+        "[PolterTab MCP] Failed to parse message from Primary",
+        err,
+      );
     }
   });
 
   extensionSocket.on("close", () => {
     console.error(
-      "[ZeroClaw MCP] Connection to Primary lost. Attempting to become Primary...",
+      "[PolterTab MCP] Connection to Primary lost. Attempting to become Primary...",
     );
     extensionSocket = null;
 
@@ -199,7 +202,7 @@ function connectToPrimary() {
   });
 
   extensionSocket.on("error", (err) => {
-    console.error(`[ZeroClaw MCP] Secondary WebSocket error: ${err.message}`);
+    console.error(`[PolterTab MCP] Secondary WebSocket error: ${err.message}`);
   });
 }
 
@@ -217,7 +220,7 @@ function setupPrimaryWss(wss) {
         if (msg.type === "secondary_mcp") {
           if (secondaryClients.size >= 5) {
             console.error(
-              `[ZeroClaw MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
+              `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
             );
             ws.close();
             return;
@@ -225,7 +228,7 @@ function setupPrimaryWss(wss) {
           secondaryClients.set(msg.nodeId, ws);
           ws.nodeId = msg.nodeId;
           console.error(
-            `[ZeroClaw MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
+            `[PolterTab MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
           );
           broadcastSessionState();
           return;
@@ -322,13 +325,13 @@ function setupPrimaryWss(wss) {
               extensionSocket.readyState === WebSocket.OPEN
             ) {
               console.error(
-                "[ZeroClaw MCP] Another extension trying to connect. Dropping old connection.",
+                "[PolterTab MCP] Another extension trying to connect. Dropping old connection.",
               );
               extensionSocket.close();
             }
             if (extensionSocket !== ws) {
               extensionSocket = ws;
-              console.error("[ZeroClaw MCP] Chrome extension connected.");
+              console.error("[PolterTab MCP] Chrome extension connected.");
             }
           }
           return;
@@ -369,7 +372,7 @@ function setupPrimaryWss(wss) {
           const { tabId } = msg;
           if (networkState.has(tabId)) {
             console.log(
-              `[ZeroClaw MCP] Clearing network state for closed tab ${tabId}`,
+              `[PolterTab MCP] Clearing network state for closed tab ${tabId}`,
             );
             networkState.delete(tabId);
           }
@@ -393,25 +396,25 @@ function setupPrimaryWss(wss) {
           }
         }
       } catch (err) {
-        console.error("[ZeroClaw MCP] Failed to parse message", err);
+        console.error("[PolterTab MCP] Failed to parse message", err);
       }
     });
 
     ws.on("close", () => {
       if (ws.nodeId) {
         console.error(
-          `[ZeroClaw MCP] Secondary node disconnected: ${ws.nodeId}`,
+          `[PolterTab MCP] Secondary node disconnected: ${ws.nodeId}`,
         );
         secondaryClients.delete(ws.nodeId);
         broadcastSessionState();
       } else if (extensionSocket === ws) {
-        console.error("[ZeroClaw MCP] Chrome extension disconnected.");
+        console.error("[PolterTab MCP] Chrome extension disconnected.");
         extensionSocket = null;
       }
     });
 
     ws.on("error", (err) => {
-      console.error(`[ZeroClaw MCP] WebSocket error: ${err.message}`);
+      console.error(`[PolterTab MCP] WebSocket error: ${err.message}`);
     });
   });
 }
@@ -420,7 +423,7 @@ function setupPrimaryWss(wss) {
 setupPrimaryServer();
 
 function shutdown() {
-  console.error("[ZeroClaw MCP] Shutting down...");
+  console.error("[PolterTab MCP] Shutting down...");
   if (wss) wss.close();
   if (httpServer) httpServer.close();
   process.exit(0);
@@ -513,7 +516,7 @@ async function sendCommand(action, params) {
 // Create MCP Server
 const server = new Server(
   {
-    name: "zeroclaw-browser-mcp",
+    name: "poltertab-browser-mcp",
     version: "1.0.0",
   },
   {
@@ -1034,10 +1037,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function startMcp() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[ZeroClaw MCP] Server connected to stdio transport");
+
+  const reset = "\x1b[0m";
+  const dim = "\x1b[2m";
+  const cyan = "\x1b[36m";
+  const purple = "\x1b[35m";
+  const bold = "\x1b[1m";
+
+  console.error(`
+${purple}╭─────────────────────────────────────────────────────────────────╮${reset}
+${purple}│${reset}  ${bold}POLTERTAB${reset}                                                      ${purple}│${reset}
+${purple}│${reset}  ${dim}Phantom Browser Automation • Your Profile, Zero Headless${reset}       ${purple}│${reset}
+${purple}╰─────────────────────────────────────────────────────────────────╯${reset}
+
+  ${cyan}●${reset} MCP Server             ${bold}[ ACTIVE ]${reset}    ${dim}Connected to stdio transport${reset}
+  ${cyan}○${reset} Extension Connection   ${bold}[ WAITING ]${reset}   ${dim}Listening on WebSocket...${reset}
+
+${dim}The AI is now haunting your browser...${reset}
+  `);
 }
 
 startMcp().catch((err) => {
-  console.error("[ZeroClaw MCP] Failed to start server:", err);
+  console.error("[PolterTab MCP] Failed to start server:", err);
   process.exit(1);
 });

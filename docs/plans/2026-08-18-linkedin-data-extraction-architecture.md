@@ -15,7 +15,7 @@ To bypass the DOM entirely, we must capture the raw JSON data (GraphQL/XHR) driv
 ### Option A: `chrome.debugger` API (CDP)
 
 - **Pros**: Access to `Network.getResponseBody` without touching the page context. Can trigger CDP scroll events.
-- **Cons**: Shows a persistent "ZeroClaw Browser Control started debugging this browser" warning bar at the top of the browser. Destroys UX.
+- **Cons**: Shows a persistent "PolterTab Browser Control started debugging this browser" warning bar at the top of the browser. Destroys UX.
 - **Verdict**: Only suitable for headless/automated testing, not for seamless agent-assisted browsing.
 
 ### Option B: `chrome.declarativeNetRequest`

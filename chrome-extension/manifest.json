@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ZeroClaw Browser Control",
+  "name": "PolterTab Browser Control",
   "version": "1.0.0",
-  "description": "Allows ZeroClaw AI assistant to control and scrape Chrome tabs via WebSocket commands.",
+  "description": "Let any AI assistant drive and scrape your existing Chrome profile — no headless browser, no complex setup.",
   "permissions": [
     "tabs",
     "scripting",

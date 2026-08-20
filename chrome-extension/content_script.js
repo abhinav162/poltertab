@@ -1,4 +1,4 @@
-// ZeroClaw Content Script — DOM extractor + action executor
+// PolterTab Content Script — DOM extractor + action executor
 // Injected into every page to handle snapshot/scrape/click/fill/scroll/hover/get_text commands.
 
 (() => {
@@ -21,7 +21,7 @@
     };
     (document.head || document.documentElement).appendChild(script);
   } catch (err) {
-    console.error("[ZeroClaw] Failed to inject interceptor script:", err);
+    console.error("[PolterTab] Failed to inject interceptor script:", err);
   }
 
   // --- Listen for intercepted data from MAIN world ---
@@ -336,7 +336,7 @@
 
   // Message handler — receives commands from background.js
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.source !== "zeroclaw") return false;
+    if (message.source !== "poltertab") return false;
 
     const { action, params = {} } = message;
 
