@@ -74,6 +74,26 @@ async function groupA() {
     );
   });
 
+  await test("A4 README documents every tool the server exposes, and no others", () => {
+    const idx = fs.readFileSync(SERVER, "utf8");
+    const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
+    const tools = [...idx.matchAll(/name:\s*"(browser_[a-z_]+)"/g)].map((m) => m[1]);
+    const mentioned = new Set(readme.match(/browser_[a-z_]+/g) || []);
+    assert.ok(tools.length >= 21, `only found ${tools.length} tools in the server`);
+    const undocumented = tools.filter((t) => !mentioned.has(t));
+    assert.deepStrictEqual(undocumented, [], `undocumented tools: ${undocumented}`);
+    const bogus = [...mentioned].filter((m) => !tools.includes(m));
+    assert.deepStrictEqual(bogus, [], `README names non-existent tools: ${bogus}`);
+  });
+
+  await test("A5 README does not claim the server exits on a busy port", () => {
+    const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
+    assert.ok(
+      !/will exit with an `?EADDRINUSE/.test(readme),
+      "stale claim: a busy port now means secondary mode, not an exit",
+    );
+  });
+
   await test("A3 content_script guards re-execution before registering anything", () => {
     const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
     const guard = src.indexOf("__polterTabInjected");

@@ -25,6 +25,10 @@ PolterTab Chrome Extension
   Your existing Chrome profile
 ```
 
+Several agents can point at the same browser at once — the first server to claim
+the WebSocket port serves the extension and the rest proxy through it. See
+[Running several agents at once](#troubleshooting--options).
+
 ## Setup
 
 ### 1. Install the Chrome Extension
@@ -58,19 +62,63 @@ Any other MCP-compatible client works the same way — point it at `mcp-server/i
 
 ## Supported MCP Tools
 
-The server exposes the following tools to the LLM (all prefixed with `browser_`):
+The server exposes 21 tools to the LLM (all prefixed with `browser_`). Every
+page-facing tool also takes optional `tabId` and `session` to target a specific
+tab — omit both and PolterTab uses the last tab it navigated, falling back to
+your active tab.
+
+### Page actions
 
 | Action | Parameters | Description |
 | -------- | ----------- | ------------- |
-| `browser_navigate` | `url` (required), `tabId`, `session` | Navigate to a URL |
-| `browser_click` | `selector` (required), `tabId`, `session` | Click an element (CSS/XPath/text) |
-| `browser_fill` | `selector`, `value` (required), `submit`, `tabId`, `session` | Fill an input field |
-| `browser_scrape` | `selector`, `attribute`, `multiple`, `tabId`, `session` | Scrape page or specific elements |
-| `browser_screenshot` | `tabId`, `session` | Capture visible tab as base64 PNG (focuses tab) |
-| `browser_scroll` | `direction` (required), `amount`, `selector`, `tabId`, `session` | Scroll the page |
-| `browser_hover` | `selector` (required), `tabId`, `session` | Hover over an element |
-| `browser_get_text` | `selector` (required), `tabId`, `session` | Get text content of an element |
-| `browser_get_title` | `tabId`, `session` | Get page title and URL |
+| `browser_navigate` | `url` (required) | Navigate to a URL |
+| `browser_click` | `selector` (required) | Click an element (CSS/XPath/text) |
+| `browser_fill` | `selector`, `value` (required), `submit` | Fill an input field, optionally submitting its form |
+| `browser_hover` | `selector` (required) | Hover over an element |
+| `browser_scroll` | `direction` (required), `amount`, `selector` | Scroll page or element — `up`/`down`/`left`/`right`/`top`/`bottom` |
+| `browser_smart_scroll` | `direction` (required), `amount` | Scroll, then wait 2s for lazy-loaded network data to arrive |
+
+### Reading the page
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_scrape` | `selector`, `attribute`, `multiple` | Scrape given elements, or the whole page (title, meta, links, headings, body text) |
+| `browser_snapshot` | — | Ref-tagged tree of visible and interactive nodes, capped at 400 |
+| `browser_get_text` | `selector` (required) | Text content of one element |
+| `browser_get_title` | — | Page title and URL |
+| `browser_get_url` | — | Page URL and title |
+| `browser_screenshot` | — | Visible tab as base64 PNG (focuses the tab) |
+
+### Network capture
+
+For sites whose DOM is obfuscated or virtualized, read the JSON driving the UI
+instead of scraping elements that may not exist.
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_set_intercept_patterns` | `patterns` (required) | URL substrings to capture, e.g. `["graphql", "/api/v1/"]`. Defaults to `["graphql", "/api/", "voyager", "feed"]` |
+| `browser_get_network_state` | `clear`, `output_file` | Captured raw JSON for the tab. `output_file` writes to `mcp-server/downloads/` and returns just the path, keeping large payloads out of the context window |
+
+### Sessions
+
+A session is a named tab. Giving each agent its own session stops concurrent
+agents fighting over one tab; closed tabs are recreated from the stored URL on
+next use.
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_session_create` | `name` (required), `url` | Create a session, or bind one to the active tab |
+| `browser_session_switch` | `name` (required) | Make a session active, recovering its tab if closed |
+| `browser_session_list` | — | All sessions, each `alive`, `recoverable`, or `expired` |
+| `browser_session_close` | `name` (required) | Close a session and its tab |
+| `browser_session_context` | — | Active session's tab, URL and title |
+
+### Site memory
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_get_site_memory` | `hostname` (or `domain`) | Recorded obstacles and fixes for a domain |
+| `browser_save_site_memory` | `hostname` (or `domain`), `obstacle`, `solution` | Record what broke on a site and how it was solved |
 
 ### Selector Resolution
 
@@ -93,11 +141,22 @@ Selectors are resolved in order:
 
 ## Troubleshooting & Options
 
-**Changing the WebSocket Port:**
-If port `7822` is in use, the MCP Server will exit with an `EADDRINUSE` error.
+**Running several agents at once:**
+The first MCP server to bind port `7822` becomes the **primary** and owns the
+connection to the extension. Later servers find the port taken and switch
+themselves into **secondary** mode, proxying their commands through the primary,
+so concurrent agents share one browser with no extra configuration. Each
+secondary auto-injects a per-agent `session` so agents get their own tabs. Up to
+5 secondaries are accepted, and if the primary exits one of them promotes itself
+to replace it. The extension popup lists whichever agents are connected.
 
-1. Click the Extension icon in Chrome -> **Options**.
-2. Change the WebSocket Port to a free port (e.g. `7824`) and click **Save**.
+**Changing the WebSocket Port:**
+Only needed when something that *isn't* PolterTab already holds `7822` —
+PolterTab servers share that port by design (see above). Both sides must move:
+
+1. Click the Extension icon in Chrome -> **Settings**.
+2. Change the WebSocket Port to a free port (e.g. `7824`) and click **Save** —
+   the extension reconnects immediately, no reload needed.
 3. Update your MCP Server configuration to pass the new port.
    - Using env var: `MCP_BROWSER_WS_PORT=7824 node index.js`
    - Using CLI arg: `node index.js --port 7824`
@@ -122,14 +181,29 @@ If port `7822` is in use, the MCP Server will exit with an `EADDRINUSE` error.
 ```
 poltertab/
 ├── mcp-server/
-│   ├── index.js               # Node.js MCP Server (Stdio)
+│   ├── index.js               # MCP server (stdio) + WebSocket hub
+│   ├── test/run.js            # Regression suite
+│   ├── navigation_memory/     # Per-domain obstacles and fixes
 │   └── package.json
 ├── chrome-extension/
 │   ├── manifest.json          # MV3 manifest
-│   ├── background.js          # WebSocket client + command router
-│   ├── content_script.js      # DOM extractor + action executor
+│   ├── background.js          # WebSocket client, session manager, command router
+│   ├── content_script.js      # DOM extractor + action executor (isolated world)
+│   ├── interceptor.js         # fetch/XHR capture (main world)
+│   ├── popup.html/js          # Connected-agents UI
 │   ├── options.html/js        # Port configuration UI
 │   └── icons/
 ├── zc-browser.sh              # CLI wrapper (legacy)
 └── README.md
 ```
+
+## Tests
+
+```bash
+node mcp-server/test/run.js
+```
+
+No framework and no browser needed. The suite covers content-script injection
+idempotence, the tab-navigation load race, and the MCP server end to end —
+spawning real server processes against a fake extension on port `7931`, so it
+never disturbs a PolterTab already running on `7822`.
