@@ -124,7 +124,7 @@ function setupPrimaryServer() {
       const now = Date.now();
       for (const [tabId, state] of networkState.entries()) {
         if (now - state.lastUpdated > 5 * 60 * 1000) {
-          console.log(
+          console.error(
             `[PolterTab MCP] Garbage collecting network state for tab ${tabId}`,
           );
           networkState.delete(tabId);
@@ -371,7 +371,7 @@ function setupPrimaryWss(wss) {
         if (msg.type === "tab_closed") {
           const { tabId } = msg;
           if (networkState.has(tabId)) {
-            console.log(
+            console.error(
               `[PolterTab MCP] Clearing network state for closed tab ${tabId}`,
             );
             networkState.delete(tabId);
@@ -842,38 +842,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     // Custom handling for network state tool
     if (action === "get_network_state") {
+      const opts = args || {};
+      let responsePayload;
+
       if (isSecondary) {
         // Proxy it to primary! Primary handles resolving the networkState map
-        const stateResult = await sendCommand("get_network_state", args || {});
-        return {
-          content: [
-            { type: "text", text: JSON.stringify(stateResult, null, 2) },
-          ],
-        };
-      }
+        responsePayload = await sendCommand("get_network_state", opts);
+      } else {
+        // First, we need to resolve the active tab ID. We can do a dummy 'get_url' command to ask the extension what the current tabId is.
+        const tabInfo = await sendCommand("get_url", opts);
+        const tabId = tabInfo.tabId;
 
-      // First, we need to resolve the active tab ID. We can do a dummy 'get_url' command to ask the extension what the current tabId is.
-      const tabInfo = await sendCommand("get_url", args || {});
-      const tabId = tabInfo.tabId;
-
-      if (!isSecondary) {
         primaryLastTabId = tabId;
         broadcastSessionState();
-      }
 
-      let data = [];
-      if (tabId && networkState.has(tabId)) {
-        data = networkState.get(tabId).requests;
-        if (args.clear !== false) {
-          networkState.get(tabId).requests = [];
+        let data = [];
+        if (tabId && networkState.has(tabId)) {
+          data = networkState.get(tabId).requests;
+          if (opts.clear !== false) {
+            networkState.get(tabId).requests = [];
+          }
         }
+
+        responsePayload = { tabId, capturedRequests: data.length, data };
       }
 
-      const responsePayload = { tabId, capturedRequests: data.length, data };
-
-      if (args.output_file) {
+      // Must be honoured in BOTH roles. A Secondary that returned the raw
+      // payload would flood the very context window this parameter exists to
+      // protect.
+      if (opts.output_file) {
         // Sanitize the file name to prevent Path Traversal
-        const safeName = path.basename(args.output_file);
+        const safeName = path.basename(opts.output_file);
         // Add timestamp to prevent collisions
         const parts = safeName.split(".");
         const ext = parts.length > 1 ? `.${parts.pop()}` : "";
@@ -892,7 +891,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [
             {
               type: "text",
-              text: `Data successfully written to ${safePath}. Captured ${data.length} requests.`,
+              text: `Data successfully written to ${safePath}. Captured ${responsePayload.capturedRequests} requests.`,
             },
           ],
         };
