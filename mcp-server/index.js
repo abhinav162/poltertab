@@ -171,7 +171,10 @@ function connectToPrimary() {
         }
       }
     } catch (err) {
-      console.error("[PolterTab MCP] Failed to parse message from Primary", err);
+      console.error(
+        "[PolterTab MCP] Failed to parse message from Primary",
+        err,
+      );
     }
   });
 
@@ -1034,7 +1037,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function startMcp() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("[PolterTab MCP] Server connected to stdio transport");
+
+  const reset = "\x1b[0m";
+  const dim = "\x1b[2m";
+  const cyan = "\x1b[36m";
+  const purple = "\x1b[35m";
+  const bold = "\x1b[1m";
+
+  console.error(`
+${purple}╭─────────────────────────────────────────────────────────────────╮${reset}
+${purple}│${reset}  ${bold}POLTERTAB${reset}                                                      ${purple}│${reset}
+${purple}│${reset}  ${dim}Phantom Browser Automation • Your Profile, Zero Headless${reset}       ${purple}│${reset}
+${purple}╰─────────────────────────────────────────────────────────────────╯${reset}
+
+  ${cyan}●${reset} MCP Server             ${bold}[ ACTIVE ]${reset}    ${dim}Connected to stdio transport${reset}
+  ${cyan}○${reset} Extension Connection   ${bold}[ WAITING ]${reset}   ${dim}Listening on WebSocket...${reset}
+
+${dim}The AI is now haunting your browser...${reset}
+  `);
 }
 
 startMcp().catch((err) => {
