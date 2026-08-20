@@ -1,0 +1,7 @@
+[
+  {
+    "obstacle": "Twitter (X.com) uses a highly virtualized DOM and heavily obfuscated React components, making CSS/XPath scraping unreliable. The data is loaded dynamically.",
+    "solution": "Do not use DOM scrapers like `browser_scrape` or `browser_get_text`. Instead, set intercept patterns `[\"graphql\", \"Timeline\", \"UserByScreenName\"]` using `browser_set_intercept_patterns`. Then navigate to the URL (e.g., user profile or explore), use `browser_smart_scroll` to trigger lazy-loaded network requests, and finally call `browser_get_network_state` to retrieve the raw JSON data. Extract the text from `full_text` keys in the JSON.",
+    "timestamp": 1787136766012
+  }
+]

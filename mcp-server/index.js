@@ -10,6 +10,13 @@ const {
 } = require("@modelcontextprotocol/sdk/types.js");
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+
+const MEMORY_DIR = path.join(__dirname, "navigation_memory");
+if (!fs.existsSync(MEMORY_DIR)) {
+  fs.mkdirSync(MEMORY_DIR);
+}
 
 // Port configuration: use MCP_BROWSER_WS_PORT env, or --port CLI arg, or 7822 fallback
 let WS_PORT = process.env.MCP_BROWSER_WS_PORT
@@ -23,51 +30,135 @@ if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
 // Global state
 let extensionSocket = null;
 const pendingCommands = new Map();
+const networkState = new Map(); // tabId -> { lastUpdated: number, requests: array }
+const secondaryClients = new Map();
+let primaryLastTabId = null;
 
-// Setup WebSocket server
-const wss = new WebSocket.WebSocketServer({ port: WS_PORT });
+let isSecondary = false;
+let nodeId = null;
+let wss = null;
+let httpServer = null;
 
-wss.on("listening", () => {
-  console.error(
-    `[ZeroClaw MCP] WebSocket server listening on ws://localhost:${WS_PORT}`,
-  );
-});
-
-wss.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`[ZeroClaw MCP] ERROR: Port ${WS_PORT} is already in use.`);
-    console.error(
-      `Please use a different port by setting MCP_BROWSER_WS_PORT or passing --port <port>.`,
-    );
-    console.error(
-      `You also need to update the port in the Chrome Extension's Options page.`,
-    );
-    process.exit(1);
-  } else {
-    console.error(`[ZeroClaw MCP] WebSocket error: ${err.message}`);
-  }
-});
-
-wss.on("connection", (ws) => {
+function broadcastSessionState() {
   if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
-    console.error(
-      "[ZeroClaw MCP] Another extension trying to connect. Dropping old connection.",
+    const sessions = [];
+    sessions.push({
+      id: "Primary Agent",
+      nodeId: "primary",
+      lastTabId: primaryLastTabId || null,
+    });
+    for (const [nodeId, clientWs] of secondaryClients.entries()) {
+      sessions.push({
+        id: "Secondary Agent",
+        nodeId: nodeId,
+        lastTabId: clientWs.lastTabId || null,
+      });
+    }
+    extensionSocket.send(
+      JSON.stringify({
+        type: "state_update",
+        sessions,
+      }),
     );
-    extensionSocket.close();
   }
+}
 
-  extensionSocket = ws;
-  console.error("[ZeroClaw MCP] Chrome extension connected.");
+function setupPrimaryServer() {
+  const http = require("http");
+  httpServer = http.createServer();
 
-  ws.on("message", (message) => {
+  httpServer.on("error", (e) => {
+    if (e.code === "EADDRINUSE") {
+      console.error(
+        `[ZeroClaw MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
+      );
+      startSecondaryMode();
+    } else {
+      console.error(`[ZeroClaw MCP] HTTP server error: ${e.message}`);
+    }
+  });
+
+  httpServer.listen(WS_PORT, () => {
+    console.error(
+      `[ZeroClaw MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
+    );
+    wss = new WebSocket.WebSocketServer({
+      server: httpServer,
+      perMessageDeflate: {
+        zlibDeflateOptions: {
+          chunkSize: 1024,
+          memLevel: 7,
+          level: 1,
+        },
+        zlibInflateOptions: {
+          chunkSize: 10 * 1024,
+        },
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true,
+        serverMaxWindowBits: 10,
+        concurrencyLimit: 10,
+        threshold: 1024,
+      },
+    });
+
+    // Heartbeat mechanism to detect dead connections
+    const interval = setInterval(() => {
+      wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+          console.error(
+            `[ZeroClaw MCP] Terminating dead connection: ${ws.nodeId || "Extension/Unknown"}`,
+          );
+          return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping();
+      });
+    }, 60000); // 60 seconds
+
+    wss.on("close", () => {
+      clearInterval(interval);
+    });
+
+    // Network State Garbage Collector (TTL: 5 minutes)
+    setInterval(() => {
+      const now = Date.now();
+      for (const [tabId, state] of networkState.entries()) {
+        if (now - state.lastUpdated > 5 * 60 * 1000) {
+          console.log(
+            `[ZeroClaw MCP] Garbage collecting network state for tab ${tabId}`,
+          );
+          networkState.delete(tabId);
+        }
+      }
+    }, 60000);
+
+    setupPrimaryWss(wss);
+  });
+}
+
+function startSecondaryMode() {
+  isSecondary = true;
+  nodeId = crypto.randomUUID();
+  console.error(
+    `[ZeroClaw MCP] Node ${nodeId} running as Secondary. Connecting to Primary...`,
+  );
+
+  connectToPrimary();
+}
+
+function connectToPrimary() {
+  extensionSocket = new WebSocket(`ws://localhost:${WS_PORT}`, {
+    perMessageDeflate: true,
+  });
+
+  extensionSocket.on("open", () => {
+    console.error("[ZeroClaw MCP] Connected to Primary MCP Server.");
+    extensionSocket.send(JSON.stringify({ type: "secondary_mcp", nodeId }));
+  });
+
+  extensionSocket.on("message", (message) => {
     try {
       const msg = JSON.parse(message);
-
-      // Handle keepalive pings
-      if (msg.type === "ping" || msg.type === "extension_ready") {
-        return;
-      }
-
       if (msg.id && pendingCommands.has(msg.id)) {
         const { resolve, reject, timer } = pendingCommands.get(msg.id);
         clearTimeout(timer);
@@ -76,34 +167,321 @@ wss.on("connection", (ws) => {
         if (msg.success) {
           resolve(msg.data);
         } else {
-          // If the extension passes back a restricted URL error, we can throw it here or format it.
-          // The background script typically sends string errors.
           reject(new Error(msg.error || "Unknown extension error"));
         }
       }
     } catch (err) {
-      console.error(
-        "[ZeroClaw MCP] Failed to parse message from extension",
-        err,
-      );
+      console.error("[ZeroClaw MCP] Failed to parse message from Primary", err);
     }
   });
 
-  ws.on("close", () => {
-    console.error("[ZeroClaw MCP] Chrome extension disconnected.");
-    if (extensionSocket === ws) {
-      extensionSocket = null;
+  extensionSocket.on("close", () => {
+    console.error(
+      "[ZeroClaw MCP] Connection to Primary lost. Attempting to become Primary...",
+    );
+    extensionSocket = null;
+
+    // Reject all pending commands
+    for (const [id, { reject, timer }] of pendingCommands) {
+      clearTimeout(timer);
+      reject(new Error("Primary node disconnected. Command aborted."));
+      pendingCommands.delete(id);
     }
+
+    // Try to become primary with exponential backoff & jitter
+    const jitter = Math.floor(Math.random() * 2000);
+    const delay = 500 + jitter;
+
+    setTimeout(() => {
+      isSecondary = false;
+      setupPrimaryServer();
+    }, delay);
   });
 
-  ws.on("error", (err) => {
-    console.error(`[ZeroClaw MCP] Extension WebSocket error: ${err.message}`);
+  extensionSocket.on("error", (err) => {
+    console.error(`[ZeroClaw MCP] Secondary WebSocket error: ${err.message}`);
   });
-});
+}
+
+function setupPrimaryWss(wss) {
+  wss.on("connection", (ws) => {
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+
+    ws.on("message", (message) => {
+      try {
+        const msg = JSON.parse(message);
+
+        if (msg.type === "secondary_mcp") {
+          if (secondaryClients.size >= 5) {
+            console.error(
+              `[ZeroClaw MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
+            );
+            ws.close();
+            return;
+          }
+          secondaryClients.set(msg.nodeId, ws);
+          ws.nodeId = msg.nodeId;
+          console.error(
+            `[ZeroClaw MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
+          );
+          broadcastSessionState();
+          return;
+        }
+
+        if (msg.type === "request_full_state") {
+          broadcastSessionState();
+          return;
+        }
+
+        if (msg.type === "proxy_command") {
+          const { id, action, params } = msg;
+          if (params && params.tabId) {
+            ws.lastTabId = params.tabId;
+            broadcastSessionState();
+          }
+
+          if (action === "get_network_state") {
+            (async () => {
+              try {
+                let tabId = params.tabId;
+                if (!tabId) {
+                  const tabInfo = await sendCommand("get_url", params);
+                  tabId = tabInfo.tabId;
+                }
+                let data = [];
+                if (tabId && networkState.has(tabId)) {
+                  data = networkState.get(tabId).requests;
+                  if (params.clear !== false) {
+                    networkState.get(tabId).requests = [];
+                  }
+                }
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                    JSON.stringify({
+                      id,
+                      success: true,
+                      data: { tabId, capturedRequests: data.length, data },
+                    }),
+                  );
+                }
+              } catch (err) {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                    JSON.stringify({ id, success: false, error: err.message }),
+                  );
+                }
+              }
+            })();
+            return;
+          }
+
+          if (
+            !extensionSocket ||
+            extensionSocket.readyState !== WebSocket.OPEN
+          ) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  id,
+                  success: false,
+                  error: "Browser extension not connected to Primary.",
+                }),
+              );
+            }
+            return;
+          }
+
+          const timer = setTimeout(() => {
+            pendingCommands.delete(id);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  id,
+                  success: false,
+                  error: `Command '${action}' timed out.`,
+                }),
+              );
+            }
+          }, 35000);
+
+          pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
+          extensionSocket.send(JSON.stringify({ id, action, ...params }));
+          return;
+        }
+
+        // Handle keepalive pings
+        if (msg.type === "ping" || msg.type === "extension_ready") {
+          if (!ws.nodeId) {
+            // if it's the extension
+            if (
+              extensionSocket &&
+              extensionSocket !== ws &&
+              extensionSocket.readyState === WebSocket.OPEN
+            ) {
+              console.error(
+                "[ZeroClaw MCP] Another extension trying to connect. Dropping old connection.",
+              );
+              extensionSocket.close();
+            }
+            if (extensionSocket !== ws) {
+              extensionSocket = ws;
+              console.error("[ZeroClaw MCP] Chrome extension connected.");
+            }
+          }
+          return;
+        }
+
+        // Handle captured network data
+        if (msg.type === "network_data") {
+          const { tabId, url, body } = msg;
+          if (!networkState.has(tabId)) {
+            networkState.set(tabId, { lastUpdated: Date.now(), requests: [] });
+          }
+          const state = networkState.get(tabId);
+          state.lastUpdated = Date.now();
+
+          try {
+            // Truncate bodies over 1MB
+            let processedBody = body;
+            if (body && body.length > 1024 * 1024) {
+              processedBody =
+                '{"error": "Payload exceeded 1MB limit and was truncated"}';
+            }
+
+            const jsonBody = JSON.parse(processedBody);
+            state.requests.push({ url, timestamp: Date.now(), data: jsonBody });
+          } catch (e) {
+            state.requests.push({ url, timestamp: Date.now(), data: body });
+          }
+
+          // Cap at 500 requests
+          if (state.requests.length > 500) {
+            state.requests.shift();
+          }
+          return;
+        }
+
+        // Handle tab closed
+        if (msg.type === "tab_closed") {
+          const { tabId } = msg;
+          if (networkState.has(tabId)) {
+            console.log(
+              `[ZeroClaw MCP] Clearing network state for closed tab ${tabId}`,
+            );
+            networkState.delete(tabId);
+          }
+          return;
+        }
+
+        // Response from Extension
+        if (msg.id && pendingCommands.has(msg.id)) {
+          const cmd = pendingCommands.get(msg.id);
+          clearTimeout(cmd.timer);
+          pendingCommands.delete(msg.id);
+
+          if (cmd.isProxy) {
+            if (cmd.sourceWs.readyState === WebSocket.OPEN) {
+              cmd.sourceWs.send(JSON.stringify(msg));
+            }
+          } else if (msg.success) {
+            cmd.resolve(msg.data);
+          } else {
+            cmd.reject(new Error(msg.error || "Unknown extension error"));
+          }
+        }
+      } catch (err) {
+        console.error("[ZeroClaw MCP] Failed to parse message", err);
+      }
+    });
+
+    ws.on("close", () => {
+      if (ws.nodeId) {
+        console.error(
+          `[ZeroClaw MCP] Secondary node disconnected: ${ws.nodeId}`,
+        );
+        secondaryClients.delete(ws.nodeId);
+        broadcastSessionState();
+      } else if (extensionSocket === ws) {
+        console.error("[ZeroClaw MCP] Chrome extension disconnected.");
+        extensionSocket = null;
+      }
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[ZeroClaw MCP] WebSocket error: ${err.message}`);
+    });
+  });
+}
+
+// Start the server
+setupPrimaryServer();
+
+function shutdown() {
+  console.error("[ZeroClaw MCP] Shutting down...");
+  if (wss) wss.close();
+  if (httpServer) httpServer.close();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+// Helper to wait for WebSocket connection
+async function waitForConnection(timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
 
 // Helper to send command to the extension
 async function sendCommand(action, params) {
-  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
+  const isConnected = await waitForConnection(5000);
+
+  if (isSecondary) {
+    if (!isConnected) {
+      throw new Error("Secondary node not connected to Primary MCP server.");
+    }
+
+    // Auto-inject a unique session to prevent collisions over shared tabs
+    if (!params.session) {
+      params.session = "agent_" + nodeId;
+    }
+
+    return new Promise((resolve, reject) => {
+      const id = crypto.randomUUID();
+      const timer = setTimeout(() => {
+        pendingCommands.delete(id);
+        reject(
+          new Error(`Proxy Command '${action}' timed out after 35 seconds.`),
+        );
+      }, 35000);
+
+      pendingCommands.set(id, { resolve, reject, timer });
+
+      try {
+        extensionSocket.send(
+          JSON.stringify({ type: "proxy_command", id, action, params }),
+        );
+      } catch (err) {
+        clearTimeout(timer);
+        pendingCommands.delete(id);
+        reject(
+          new Error(
+            `Failed to proxy command to Primary over WebSocket: ${err.message}`,
+          ),
+        );
+      }
+    });
+  }
+
+  if (!isConnected) {
     throw new Error(
       "Browser extension not connected. Please ensure the extension is installed, enabled, and pointing to the correct port (default: 7822).",
     );
@@ -300,6 +678,62 @@ const BROWSER_TOOLS = [
     },
   },
   {
+    name: "browser_get_network_state",
+    description:
+      "Get captured raw JSON data (GraphQL/XHR) for the current tab, bypassing DOM virtualization",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: { type: "number" },
+        session: { type: "string" },
+        clear: {
+          type: "boolean",
+          description: "Clear the buffer after reading (default: true)",
+        },
+        output_file: {
+          type: "string",
+          description:
+            "Optional filename to save the data directly to disk to avoid flooding the context window (e.g., 'data.json')",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_set_intercept_patterns",
+    description:
+      "Set URL substrings to determine which network requests are captured in the MAIN world.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        patterns: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Array of substrings (e.g. ['graphql', '/api/v1/comments'])",
+        },
+        tabId: { type: "number" },
+        session: { type: "string" },
+      },
+      required: ["patterns"],
+    },
+  },
+  {
+    name: "browser_smart_scroll",
+    description:
+      "Scroll the page and wait for new network data to load (handles lazy-loading)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        direction: { type: "string", enum: ["up", "down"] },
+        amount: { type: "number" },
+        tabId: { type: "number" },
+        session: { type: "string" },
+      },
+      required: ["direction"],
+    },
+  },
+  {
     name: "browser_session_create",
     description: "Create or track a named browser session (tab)",
     inputSchema: {
@@ -351,6 +785,40 @@ const BROWSER_TOOLS = [
       required: [],
     },
   },
+  {
+    name: "browser_get_site_memory",
+    description:
+      "Get navigation memory, obstacles, and fixes for a specific website domain",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hostname: {
+          type: "string",
+          description: "e.g., 'www.linkedin.com' or 'x.com'",
+        },
+        domain: { type: "string", description: "Alias for hostname" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_save_site_memory",
+    description:
+      "Save a new navigation memory, obstacle, or fix for a specific website domain",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hostname: { type: "string", description: "e.g., 'www.linkedin.com'" },
+        domain: { type: "string", description: "Alias for hostname" },
+        obstacle: {
+          type: "string",
+          description: "What broke or was difficult?",
+        },
+        solution: { type: "string", description: "How did you solve it?" },
+      },
+      required: ["obstacle", "solution"],
+    },
+  },
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -369,7 +837,160 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const action = name.replace("browser_", "");
 
   try {
+    // Custom handling for network state tool
+    if (action === "get_network_state") {
+      if (isSecondary) {
+        // Proxy it to primary! Primary handles resolving the networkState map
+        const stateResult = await sendCommand("get_network_state", args || {});
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(stateResult, null, 2) },
+          ],
+        };
+      }
+
+      // First, we need to resolve the active tab ID. We can do a dummy 'get_url' command to ask the extension what the current tabId is.
+      const tabInfo = await sendCommand("get_url", args || {});
+      const tabId = tabInfo.tabId;
+
+      if (!isSecondary) {
+        primaryLastTabId = tabId;
+        broadcastSessionState();
+      }
+
+      let data = [];
+      if (tabId && networkState.has(tabId)) {
+        data = networkState.get(tabId).requests;
+        if (args.clear !== false) {
+          networkState.get(tabId).requests = [];
+        }
+      }
+
+      const responsePayload = { tabId, capturedRequests: data.length, data };
+
+      if (args.output_file) {
+        // Sanitize the file name to prevent Path Traversal
+        const safeName = path.basename(args.output_file);
+        // Add timestamp to prevent collisions
+        const parts = safeName.split(".");
+        const ext = parts.length > 1 ? `.${parts.pop()}` : "";
+        const base = parts.join(".");
+        const finalName = `${base}_${Date.now()}${ext}`;
+
+        const downloadsDir = path.join(__dirname, "downloads");
+        if (!fs.existsSync(downloadsDir)) {
+          fs.mkdirSync(downloadsDir, { recursive: true });
+        }
+
+        const safePath = path.join(downloadsDir, finalName);
+        fs.writeFileSync(safePath, JSON.stringify(responsePayload, null, 2));
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Data successfully written to ${safePath}. Captured ${data.length} requests.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(responsePayload, null, 2),
+          },
+        ],
+      };
+    }
+
+    // Custom handling for smart scroll
+    if (action === "smart_scroll") {
+      const scrollResult = await sendCommand("scroll", args || {});
+
+      if (!isSecondary && scrollResult && scrollResult.tabId) {
+        primaryLastTabId = scrollResult.tabId;
+        broadcastSessionState();
+      }
+
+      // Wait for network requests to arrive (lazy loading)
+      await new Promise((r) => setTimeout(r, 2000));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ...scrollResult,
+                note: "Waited 2s for network data. Use browser_get_network_state to read.",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+
+    // Custom handling for setting intercept patterns globally via storage, then updating current tab
+    if (action === "set_intercept_patterns") {
+      const result = await sendCommand("set_intercept_patterns", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+
+    if (action === "get_site_memory") {
+      const host = args.hostname || args.domain || args.url;
+      if (!host) throw new Error("Missing 'hostname' parameter");
+      const file = path.join(MEMORY_DIR, `${host}.json`);
+      let data = [];
+      if (fs.existsSync(file)) {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    }
+
+    if (action === "save_site_memory") {
+      const host = args.hostname || args.domain || args.url;
+      if (!host) throw new Error("Missing 'hostname' parameter");
+      const file = path.join(MEMORY_DIR, `${host}.json`);
+      let data = [];
+      if (fs.existsSync(file)) {
+        data = JSON.parse(fs.readFileSync(file, "utf8"));
+      }
+      data.push({
+        obstacle: args.obstacle,
+        solution: args.solution,
+        timestamp: Date.now(),
+      });
+      fs.writeFileSync(file, JSON.stringify(data, null, 2));
+      return {
+        content: [{ type: "text", text: "Memory successfully saved." }],
+      };
+    }
+
     const result = await sendCommand(action, args || {});
+
+    if (!isSecondary) {
+      // Track primary's active tab
+      if (result && result.tabId) {
+        primaryLastTabId = result.tabId;
+        broadcastSessionState();
+      } else if (args && args.tabId) {
+        primaryLastTabId = args.tabId;
+        broadcastSessionState();
+      }
+    }
 
     // Check if error result string (graceful error handling)
     if (
@@ -410,13 +1031,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Start the server
-async function start() {
+async function startMcp() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[ZeroClaw MCP] Server connected to stdio transport");
 }
 
-start().catch((err) => {
+startMcp().catch((err) => {
   console.error("[ZeroClaw MCP] Failed to start server:", err);
   process.exit(1);
 });
