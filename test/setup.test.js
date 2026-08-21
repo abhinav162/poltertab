@@ -214,6 +214,117 @@ test("D5  the extension download link is a real https URL", () => {
   );
 });
 
+console.log("\nE  runtime state lives outside the package\n");
+
+// A global npm install puts the server under node_modules/poltertab/. Anything
+// it writes next to its own code is destroyed by `npm update -g`, so these
+// assertions guard against the paths quietly drifting back into __dirname.
+const SERVER_SRC = fs.readFileSync(
+  path.join(REPO, "mcp-server", "index.js"),
+  "utf8",
+);
+
+test("E1  neither state directory is built from __dirname", () => {
+  const offenders = SERVER_SRC.split("\n").filter(
+    (l) =>
+      l.includes("__dirname") &&
+      /navigation_memory|downloads/.test(l) &&
+      !l.trimStart().startsWith("//"),
+  );
+  // The migration read of the legacy directory is the one allowed use.
+  assert.deepStrictEqual(
+    offenders.filter((l) => !l.includes("legacy")),
+    [],
+    `state path still package-relative:\n${offenders.join("\n")}`,
+  );
+});
+
+test("E2  both directories hang off POLTERTAB_HOME", () => {
+  assert.ok(
+    /POLTERTAB_HOME\s*=[\s\S]{0,120}homedir\(\)[\s\S]{0,40}\.poltertab/.test(SERVER_SRC),
+    "POLTERTAB_HOME does not default to ~/.poltertab",
+  );
+  for (const name of ["MEMORY_DIR", "DOWNLOADS_DIR"]) {
+    assert.ok(
+      new RegExp(`${name}\\s*=\\s*path\\.join\\(\\s*POLTERTAB_HOME`).test(SERVER_SRC),
+      `${name} is not resolved under POLTERTAB_HOME`,
+    );
+  }
+});
+
+test("E3  the server honours POLTERTAB_HOME and creates the tree", (box) => {
+  // Boot the real server just far enough to see where it writes, then stop it.
+  const { spawnSync } = require("child_process");
+  spawnSync(
+    process.execPath,
+    ["-e", `process.env.POLTERTAB_HOME=${JSON.stringify(box)};
+      const p=require(${JSON.stringify(path.join(REPO, "mcp-server", "index.js"))});
+      setTimeout(()=>process.exit(0),50);`],
+    { env: { ...process.env, POLTERTAB_HOME: box }, timeout: 15000 },
+  );
+  assert.ok(
+    fs.existsSync(path.join(box, "navigation_memory")),
+    "server did not create navigation_memory under POLTERTAB_HOME",
+  );
+});
+
+test("E4  legacy in-package memory is copied forward on first start", (box) => {
+  // Simulate an upgrade: a note sitting in the old location, nothing in the new.
+  const legacy = path.join(REPO, "mcp-server", "navigation_memory");
+  const probe = path.join(legacy, "__migration-probe.example.json");
+  const had = fs.existsSync(legacy);
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(probe, JSON.stringify([{ obstacle: "probe", solution: "x" }]));
+  try {
+    const { spawnSync } = require("child_process");
+    spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(path.join(REPO, "mcp-server", "index.js"))});
+        setTimeout(()=>process.exit(0),50);`],
+      { env: { ...process.env, POLTERTAB_HOME: box }, timeout: 15000 },
+    );
+    assert.ok(
+      fs.existsSync(path.join(box, "navigation_memory", "__migration-probe.example.json")),
+      "legacy memory was not carried forward",
+    );
+  } finally {
+    fs.rmSync(probe, { force: true });
+    if (!had) fs.rmSync(legacy, { recursive: true, force: true });
+  }
+});
+
+test("E5  migration never overwrites a note already in the new location", (box) => {
+  const legacy = path.join(REPO, "mcp-server", "navigation_memory");
+  const name = "__migration-probe.example.json";
+  const probe = path.join(legacy, name);
+  const had = fs.existsSync(legacy);
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(probe, JSON.stringify([{ obstacle: "STALE" }]));
+  fs.mkdirSync(path.join(box, "navigation_memory"), { recursive: true });
+  fs.writeFileSync(
+    path.join(box, "navigation_memory", name),
+    JSON.stringify([{ obstacle: "LIVE" }]),
+  );
+  try {
+    const { spawnSync } = require("child_process");
+    spawnSync(
+      process.execPath,
+      ["-e", `require(${JSON.stringify(path.join(REPO, "mcp-server", "index.js"))});
+        setTimeout(()=>process.exit(0),50);`],
+      { env: { ...process.env, POLTERTAB_HOME: box }, timeout: 15000 },
+    );
+    const body = fs.readFileSync(
+      path.join(box, "navigation_memory", name),
+      "utf8",
+    );
+    assert.ok(body.includes("LIVE"), "stale legacy note clobbered the live one");
+    assert.ok(!body.includes("STALE"), "stale legacy note clobbered the live one");
+  } finally {
+    fs.rmSync(probe, { force: true });
+    if (!had) fs.rmSync(legacy, { recursive: true, force: true });
+  }
+});
+
 console.log(
   `\n${pass} passed, ${failures.length} failed` +
     (failures.length ? `\n  ${failures.join("\n  ")}` : "") +

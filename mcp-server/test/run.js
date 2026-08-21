@@ -11,6 +11,7 @@
 
 const assert = require("assert");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const vm = require("vm");
 const { spawn } = require("child_process");
@@ -19,9 +20,14 @@ const WebSocket = require("ws");
 const REPO = path.join(__dirname, "..", "..");
 const EXT = path.join(REPO, "chrome-extension");
 const SERVER = path.join(REPO, "mcp-server", "index.js");
-const DOWNLOADS = path.join(REPO, "mcp-server", "downloads");
 const PORT = 7931;
 const TAB = 42;
+
+// Servers under test get a disposable POLTERTAB_HOME. Previously these tests
+// wrote into the real mcp-server/downloads and then rmSync'd it, which deleted
+// whatever the user had actually scraped.
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-suite-"));
+const DOWNLOADS = path.join(HOME, "downloads");
 
 let pass = 0;
 const failures = [];
@@ -448,6 +454,7 @@ async function groupC() {
 function startServer() {
   const proc = spawn(process.execPath, [SERVER, "--port", String(PORT)], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, POLTERTAB_HOME: HOME },
   });
   const state = { proc, stdout: "", stderr: "", messages: [] };
   proc.stdout.on("data", (d) => {
@@ -628,7 +635,7 @@ async function groupD() {
         arguments: { output_file: "../../../evil.json" },
       });
       const text = textOf(r);
-      assert.ok(text.includes(path.join("mcp-server", "downloads")), text);
+      assert.ok(text.includes(DOWNLOADS), text);
       assert.ok(!fs.existsSync(path.join(REPO, "evil.json")), "escaped to repo root");
       assert.ok(
         !fs.existsSync(path.join(REPO, "..", "evil.json")),

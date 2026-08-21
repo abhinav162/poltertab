@@ -121,7 +121,7 @@ instead of scraping elements that may not exist.
 | Action | Parameters | Description |
 | -------- | ----------- | ------------- |
 | `browser_set_intercept_patterns` | `patterns` (required) | URL substrings to capture, e.g. `["graphql", "/api/v1/"]`. Defaults to `["graphql", "/api/", "voyager", "feed"]` |
-| `browser_get_network_state` | `clear`, `output_file` | Captured raw JSON for the tab. `output_file` writes to `mcp-server/downloads/` and returns just the path, keeping large payloads out of the context window |
+| `browser_get_network_state` | `clear`, `output_file` | Captured raw JSON for the tab. `output_file` writes to `~/.poltertab/downloads/` and returns just the path, keeping large payloads out of the context window |
 
 ### Sessions
 
@@ -214,8 +214,7 @@ poltertab/
 │   └── claude-md-snippet.md   # The CLAUDE.md section the wizard appends
 ├── mcp-server/
 │   ├── index.js               # MCP server (stdio) + WebSocket hub
-│   ├── test/run.js            # Extension + server regression suite
-│   └── navigation_memory/     # Per-domain obstacles and fixes
+│   └── test/run.js            # Extension + server regression suite
 ├── test/
 │   └── setup.test.js          # Installer regression suite
 ├── chrome-extension/
@@ -229,6 +228,25 @@ poltertab/
 ├── zc-browser.sh              # CLI wrapper (legacy)
 └── README.md
 ```
+
+## Where your data lives
+
+Nothing the server accumulates is stored inside the package:
+
+```
+~/.poltertab/
+├── navigation_memory/   # Per-domain obstacles and fixes (browser_save_site_memory)
+└── downloads/           # output_file payloads from browser_get_network_state
+```
+
+This matters for a global npm install. The package sits in `node_modules/`, so
+anything written beside the code is deleted by the next `npm update -g` — site
+memory would read as amnesia after every upgrade, and scraped payloads would be
+buried somewhere you would never look for them.
+
+Set `POLTERTAB_HOME` to move the whole tree. Upgrading from a version that kept
+memory in `mcp-server/navigation_memory/`? It is copied forward on first start,
+and an existing note at the destination always wins.
 
 ## Tests
 
