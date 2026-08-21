@@ -63,12 +63,23 @@ jobs:
           zip -rq "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" \
             chrome-extension -x '*.DS_Store'
 
-      # --clobber so re-running a release replaces the asset instead of failing.
+      # Also runs for a manual re-run, not just the release event. Gating this on
+      # `event_name == 'release'` meant a re-run could publish to npm and still
+      # leave the release with no zip — which is exactly the state a re-run
+      # exists to repair. Skipped on a dry run, and tolerated when the tag has
+      # no release yet so a dispatch against a bare tag still publishes.
+      # --clobber so re-running replaces the asset instead of failing.
       - name: Attach extension zip to the release
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ !inputs.dry_run }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" --clobber
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" --clobber
+            echo "attached to $TAG"
+          else
+            echo "::warning::no GitHub release for $TAG — zip built but not attached"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
