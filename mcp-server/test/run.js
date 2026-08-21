@@ -4,6 +4,7 @@
 //   B  content_script.js injection idempotence   (the N-clicks-per-command bug)
 //   C  background.js navigation load race        (the 30s hang on fast pages)
 //   D  mcp-server end-to-end over stdio          (output_file, stdout purity)
+//   E  shadow DOM piercing + late-element retry  (the OCI-console class of bug)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -94,6 +95,15 @@ async function groupA() {
     );
   });
 
+  await test("A6 snapshot descends into shadow roots so elements are discoverable", () => {
+    const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
+    const walk = src.slice(src.indexOf("const walk = (el, depth)"));
+    assert.ok(
+      /shadowRootOf\(el\)/.test(walk.slice(0, 900)),
+      "snapshot's walk no longer descends into shadow roots",
+    );
+  });
+
   await test("A3 content_script guards re-execution before registering anything", () => {
     const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
     const guard = src.indexOf("__polterTabInjected");
@@ -171,10 +181,21 @@ function contentScriptSandbox() {
       messageListeners: messageListeners.length,
       commandListeners: commandListeners.length,
     }),
-    // Mirrors Chrome: every registered listener receives the message.
-    dispatch: (msg) => {
+    // Mirrors Chrome: every registered listener receives the message. Handlers
+    // reply asynchronously now, so wait for each sendResponse.
+    dispatch: async (msg) => {
       let responses = 0;
-      for (const fn of commandListeners) fn(msg, {}, () => responses++);
+      await Promise.all(
+        commandListeners.map(
+          (fn) =>
+            new Promise((resolve) =>
+              fn(msg, {}, () => {
+                responses++;
+                resolve();
+              }),
+            ),
+        ),
+      );
       return responses;
     },
   };
@@ -204,12 +225,16 @@ async function groupB() {
     assert.strictEqual(c.messageListeners, 1, `got ${c.messageListeners} forwarders`);
   });
 
-  await test("B4 one click command produces exactly one click (was 2, 5, 9...)", () => {
+  await test("B4 one click command produces exactly one click (was 2, 5, 9...)", async () => {
     const s = contentScriptSandbox();
     const observed = [];
     for (let n = 1; n <= 3; n++) {
       s.inject(); // background.js re-injects before every DOM command
-      s.dispatch({ source: "poltertab", action: "click", params: { selector: "#inc" } });
+      await s.dispatch({
+        source: "poltertab",
+        action: "click",
+        params: { selector: "#inc" },
+      });
       observed.push(s.counts().clicks);
     }
     assert.deepStrictEqual(
@@ -658,6 +683,623 @@ async function groupD() {
   }
 }
 
+// ───────── E. shadow DOM piercing + late-element retry ─────────
+
+// Minimal DOM good enough for content_script's real code paths. Each "root"
+// answers querySelector/querySelectorAll over a flat descendant list, so a
+// shadow root is just another root — which is exactly how the traversal must
+// see it.
+function fakeEl(tag, opts = {}) {
+  const el = {
+    tagName: tag.toUpperCase(),
+    id: opts.id || "",
+    textContent: opts.text || "",
+    value: "",
+    attributes: [],
+    children: [],
+    clicks: 0,
+    scrollIntoView() {},
+    focus() {},
+    closest: () => null,
+    getAttribute: () => null,
+    matches: () => false,
+    dispatchEvent(e) {
+      if (e.type === "click") el.clicks++;
+      return true;
+    },
+  };
+  if (opts.shadow) el.shadowRoot = opts.shadow;
+  if (opts.closedShadow) {
+    el.shadowRoot = null; // what page script sees for a closed root
+    el.__closedRoot = opts.closedShadow;
+  }
+  return el;
+}
+
+// The DOM's value setters are branded: calling HTMLInputElement's setter with
+// a textarea receiver throws "Illegal invocation". Model that faithfully, or
+// the bug this guards against is invisible to the suite.
+class FakeHTMLElement {}
+class FakeHTMLInputElement extends FakeHTMLElement {}
+class FakeHTMLTextAreaElement extends FakeHTMLElement {}
+for (const [Cls, brand] of [
+  [FakeHTMLInputElement, "input"],
+  [FakeHTMLTextAreaElement, "textarea"],
+]) {
+  Object.defineProperty(Cls.prototype, "value", {
+    configurable: true,
+    get() {
+      return this.__value === undefined ? "" : this.__value;
+    },
+    set(v) {
+      if (this.__brand !== brand) throw new TypeError("Illegal invocation");
+      this.__value = v;
+    },
+  });
+}
+
+function fakeField(kind, opts = {}) {
+  const Cls =
+    kind === "textarea"
+      ? FakeHTMLTextAreaElement
+      : kind === "input"
+        ? FakeHTMLInputElement
+        : FakeHTMLElement;
+  const el = new Cls();
+  Object.assign(el, {
+    tagName: kind === "div" ? "DIV" : kind.toUpperCase(),
+    id: opts.id || "",
+    textContent: "",
+    events: [],
+    attributes: [],
+    children: [],
+    isContentEditable: !!opts.contentEditable,
+    scrollIntoView() {},
+    focus() {},
+    closest: () => null,
+    getAttribute: () => null,
+    matches: () => false,
+    dispatchEvent(e) {
+      el.events.push(e.type);
+      return true;
+    },
+  });
+  if (kind !== "div") el.__brand = kind;
+  return el;
+}
+
+function fakeRoot(descendants, tracker) {
+  const match = (el, sel) =>
+    sel === "*" || (sel.startsWith("#") && el.id === sel.slice(1));
+  return {
+    __descendants: descendants,
+    children: descendants,
+    querySelector(sel) {
+      if (tracker) tracker.push(this);
+      return descendants.find((d) => match(d, sel)) || null;
+    },
+    querySelectorAll(sel) {
+      if (tracker) tracker.push(this);
+      return descendants.filter((d) => match(d, sel));
+    },
+  };
+}
+
+function shadowSandbox({ chromeDom = true, lightDescendants = [], roots = {} } = {}) {
+  const queried = [];
+  const body = fakeEl("body");
+  const light = fakeRoot(lightDescendants, queried);
+
+  const document = {
+    title: "T",
+    body,
+    documentElement: { appendChild() {} },
+    head: { appendChild() {} },
+    createElement: () => ({ set src(v) {}, remove() {} }),
+    querySelector: (s) => light.querySelector(s),
+    querySelectorAll: (s) => light.querySelectorAll(s),
+    // real content_script consults these before the piercing tier
+    evaluate: () => ({ singleNodeValue: null }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+  };
+
+  const chrome = {
+    runtime: {
+      getURL: (p) => p,
+      sendMessage: () => Promise.resolve(),
+      onMessage: { addListener: (fn) => listeners.push(fn) },
+    },
+    storage: { local: { get: (_k, cb) => cb && cb({}) } },
+  };
+  if (chromeDom) {
+    chrome.dom = {
+      openOrClosedShadowRoot: (el) => el.__closedRoot || el.shadowRoot || null,
+    };
+  }
+
+  const listeners = [];
+  const sandbox = {
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    Date,
+    Promise,
+    Error,
+    document,
+    chrome,
+    location: { href: "http://t/" },
+    NodeFilter: { SHOW_ELEMENT: 1 },
+    XPathResult: { FIRST_ORDERED_NODE_TYPE: 9 },
+    HTMLElement: FakeHTMLElement,
+    HTMLInputElement: FakeHTMLInputElement,
+    HTMLTextAreaElement: FakeHTMLTextAreaElement,
+    MouseEvent: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    Event: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    addEventListener() {},
+  };
+  vm.createContext(sandbox);
+  sandbox.window = sandbox;
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "content_script.js"), "utf8"),
+    sandbox,
+  );
+
+  return {
+    queried,
+    // Returns a promise for the response, since actions may now await.
+    send: (action, params) =>
+      new Promise((resolve) => {
+        listeners[0]({ source: "poltertab", action, params }, {}, resolve);
+      }),
+  };
+}
+
+async function groupE() {
+  console.log("\nE. shadow DOM piercing + late-element retry");
+
+  await test("E1 clicks an element two nested open shadow roots deep", async () => {
+    const deep = fakeEl("button", { id: "deep", text: "DEEP" });
+    const innerHost = fakeEl("div", { id: "inner", shadow: fakeRoot([deep]) });
+    const outerHost = fakeEl("div", { id: "outer", shadow: fakeRoot([innerHost]) });
+    const s = shadowSandbox({ lightDescendants: [outerHost] });
+    const res = await s.send("click", { selector: "#deep" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(deep.clicks, 1, "deep element was not clicked");
+  });
+
+  await test("E2 reaches a CLOSED shadow root via chrome.dom", async () => {
+    const deep = fakeEl("button", { id: "sealed" });
+    const host = fakeEl("div", { closedShadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("click", { selector: "#sealed" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(deep.clicks, 1, "closed root was not pierced");
+  });
+
+  await test("E3 without chrome.dom, a closed root stays unreachable", async () => {
+    const deep = fakeEl("button", { id: "sealed" });
+    const host = fakeEl("div", { closedShadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ chromeDom: false, lightDescendants: [host] });
+    const res = await s.send("click", { selector: "#sealed" });
+    assert.strictEqual(res.success, false, "should not resolve without chrome.dom");
+    assert.strictEqual(deep.clicks, 0);
+  });
+
+  await test("E4 light DOM wins: a light match never traverses shadow roots", async () => {
+    const target = fakeEl("button", { id: "here" });
+    const shadowChild = fakeEl("button", { id: "elsewhere" });
+    const host = fakeEl("div", { shadow: fakeRoot([shadowChild]) });
+    const s = shadowSandbox({ lightDescendants: [target, host] });
+    const res = await s.send("click", { selector: "#here" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(target.clicks, 1);
+    assert.strictEqual(
+      s.queried.length,
+      1,
+      `traversed ${s.queried.length} roots for a light-DOM hit`,
+    );
+  });
+
+  await test("E5 a self-referential host cannot hang the page", async () => {
+    const host = fakeEl("div", { id: "loop" });
+    host.shadowRoot = fakeRoot([host]); // points back at itself
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const started = Date.now();
+    const res = await s.send("click", { selector: "#nope" });
+    assert.strictEqual(res.success, false);
+    assert.ok(
+      Date.now() - started < 12000,
+      `took ${Date.now() - started}ms — depth cap missing?`,
+    );
+  });
+
+  await test("E6 waits for a late-rendering modal instead of failing instantly", async () => {
+    const late = fakeEl("button", { id: "modal-btn" });
+    const present = [];
+    const s = shadowSandbox({ lightDescendants: present });
+    setTimeout(() => present.push(late), 400); // portal mounts after the click
+    const res = await s.send("click", { selector: "#modal-btn" });
+    assert.strictEqual(res.success, true, `gave up too early: ${res.error}`);
+    assert.strictEqual(late.clicks, 1);
+  });
+
+  await test("E7 a genuinely absent element still reports not found", async () => {
+    const s = shadowSandbox({ lightDescendants: [] });
+    const res = await s.send("click", { selector: "#ghost" });
+    assert.strictEqual(res.success, false);
+    assert.ok(/not found/i.test(res.error), res.error);
+  });
+
+  await test("E8 scrape reaches into shadow roots too", async () => {
+    const deep = fakeEl("span", { id: "val", text: "shadow value" });
+    const host = fakeEl("div", { shadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("scrape", { selector: "#val" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(res.data.length, 1, "scrape stayed light-DOM only");
+    assert.strictEqual(res.data[0].text, "shadow value");
+  });
+}
+
+// ───────────────── F. fill across field types ─────────────────
+
+async function groupF() {
+  console.log("\nF. fill across field types");
+
+  await test("F1 fills a <textarea> (was: Illegal invocation)", async () => {
+    const ta = fakeField("textarea", { id: "chat" });
+    const s = shadowSandbox({ lightDescendants: [ta] });
+    const res = await s.send("fill", { selector: "#chat", value: "hello" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(ta.value, "hello");
+  });
+
+  await test("F2 still fills an <input>", async () => {
+    const inp = fakeField("input", { id: "q" });
+    const s = shadowSandbox({ lightDescendants: [inp] });
+    const res = await s.send("fill", { selector: "#q", value: "typed" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(inp.value, "typed");
+  });
+
+  await test("F3 fills a contenteditable composer", async () => {
+    const div = fakeField("div", { id: "composer", contentEditable: true });
+    const s = shadowSandbox({ lightDescendants: [div] });
+    const res = await s.send("fill", { selector: "#composer", value: "rich" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(div.textContent, "rich");
+  });
+
+  await test("F4 dispatches input and change so frameworks notice", async () => {
+    const inp = fakeField("input", { id: "q" });
+    const s = shadowSandbox({ lightDescendants: [inp] });
+    await s.send("fill", { selector: "#q", value: "x" });
+    assert.deepStrictEqual(inp.events, ["input", "change"]);
+  });
+
+  await test("F5 fills a textarea nested in a shadow root", async () => {
+    const ta = fakeField("textarea", { id: "deep-chat" });
+    const host = fakeEl("div", { shadow: fakeRoot([ta]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("fill", { selector: "#deep-chat", value: "deep" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(ta.value, "deep");
+  });
+}
+
+
+// ─────────────── G. cross-frame element search ───────────────
+
+// These tests verify the background.js frame-search logic. Since
+// background.js runs in a service-worker context with chrome.* APIs that the
+// vm sandbox cannot faithfully model at the message-routing level, group G
+// tests against the REAL background.js by driving it through the same stubbed
+// chrome environment that group C uses — plus a multi-frame model where each
+// frame's content script is a simple function mapping (action, selector) to
+// success/failure.
+
+function frameSearchSandbox(cfg = {}) {
+  // cfg.frames: [{frameId, elements: {selector: response}}]
+  const frames = cfg.frames || [
+    { frameId: 0, elements: {} },
+    { frameId: 123, elements: {} },
+  ];
+  const sent = [];
+  const navListeners = [];
+  const sockets = [];
+
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    JSON,
+    Date,
+    Math,
+    Promise,
+    Error,
+    Object,
+    Array,
+    WebSocket: class {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        sockets.push(this);
+      }
+      send(data) { sent.push(JSON.parse(data)); }
+      close() {}
+    },
+    chrome: {
+      runtime: {
+        getManifest: () => ({ version: "test" }),
+        sendMessage: () => Promise.resolve(),
+        onMessage: { addListener() {} },
+        onStartup: { addListener() {} },
+        onInstalled: { addListener() {} },
+        lastError: null,
+      },
+      alarms: {
+        get: (_n, cb) => cb && cb(null),
+        create() {},
+        clear() {},
+        onAlarm: { addListener() {} },
+      },
+      storage: {
+        local: {
+          get: (keys, cb) => (cb ? cb({}) : Promise.resolve({})),
+          set: (_o, cb) => (cb ? cb() : Promise.resolve()),
+        },
+        onChanged: { addListener() {} },
+      },
+      tabs: {
+        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete" }),
+        create: async (props) => ({ id: 99, url: props.url || "about:blank", title: "T" }),
+        update: async (id, props) => ({ id, url: props.url || "http://t/", title: "T" }),
+        query: async () => [{ id: 99, url: "http://t/", title: "T" }],
+        remove: async () => {},
+        group: async () => 1,
+        sendMessage: async (tabId, msg, opts, cb) => {
+          // Simulate per-frame content script responses
+          if (typeof opts === "function") { cb = opts; opts = {}; }
+          const frameId = (opts && opts.frameId) || 0;
+          const frame = frames.find((f) => f.frameId === frameId);
+
+          if (!frame) {
+            // Frame not found - simulate "Receiving end does not exist"
+            sandbox.chrome.runtime.lastError = { message: "Could not establish connection. Receiving end does not exist." };
+            cb(undefined);
+            sandbox.chrome.runtime.lastError = null;
+            return;
+          }
+
+          const { action, params = {} } = msg;
+          const sel = params.selector;
+
+          // snapshot/scrape-without-selector: always returns something
+          if (action === "snapshot") {
+            const nodes = frame.snapshotNodes || [];
+            cb({ success: true, data: { title: "T", url: "http://t/", count: nodes.length, nodes } });
+            return;
+          }
+          if (action === "scrape" && !sel) {
+            cb({ success: true, data: frame.scrapeData || { title: "T", url: "http://t/", meta: {}, links: [], headings: [], bodyText: "" } });
+            return;
+          }
+
+          // element-targeting actions
+          if (sel && frame.elements[sel]) {
+            cb({ success: true, data: frame.elements[sel] });
+          } else if (sel && params._noWait) {
+            // Fast probe — instant miss
+            cb({ success: false, error: "Element not found: " + sel });
+          } else if (sel) {
+            // Retry pass — poll for up to 3s like the real content script
+            const deadline = Date.now() + 3000;
+            const poll = setInterval(() => {
+              if (frame.elements[sel]) {
+                clearInterval(poll);
+                cb({ success: true, data: frame.elements[sel] });
+              } else if (Date.now() >= deadline) {
+                clearInterval(poll);
+                cb({ success: false, error: "Element not found: " + sel });
+              }
+            }, 100);
+          } else {
+            cb({ success: true, data: { ok: true } });
+          }
+        },
+        onRemoved: { addListener() {} },
+        onUpdated: { addListener() {} },
+      },
+      tabGroups: {
+        get: async () => ({ id: 1 }),
+        query: async () => [],
+        update: async () => {},
+      },
+      webNavigation: {
+        getAllFrames: async ({ tabId }) => frames.map((f) => ({
+          tabId,
+          frameId: f.frameId,
+          url: f.url || "http://t/",
+          parentFrameId: f.frameId === 0 ? -1 : 0,
+        })),
+        onCompleted: {
+          addListener: (fn) => navListeners.push(fn),
+          removeListener() {},
+        },
+      },
+      scripting: { executeScript: async () => [] },
+    },
+  };
+
+  const vm = require("vm");
+  vm.createContext(sandbox);
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "background.js"), "utf8"),
+    sandbox,
+  );
+
+  const ws = sockets[0];
+  if (ws && ws.onopen) ws.onopen();
+
+  // Fire a load event so waitForTabLoad succeeds
+  for (const fn of navListeners) fn({ tabId: 99, frameId: 0 });
+
+  return {
+    command: (msg) =>
+      new Promise((resolve) => {
+        ws.onmessage({ data: JSON.stringify(msg) });
+        // Poll for the reply
+        const check = setInterval(() => {
+          const reply = sent.find((m) => m.id === msg.id);
+          if (reply) {
+            clearInterval(check);
+            resolve(reply);
+          }
+        }, 20);
+        setTimeout(() => { clearInterval(check); resolve(null); }, 12000);
+      }),
+    sent,
+  };
+}
+
+async function groupG() {
+  console.log("\nG. cross-frame element search");
+
+  await test("G1 click finds an element in the second frame when top frame misses", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 123, elements: { "#app-btn": { clicked: "#app-btn", tag: "button" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g1", action: "click", selector: "#app-btn" });
+    assert.ok(reply, "no reply received");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    assert.strictEqual(reply.data.clicked, "#app-btn");
+  });
+
+  await test("G2 fill works in an iframe (the OCI textarea bug)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 456, elements: { "#chat": { filled: "#chat", value: "hi" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g2", action: "fill", selector: "#chat", value: "hi" });
+    assert.ok(reply, "no reply");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+  });
+
+  await test("G3 top frame wins when it has the element (no unnecessary frame search)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: { "#nav": { clicked: "#nav", tag: "a" } } },
+        { frameId: 789, elements: { "#nav": { clicked: "#nav", tag: "button" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g3", action: "click", selector: "#nav" });
+    assert.strictEqual(reply.success, true);
+    // Top frame served it — tag is "a" not "button"
+    assert.strictEqual(reply.data.tag, "a");
+  });
+
+  await test("G4 genuinely absent element reports not found across all frames", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 100, elements: {} },
+        { frameId: 200, elements: {} },
+      ],
+    });
+    const reply = await bg.command({ id: "g4", action: "click", selector: "#ghost" });
+    assert.strictEqual(reply.success, false);
+    assert.ok(/not found/i.test(reply.error), reply.error);
+  });
+
+  await test("G5 scrape with selector searches frames (empty result = miss)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 555, elements: { "#data": [{ tag: "span", text: "value" }] } },
+      ],
+    });
+    const reply = await bg.command({ id: "g5", action: "scrape", selector: "#data" });
+    assert.ok(reply, "no reply");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+  });
+
+  await test("G7 many empty frames do not burn the timeout budget (was: 54s)", async () => {
+    // 20 empty frames + 1 with the target. Without _noWait, this would take
+    // 20 x 3s = 60s. With fast-probe it should resolve in < 2s.
+    const frames = [];
+    for (let i = 0; i < 20; i++) {
+      frames.push({ frameId: i * 10, elements: {} });
+    }
+    frames.push({
+      frameId: 999,
+      elements: { "#target": { clicked: "#target", tag: "button" } },
+    });
+    const bg = frameSearchSandbox({ frames });
+    const start = Date.now();
+    const reply = await bg.command({ id: "g7", action: "click", selector: "#target" });
+    const elapsed = Date.now() - start;
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    assert.strictEqual(reply.data.clicked, "#target");
+    assert.ok(
+      elapsed < 5000,
+      `took ${elapsed}ms across 21 frames — _noWait is not being passed`,
+    );
+  });
+
+  await test("G8 late modal in top frame still resolves after fast-probe miss", async () => {
+    // All frames miss on the fast probe. Frame 0 gets a retry with the wait.
+    // Simulate the element appearing 500ms into the retry window.
+    const frames = [
+      { frameId: 0, elements: {} },
+      { frameId: 100, elements: {} },
+    ];
+    const bg = frameSearchSandbox({ frames });
+    // Inject the element into frame 0 after a delay
+    setTimeout(() => {
+      frames[0].elements["#late"] = { clicked: "#late", tag: "div" };
+    }, 500);
+    const reply = await bg.command({ id: "g8", action: "click", selector: "#late" });
+    assert.strictEqual(reply.success, true, reply.error || "late modal not found");
+  });
+
+  await test("G6 snapshot aggregates across all frames", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, snapshotNodes: [{ ref: "@e1", tag: "nav", text: "shell" }] },
+        { frameId: 777, snapshotNodes: [{ ref: "@e1", tag: "button", text: "app btn" }] },
+      ],
+    });
+    const reply = await bg.command({ id: "g6", action: "snapshot" });
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    // Should have nodes from both frames
+    assert.ok(
+      reply.data.nodes.length >= 2,
+      "snapshot did not aggregate across frames: " + reply.data.nodes.length,
+    );
+  });
+}
+
 // ───────────────────────────── runner ─────────────────────────────
 
 (async () => {
@@ -666,6 +1308,9 @@ async function groupD() {
   await groupB();
   await groupC();
   await groupD();
+  await groupE();
+  await groupF();
+  await groupG();
 
   const total = pass + failures.length;
   console.log(`\n${pass}/${total} passed`);

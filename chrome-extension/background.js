@@ -729,9 +729,75 @@
 
   // --- Content script forwarding ---
 
+  // Actions whose results should be merged across all frames rather than
+  // stopping at the first success. snapshot aggregates nodes; a full-page
+  // scrape (no selector) aggregates structured page data.
+  function isAggregateAction(action, params) {
+    if (action === "snapshot") return true;
+    if (action === "scrape" && !params.selector) return true;
+    return false;
+  }
+
+  // An element-targeting action "misses" a frame when the content script
+  // reports the element is absent. These misses should advance the search to
+  // the next frame rather than surfacing immediately to the caller.
+  function isElementMiss(action, params, response) {
+    if (!response) return true;
+    if (!response.success) {
+      const err = response.error || "";
+      // "not found" = element absent; "Receiving end" = no content script in
+      // that frame (loaded before extension, or opaque-origin sandbox).
+      if (/not found|Receiving end|No response/i.test(err)) return true;
+    }
+    // scrape with a selector returns [] when the element doesn't exist in that
+    // frame — the content script considers it a success (no throw), but for
+    // frame search purposes it's a miss.
+    if (
+      action === "scrape" &&
+      params.selector &&
+      response.success &&
+      Array.isArray(response.data) &&
+      response.data.length === 0
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function sendToFrame(tabId, frameId, action, params) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ success: false, error: `Content script timeout (frame ${frameId})` });
+      }, 10000);
+
+      chrome.tabs.sendMessage(
+        tabId,
+        { source: "poltertab", action, params },
+        { frameId },
+        (response) => {
+          clearTimeout(timeout);
+          if (chrome.runtime.lastError) {
+            resolve({
+              success: false,
+              error: chrome.runtime.lastError.message,
+            });
+          } else {
+            resolve(response || { success: false, error: "No response" });
+          }
+        },
+      );
+    });
+  }
+
   async function forwardToContentScript(action, params) {
     const targetTabId = await sessionManager.resolveOrFallback(params);
 
+    // Inject into the TOP FRAME only as a safety net for tabs that were open
+    // before the extension loaded. Child frames get their content script from
+    // the manifest's content_scripts declaration (matches: <all_urls>,
+    // run_at: document_start) — re-injecting into all frames via executeScript
+    // is expensive (~1s per frame) and unnecessary since the manifest already
+    // covers every frame that loaded after the extension was active.
     try {
       await chrome.scripting.executeScript({
         target: { tabId: targetTabId },
@@ -747,50 +813,114 @@
           "Cannot interact with this page (restricted Chrome page)",
         );
       }
-      // Content script may already be injected or page doesn't allow injection
     }
 
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Content script timeout for action: ${action}`));
-      }, 15000);
+    // Enumerate frames: top frame first, then children.
+    let frameIds = [0];
+    try {
+      const frames = await chrome.webNavigation.getAllFrames({
+        tabId: targetTabId,
+      });
+      if (frames && frames.length > 1) {
+        frameIds = [
+          0,
+          ...frames.map((f) => f.frameId).filter((id) => id !== 0),
+        ];
+      }
+    } catch (_) {
+      // webNavigation may fail on restricted pages; fall back to top only.
+    }
 
-      chrome.tabs.sendMessage(
-        targetTabId,
-        { source: "poltertab", action, params },
-        (response) => {
-          clearTimeout(timeout);
-
-          if (chrome.runtime.lastError) {
-            const msg = chrome.runtime.lastError.message;
-            if (
-              msg.includes("Receiving end does not exist") ||
-              msg.includes("Cannot access")
-            ) {
-              reject(
-                new Error(
-                  "Cannot interact with this page (restricted Chrome page or script failed)",
-                ),
-              );
-            } else {
-              reject(new Error(msg));
-            }
-            return;
-          }
-
-          if (!response) {
-            reject(new Error("No response from content script"));
-            return;
-          }
-
-          if (response.success) {
-            resolve(response.data);
-          } else {
-            reject(new Error(response.error || "Content script error"));
-          }
-        },
+    // --- Aggregate actions: merge results across all frames ---
+    if (isAggregateAction(action, params)) {
+      const results = await Promise.all(
+        frameIds.map((fid) => sendToFrame(targetTabId, fid, action, params)),
       );
-    });
+
+      if (action === "snapshot") {
+        const merged = { title: "", url: "", count: 0, nodes: [] };
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          if (!r || !r.success) continue;
+          const d = r.data;
+          if (i === 0) {
+            merged.title = d.title || "";
+            merged.url = d.url || "";
+          }
+          const fid = frameIds[i];
+          for (const node of d.nodes || []) {
+            merged.nodes.push(fid === 0 ? node : { ...node, frameId: fid });
+          }
+        }
+        merged.count = merged.nodes.length;
+        return merged;
+      }
+
+      // Full-page scrape without selector: return from the first frame that
+      // has body text (top frame preferred).
+      for (const r of results) {
+        if (r && r.success && r.data) return r.data;
+      }
+      throw new Error("No frame returned page data");
+    }
+
+    // --- Element-targeting actions: fast-probe, parallel child frames ---
+    // Strategy:
+    //   1. Try frame 0 instantly (_noWait) — top frame is the most common hit.
+    //   2. On miss, probe ALL child frames in parallel (_noWait). Take the
+    //      first success. This turns N sequential round-trips into one batch.
+    //   3. If still nothing, retry frame 0 WITH the wait — a portal or modal
+    //      may be mounting right now in the top document.
+    // Cost: element in top frame = 1 round-trip. In any iframe = 2 round-trips.
+    // Late modal = 2 round-trips + 3 s wait. Versus the old sequential path
+    // that took ~1 s × N frames before even finding the element.
+    const probeParams = { ...params, _noWait: true };
+
+    // Step 1: top frame first (cheap, most common hit)
+    const topResponse = await sendToFrame(targetTabId, 0, action, probeParams);
+    if (topResponse && topResponse.success && !isElementMiss(action, params, topResponse)) {
+      return topResponse.data;
+    }
+    if (topResponse && !topResponse.success && !/not found/i.test(topResponse.error || "")) {
+      throw new Error(topResponse.error || "Content script error");
+    }
+
+    // Step 2: parallel probe of all child frames
+    const childFrameIds = frameIds.filter((fid) => fid !== 0);
+    let lastError = (topResponse && topResponse.error) || "Element not found";
+
+    if (childFrameIds.length > 0) {
+      const childResults = await Promise.all(
+        childFrameIds.map((fid) =>
+          sendToFrame(targetTabId, fid, action, probeParams),
+        ),
+      );
+
+      for (const response of childResults) {
+        if (!response) continue;
+        if (isElementMiss(action, params, response)) {
+          if (response.error) lastError = response.error;
+          continue;
+        }
+        if (!response.success) {
+          throw new Error(response.error || "Content script error");
+        }
+        return response.data;
+      }
+    }
+
+    // Step 3: retry frame 0 with the wait — catches late-rendering modals
+    const retryResponse = await sendToFrame(targetTabId, 0, action, params);
+    if (retryResponse && retryResponse.success) {
+      if (!isElementMiss(action, params, retryResponse)) {
+        return retryResponse.data;
+      }
+    }
+    if (retryResponse && retryResponse.error) {
+      lastError = retryResponse.error;
+    }
+
+    throw new Error(lastError);
   }
 
   // --- Startup ---
