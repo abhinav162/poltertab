@@ -5,3 +5,7 @@ temp/
 .pi-glla/
 mcp-server/downloads/
 mcp-server/navigation_memory/
+
+# build artifacts
+*.tgz
+*.zip
