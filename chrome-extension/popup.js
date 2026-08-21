@@ -3,12 +3,44 @@ document.addEventListener("DOMContentLoaded", () => {
   const listEl = document.getElementById("session-list");
   const refreshBtn = document.getElementById("refreshBtn");
   const optionsBtn = document.getElementById("optionsBtn");
+  const versionEl = document.getElementById("versions");
+  const warnEl = document.getElementById("skew-warning");
+
+  // Only major.minor matters. A patch-level gap is the normal state of things
+  // for a minute after an upgrade, and warning about it teaches people to
+  // ignore the warning.
+  function isSkewed(a, b) {
+    if (!a || !b) return false;
+    const key = (v) => String(v).split(".").slice(0, 2).join(".");
+    return key(a) !== key(b);
+  }
 
   function updateUI(state) {
     // Update status
     statusEl.textContent = state.connected ? "Connected" : "Disconnected";
     statusEl.className =
       "status " + (state.connected ? "connected" : "disconnected");
+
+    // Version line. An unpacked extension never auto-updates, so a stale one
+    // can sit here for months looking perfectly healthy.
+    if (versionEl) {
+      const mine = state.version || "?";
+      const theirs = state.serverVersion;
+      const skewed = isSkewed(mine, theirs);
+      versionEl.textContent = theirs
+        ? `extension ${mine} · server ${theirs}`
+        : `extension ${mine}`;
+      versionEl.className = "versions" + (skewed ? " skew" : "");
+      versionEl.title = skewed
+        ? "Version mismatch — commands may fail. Reload the extension from the latest release."
+        : "";
+      if (warnEl) {
+        warnEl.hidden = !skewed;
+        warnEl.textContent = skewed
+          ? `Version mismatch: extension ${mine} vs server ${theirs}. Update the older half.`
+          : "";
+      }
+    }
 
     // Update list
     listEl.textContent = "";

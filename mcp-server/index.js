@@ -30,6 +30,26 @@ const DOWNLOADS_DIR = path.join(POLTERTAB_HOME, "downloads");
 
 fs.mkdirSync(MEMORY_DIR, { recursive: true });
 
+const updates = require("./update-check.js");
+const OWN_VERSION = require("./../package.json").version;
+
+// Populated when the extension connects; stays null until then, which is itself
+// worth reporting — a skew warning must not fire on "no extension yet".
+let extensionVersion = null;
+let updateState = { latest: null, updateAvailable: false };
+let noticeDelivered = false;
+
+// Fire and forget at startup so the answer is ready by the first tool call.
+// A rejected promise here must never reach the top level.
+if (!updates.disabled()) {
+  updates
+    .checkForUpdate({ current: OWN_VERSION, home: POLTERTAB_HOME })
+    .then((r) => {
+      updateState = r;
+    })
+    .catch(() => {});
+}
+
 // Installs predating the move kept memory beside the code. Copy it forward once
 // so an upgrade does not look like the agent forgot everything it learned.
 // Never overwrite: if both sides have a note for a domain, the one already in
@@ -370,6 +390,27 @@ function setupPrimaryWss(wss) {
               extensionSocket = ws;
               console.error("[PolterTab MCP] Chrome extension connected.");
             }
+            // The extension has always sent its version here and we always
+            // dropped it, so the one mismatch that actually breaks commands was
+            // invisible to both halves.
+            if (msg.version && msg.version !== extensionVersion) {
+              extensionVersion = msg.version;
+              updates.recordExtension(POLTERTAB_HOME, msg.version);
+              const sk = updates.skew(OWN_VERSION, msg.version);
+              console.error(
+                `[PolterTab MCP] Extension v${msg.version} (server v${OWN_VERSION})` +
+                  (sk ? ` — VERSION SKEW: ${sk.kind}` : ""),
+              );
+              // Let the extension show the mismatch in its popup; it cannot
+              // know the server's version otherwise.
+              try {
+                ws.send(
+                  JSON.stringify({ type: "server_version", version: OWN_VERSION }),
+                );
+              } catch (_) {
+                // A socket that died mid-handshake reconnects on its own.
+              }
+            }
           }
           return;
         }
@@ -554,7 +595,9 @@ async function sendCommand(action, params) {
 const server = new Server(
   {
     name: "poltertab-browser-mcp",
-    version: "1.0.0",
+    // Read, not hardcoded: this said "1.0.0" through every release, so the
+    // version the client reported had nothing to do with what was installed.
+    version: OWN_VERSION,
   },
   {
     capabilities: {
@@ -867,7 +910,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+const handleToolCall = async (request) => {
   const { name, arguments: args } = request.params;
 
   if (!name.startsWith("browser_")) {
@@ -1064,6 +1107,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   }
+};
+
+// Update and skew notices ride out on the first tool response and never again.
+// Doctor and the extension popup both require the user to already suspect
+// something is wrong; the agent's reply is the one place they are certainly
+// looking. Appended as its own content block so it cannot corrupt a payload
+// something downstream is parsing.
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const result = await handleToolCall(request);
+  if (noticeDelivered) return result;
+
+  const text = updates.notice({
+    current: OWN_VERSION,
+    latest: updateState.latest,
+    updateAvailable: updateState.updateAvailable,
+    skew: updates.skew(OWN_VERSION, extensionVersion),
+  });
+  if (!text) return result;
+
+  noticeDelivered = true;
+  if (!result || !Array.isArray(result.content)) return result;
+  return { ...result, content: [...result.content, { type: "text", text }] };
 });
 
 // Start the server
