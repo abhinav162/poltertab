@@ -15,6 +15,14 @@ if (arg === "setup") {
     console.error(`\n  setup failed: ${err.message}\n`);
     process.exit(1);
   });
+} else if (arg === "doctor") {
+  require("./doctor.js")
+    .run(process.argv.slice(3))
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(`\n  doctor failed: ${err.message}\n`);
+      process.exit(1);
+    });
 } else if (arg === "--version" || arg === "-v") {
   console.log(require("../package.json").version);
 } else if (arg === "--help" || arg === "-h") {
@@ -23,9 +31,14 @@ if (arg === "setup") {
 
     poltertab           start the MCP server (stdio)
     poltertab setup     install skill, CLAUDE.md section, and MCP registration
+    poltertab doctor    versions, update check, and extension/server skew
     poltertab --version
 
-  setup flags: --global | --project  (skips the prompt)
+  setup flags:   --global | --project  (skips the prompt)
+  doctor flags:  --force (ignore the cached update check), --port <n>
+
+  POLTERTAB_HOME             where memory and downloads live
+  POLTERTAB_NO_UPDATE_CHECK  set to disable the npm version check
 `);
 } else {
   require("../mcp-server/index.js");

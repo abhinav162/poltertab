@@ -22,23 +22,36 @@ const setup = require(path.join(REPO, "bin", "setup.js"));
 let pass = 0;
 const failures = [];
 
+// Cases queue onto one chain and run in order. A plain synchronous runner would
+// call an `async` test, get a promise back, never await it, and print PASS — so
+// an async assertion failure would land as an unhandled rejection while the
+// suite reported success. Awaiting is the only thing that makes those real.
+let chain = Promise.resolve();
+
 function test(name, fn) {
-  // Every test gets its own throwaway HOME/cwd so a leaked write cannot reach
-  // the real ~/.claude and cannot make the next test pass for the wrong reason.
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-test-"));
-  try {
-    fn(sandbox);
-    console.log(`  PASS  ${name}`);
-    pass++;
-  } catch (err) {
-    console.log(`  FAIL  ${name}\n          ${err.message.split("\n")[0]}`);
-    failures.push(name);
-  } finally {
-    fs.rmSync(sandbox, { recursive: true, force: true });
-  }
+  chain = chain.then(async () => {
+    // Every test gets its own throwaway HOME/cwd so a leaked write cannot reach
+    // the real ~/.claude and cannot make the next test pass for the wrong reason.
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-test-"));
+    try {
+      await fn(sandbox);
+      console.log(`  PASS  ${name}`);
+      pass++;
+    } catch (err) {
+      console.log(`  FAIL  ${name}\n          ${err.message.split("\n")[0]}`);
+      failures.push(name);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 }
 
-console.log("\nA  path resolution\n");
+// Headers queue too, or they would all print before the first test ran.
+function group(title) {
+  chain = chain.then(() => console.log(`\n${title}\n`));
+}
+
+group("A  path resolution");
 
 test("A1  global scope resolves under the home directory", (box) => {
   const p = setup.resolvePaths("global", { home: box, cwd: "/somewhere/else" });
@@ -65,7 +78,7 @@ test("A4  an unknown scope is rejected rather than guessed", () => {
   assert.throws(() => setup.resolvePaths("sideways", {}), /scope/i);
 });
 
-console.log("\nB  skill install\n");
+group("B  skill install");
 
 test("B1  the shipped skill lands as a readable SKILL.md", (box) => {
   const dest = setup.installSkill(path.join(box, "skills"));
@@ -104,7 +117,7 @@ test("B5  the shipped skill names no dead tools", (box) => {
   assert.deepStrictEqual(missing, [], `skill names tools the server lacks: ${missing}`);
 });
 
-console.log("\nC  CLAUDE.md update\n");
+group("C  CLAUDE.md update");
 
 test("C1  a missing CLAUDE.md is created with the snippet", (box) => {
   const md = path.join(box, "CLAUDE.md");
@@ -164,7 +177,7 @@ test("C7  the snippet points at the skill that actually gets installed", (box) =
   );
 });
 
-console.log("\nD  CLI routing\n");
+group("D  CLI routing");
 
 test("D1  the bin is executable and declares a node shebang", () => {
   const bin = path.join(REPO, "bin", "poltertab.js");
@@ -214,7 +227,7 @@ test("D5  the extension download link is a real https URL", () => {
   );
 });
 
-console.log("\nE  runtime state lives outside the package\n");
+group("E  runtime state lives outside the package");
 
 // A global npm install puts the server under node_modules/poltertab/. Anything
 // it writes next to its own code is destroyed by `npm update -g`, so these
@@ -325,7 +338,7 @@ test("E5  migration never overwrites a note already in the new location", (box) 
   }
 });
 
-console.log("\nF  release plumbing\n");
+group("F  release plumbing");
 
 const { spawnSync } = require("child_process");
 
@@ -544,9 +557,311 @@ test("F11  the publish workflow gates on tests and resolves a channel", () => {
   );
 });
 
-console.log(
-  `\n${pass} passed, ${failures.length} failed` +
-    (failures.length ? `\n  ${failures.join("\n  ")}` : "") +
-    "\n",
-);
-process.exit(failures.length ? 1 : 0);
+group("G  update + skew checking");
+
+const up = require(path.join(REPO, "mcp-server", "update-check.js"));
+
+test("G1  version ordering follows semver, not string comparison", () => {
+  const lt = (a, b) =>
+    assert.ok(up.compareVersions(a, b) < 0, `expected ${a} < ${b}`);
+  lt("1.0.0", "1.0.1");
+  lt("1.9.0", "1.10.0"); // string compare gets this backwards
+  lt("1.0.0", "2.0.0");
+  lt("1.2.0-beta.1", "1.2.0"); // a release outranks its prereleases
+  lt("1.2.0-alpha.1", "1.2.0-beta.1");
+  lt("1.2.0-beta.2", "1.2.0-beta.10"); // numeric identifiers compare as numbers
+  lt("1.2.0-beta", "1.2.0-beta.1"); // shorter prerelease ranks lower
+  lt("1.2.0-1", "1.2.0-alpha"); // numeric ranks below alphanumeric
+  assert.strictEqual(up.compareVersions("1.2.3", "v1.2.3"), 0, "v prefix");
+  assert.strictEqual(up.compareVersions("2.0.0", "1.0.0"), 1);
+});
+
+test("G2  a prerelease is never told to downgrade to an older stable", () => {
+  // The bug a naive check produces: on 1.2.0-beta.1 with latest 1.1.0, telling
+  // the user to "update" would move them backwards.
+  assert.ok(!up.isNewer("1.1.0", "1.2.0-beta.1"));
+  assert.ok(up.isNewer("1.2.0", "1.2.0-beta.1"), "stable 1.2.0 is an upgrade");
+});
+
+test("G3  garbage versions compare equal instead of throwing", () => {
+  for (const bad of [null, undefined, "", "next", "1", {}]) {
+    assert.strictEqual(up.compareVersions(bad, "1.0.0"), 0, String(bad));
+    assert.strictEqual(up.compareVersions("1.0.0", bad), 0, String(bad));
+  }
+});
+
+test("G4  skew fires on a minor gap and stays quiet on a patch gap", () => {
+  assert.strictEqual(up.skew("1.2.0", "1.2.3"), null, "patch gap is normal");
+  assert.strictEqual(up.skew("1.2.0", "1.2.0"), null);
+  const behind = up.skew("1.3.0", "1.2.0");
+  assert.strictEqual(behind.kind, "extension-behind");
+  const ahead = up.skew("1.2.0", "1.3.0");
+  assert.strictEqual(ahead.kind, "server-behind");
+  assert.strictEqual(up.skew("2.0.0", "1.0.0").kind, "extension-behind");
+});
+
+test("G5  no extension seen yet is not a skew warning", () => {
+  // Before the extension ever connects there is nothing to disagree with, and
+  // crying skew would make the warning meaningless.
+  assert.strictEqual(up.skew("1.2.0", null), null);
+  assert.strictEqual(up.skew("1.2.0", undefined), null);
+  assert.strictEqual(up.skew("1.2.0", ""), null);
+});
+
+test("G6  the notice is silent when everything is current", () => {
+  assert.strictEqual(
+    up.notice({ current: "1.0.0", latest: "1.0.0", updateAvailable: false, skew: null }),
+    null,
+  );
+});
+
+test("G7  the notice names both problems when both apply", () => {
+  const text = up.notice({
+    current: "1.0.0",
+    latest: "1.3.0",
+    updateAvailable: true,
+    skew: { kind: "extension-behind", server: "1.0.0", extension: "0.9.0" },
+  });
+  assert.match(text, /extension/i);
+  assert.match(text, /1\.3\.0/);
+  assert.match(text, /npm update -g poltertab/);
+});
+
+test("G8  extension state round-trips and reports last-seen", (box) => {
+  assert.strictEqual(up.readExtensionState(box), null, "empty home");
+  up.recordExtension(box, "1.4.2", 1000);
+  const s = up.readExtensionState(box);
+  assert.strictEqual(s.extensionVersion, "1.4.2");
+  assert.strictEqual(s.seenAt, 1000);
+});
+
+test("G9  recording a missing version is a no-op, not a null write", (box) => {
+  assert.strictEqual(up.recordExtension(box, null), false);
+  assert.strictEqual(up.readExtensionState(box), null);
+});
+
+test("G10  a corrupt state file reads as absent rather than throwing", (box) => {
+  fs.writeFileSync(path.join(box, up.STATE_FILE), "{not json");
+  assert.strictEqual(up.readExtensionState(box), null);
+});
+
+test("G11  a fresh cache is reused without touching the network", async (box) => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    throw new Error("should not be called");
+  };
+  fs.writeFileSync(
+    path.join(box, up.CACHE_FILE),
+    JSON.stringify({ checkedAt: 5000, latest: "9.9.9" }),
+  );
+  const r = await up.checkForUpdate({
+    current: "1.0.0",
+    home: box,
+    now: 5000 + 60_000,
+    fetchImpl,
+  });
+  assert.strictEqual(calls, 0, "hit the network despite a fresh cache");
+  assert.strictEqual(r.latest, "9.9.9");
+  assert.ok(r.updateAvailable);
+});
+
+test("G12  a stale cache is refreshed and rewritten", async (box) => {
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ version: "2.0.0" }) });
+  fs.writeFileSync(
+    path.join(box, up.CACHE_FILE),
+    JSON.stringify({ checkedAt: 0, latest: "1.0.0" }),
+  );
+  const r = await up.checkForUpdate({
+    current: "1.0.0",
+    home: box,
+    now: 30 * 60 * 60 * 1000,
+    fetchImpl,
+  });
+  assert.strictEqual(r.latest, "2.0.0");
+  const onDisk = JSON.parse(fs.readFileSync(path.join(box, up.CACHE_FILE), "utf8"));
+  assert.strictEqual(onDisk.latest, "2.0.0");
+});
+
+test("G13  a failed check is cached briefly, not permanently", async (box) => {
+  // The package 404s until first publish. That must not wedge the check for a
+  // full day, nor hammer the registry on every start.
+  const fetchImpl = async () => ({ ok: false, status: 404 });
+  const r = await up.checkForUpdate({
+    current: "1.0.0",
+    home: box,
+    now: 1_000_000,
+    fetchImpl,
+  });
+  assert.strictEqual(r.latest, null);
+  assert.strictEqual(r.updateAvailable, false);
+
+  // Still inside the short failure TTL: no second request.
+  let calls = 0;
+  await up.checkForUpdate({
+    current: "1.0.0",
+    home: box,
+    now: 1_000_000 + 60_000,
+    fetchImpl: async () => {
+      calls++;
+      return { ok: false };
+    },
+  });
+  assert.strictEqual(calls, 0, "retried inside the failure TTL");
+
+  // Past it, it tries again rather than staying dark forever.
+  await up.checkForUpdate({
+    current: "1.0.0",
+    home: box,
+    now: 1_000_000 + 2 * 60 * 60 * 1000,
+    fetchImpl: async () => {
+      calls++;
+      return { ok: true, json: async () => ({ version: "3.0.0" }) };
+    },
+  });
+  assert.strictEqual(calls, 1, "never retried after the failure TTL expired");
+});
+
+test("G14  network failures and junk payloads resolve to null", async () => {
+  const cases = [
+    async () => {
+      throw new Error("offline");
+    },
+    async () => ({ ok: true, json: async () => ({}) }),
+    async () => ({ ok: true, json: async () => ({ version: "not-a-version" }) }),
+    async () => ({ ok: true, json: async () => { throw new Error("bad json"); } }),
+    async () => null,
+  ];
+  for (const fetchImpl of cases) {
+    assert.strictEqual(await up.fetchLatest("poltertab", fetchImpl), null);
+  }
+});
+
+test("G15  POLTERTAB_NO_UPDATE_CHECK suppresses the network call", async (box) => {
+  const prev = process.env.POLTERTAB_NO_UPDATE_CHECK;
+  process.env.POLTERTAB_NO_UPDATE_CHECK = "1";
+  try {
+    let calls = 0;
+    const r = await up.checkForUpdate({
+      current: "1.0.0",
+      home: box,
+      now: 1,
+      fetchImpl: async () => {
+        calls++;
+        return { ok: true, json: async () => ({ version: "9.9.9" }) };
+      },
+    });
+    assert.ok(up.disabled(), "env var not respected");
+    assert.strictEqual(calls, 0, "made a request while disabled");
+    assert.strictEqual(r.updateAvailable, false);
+  } finally {
+    if (prev === undefined) delete process.env.POLTERTAB_NO_UPDATE_CHECK;
+    else process.env.POLTERTAB_NO_UPDATE_CHECK = prev;
+  }
+});
+
+test("G16  the fetch timeout stays well clear of a cold connection", () => {
+  // Every test above injects a fake fetch, so all of them passed while the real
+  // lookup failed 100% of the time: a cold TLS+DNS handshake to
+  // registry.npmjs.org measured ~4s, and the timeout was 3s. Mocks cannot see
+  // this, so the constant itself is what gets guarded.
+  const src = fs.readFileSync(
+    path.join(REPO, "mcp-server", "update-check.js"),
+    "utf8",
+  );
+  const m = /FETCH_TIMEOUT_MS\s*=\s*(\d+)/.exec(src);
+  assert.ok(m, "FETCH_TIMEOUT_MS is gone");
+  assert.ok(
+    Number(m[1]) >= 10000,
+    `timeout ${m[1]}ms is too tight for a ~4s cold handshake`,
+  );
+});
+
+test("G17  the server reports its real version, not a hardcoded one", () => {
+  // serverInfo said "1.0.0" through every release, so the version a client
+  // reported had nothing to do with what was installed.
+  const src = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  assert.ok(
+    /version:\s*OWN_VERSION/.test(src),
+    "serverInfo version is not read from package.json",
+  );
+  assert.ok(
+    !/name:\s*"poltertab-browser-mcp",\s*\n\s*version:\s*"/.test(src),
+    "serverInfo still has a hardcoded version string",
+  );
+});
+
+test("G18  the server keeps the extension version it used to discard", () => {
+  const src = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  assert.ok(/recordExtension/.test(src), "extension version is never recorded");
+  assert.ok(
+    /extensionVersion = msg\.version/.test(src),
+    "extension version is still dropped on the floor",
+  );
+});
+
+test("G19  the notice is appended as its own block, once per process", () => {
+  const src = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  assert.ok(/noticeDelivered/.test(src), "no once-per-process guard");
+  assert.ok(
+    /content:\s*\[\.\.\.result\.content/.test(src),
+    "notice does not append to the existing content array",
+  );
+});
+
+test("G20  doctor runs with no server, no network, and no state", async (box) => {
+  // The state someone is actually in when they reach for doctor.
+  const { spawnSync } = require("child_process");
+  const r = spawnSync(
+    process.execPath,
+    [path.join(REPO, "bin", "poltertab.js"), "doctor", "--port", "7999"],
+    {
+      encoding: "utf8",
+      timeout: 20000,
+      env: {
+        ...process.env,
+        POLTERTAB_HOME: box,
+        POLTERTAB_NO_UPDATE_CHECK: "1",
+      },
+    },
+  );
+  assert.strictEqual(r.status, 0, `exit ${r.status}: ${r.stderr}`);
+  assert.match(r.stdout, /server/, "no server line");
+  assert.match(r.stdout, /extension/, "no extension line");
+  assert.match(r.stdout, /nothing on port 7999/, "did not probe the port");
+});
+
+test("G21  doctor exits non-zero on skew so a script can act on it", async (box) => {
+  const { spawnSync } = require("child_process");
+  const own = JSON.parse(
+    fs.readFileSync(path.join(REPO, "package.json"), "utf8"),
+  ).version;
+  // Seed a last-seen extension a major version behind whatever is installed.
+  const behind = `${Number(own.split(".")[0]) + 1}.0.0`;
+  up.recordExtension(box, "0.0.1", Date.now());
+  const r = spawnSync(
+    process.execPath,
+    [path.join(REPO, "bin", "poltertab.js"), "doctor", "--port", "7999"],
+    {
+      encoding: "utf8",
+      timeout: 20000,
+      env: {
+        ...process.env,
+        POLTERTAB_HOME: box,
+        POLTERTAB_NO_UPDATE_CHECK: "1",
+      },
+    },
+  );
+  assert.strictEqual(r.status, 1, `expected 1 on skew, got ${r.status}`);
+  assert.match(r.stdout, /SKEW/);
+  assert.ok(behind, "guard against an unused-var lint");
+});
+
+chain.then(() => {
+  console.log(
+    `\n${pass} passed, ${failures.length} failed` +
+      (failures.length ? `\n  ${failures.join("\n  ")}` : "") +
+      "\n",
+  );
+  process.exit(failures.length ? 1 : 0);
+});

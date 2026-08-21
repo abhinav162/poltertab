@@ -15,6 +15,9 @@
   let ws = null;
   let isConnected = false;
   let activeSessions = [];
+  // Learned from the server's reply to extension_ready; cleared on disconnect
+  // so the popup never shows a stale comparison against a server that is gone.
+  let serverVersion = null;
 
   // --- Session Manager ---
 
@@ -423,6 +426,14 @@
         return;
       }
 
+      // The server answers our extension_ready with its own version. Without
+      // this the popup can show our version but has nothing to compare it to.
+      if (msg.type === "server_version") {
+        serverVersion = msg.version || null;
+        broadcastState();
+        return;
+      }
+
       const { id, action, ...params } = msg;
       try {
         const result = await handleCommand(action, params);
@@ -444,6 +455,7 @@
       ws = null;
       isConnected = false;
       activeSessions = [];
+      serverVersion = null;
       broadcastState();
       // Stop keep-alive, start reconnect polling
       chrome.alarms.clear(KEEPALIVE_ALARM);
@@ -461,7 +473,12 @@
     chrome.runtime
       .sendMessage({
         type: "state_update",
-        state: { connected: isConnected, sessions: activeSessions },
+        state: {
+          connected: isConnected,
+          sessions: activeSessions,
+          version: chrome.runtime.getManifest().version,
+          serverVersion,
+        },
       })
       .catch(() => {});
   }

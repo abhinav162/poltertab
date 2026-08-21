@@ -229,6 +229,41 @@ poltertab/
 └── README.md
 ```
 
+## Staying up to date
+
+```bash
+poltertab doctor
+```
+
+Reports the installed version, whether npm has a newer one, and — the part that
+matters — whether the two halves agree:
+
+```
+  server      1.1.0
+  extension   1.0.0  SKEW      last seen 3m ago
+  bridge      listening on port 7822
+  state       ~/.poltertab
+  npm         1.2.0 available
+```
+
+The npm package updates when you run `npm update -g poltertab`. The extension,
+loaded unpacked, **never updates on its own** — Chrome only auto-updates what came
+from the Web Store. So the interesting failure is not a missing update, it is
+skew: a newer server sending a command an older extension does not implement,
+which surfaces as an element mysteriously not being found.
+
+Both halves ship as one version, so a mismatch is unambiguous. The extension
+reports its version when it connects; the server compares, logs it, and shows it
+in the extension popup. If either half is behind, the first tool response of a
+session says so once, so you hear about it without having to think to check.
+
+Update checks hit `registry.npmjs.org` at most once a day, cached in
+`~/.poltertab/update-check.json`, and never block anything. Set
+`POLTERTAB_NO_UPDATE_CHECK=1` to turn them off — skew detection is local and
+keeps working either way.
+
+`poltertab doctor` exits non-zero on skew, so CI or a shell prompt can act on it.
+
 ## Where your data lives
 
 Nothing the server accumulates is stored inside the package:
