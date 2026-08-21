@@ -4,3 +4,4 @@ node_modules/
 temp/
 .pi-glla/
 mcp-server/downloads/
+mcp-server/navigation_memory/
