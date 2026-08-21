@@ -4,6 +4,7 @@
 //   B  content_script.js injection idempotence   (the N-clicks-per-command bug)
 //   C  background.js navigation load race        (the 30s hang on fast pages)
 //   D  mcp-server end-to-end over stdio          (output_file, stdout purity)
+//   E  shadow DOM piercing + late-element retry  (the OCI-console class of bug)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -94,6 +95,15 @@ async function groupA() {
     );
   });
 
+  await test("A6 snapshot descends into shadow roots so elements are discoverable", () => {
+    const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
+    const walk = src.slice(src.indexOf("const walk = (el, depth)"));
+    assert.ok(
+      /shadowRootOf\(el\)/.test(walk.slice(0, 900)),
+      "snapshot's walk no longer descends into shadow roots",
+    );
+  });
+
   await test("A3 content_script guards re-execution before registering anything", () => {
     const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
     const guard = src.indexOf("__polterTabInjected");
@@ -171,10 +181,21 @@ function contentScriptSandbox() {
       messageListeners: messageListeners.length,
       commandListeners: commandListeners.length,
     }),
-    // Mirrors Chrome: every registered listener receives the message.
-    dispatch: (msg) => {
+    // Mirrors Chrome: every registered listener receives the message. Handlers
+    // reply asynchronously now, so wait for each sendResponse.
+    dispatch: async (msg) => {
       let responses = 0;
-      for (const fn of commandListeners) fn(msg, {}, () => responses++);
+      await Promise.all(
+        commandListeners.map(
+          (fn) =>
+            new Promise((resolve) =>
+              fn(msg, {}, () => {
+                responses++;
+                resolve();
+              }),
+            ),
+        ),
+      );
       return responses;
     },
   };
@@ -204,12 +225,16 @@ async function groupB() {
     assert.strictEqual(c.messageListeners, 1, `got ${c.messageListeners} forwarders`);
   });
 
-  await test("B4 one click command produces exactly one click (was 2, 5, 9...)", () => {
+  await test("B4 one click command produces exactly one click (was 2, 5, 9...)", async () => {
     const s = contentScriptSandbox();
     const observed = [];
     for (let n = 1; n <= 3; n++) {
       s.inject(); // background.js re-injects before every DOM command
-      s.dispatch({ source: "poltertab", action: "click", params: { selector: "#inc" } });
+      await s.dispatch({
+        source: "poltertab",
+        action: "click",
+        params: { selector: "#inc" },
+      });
       observed.push(s.counts().clicks);
     }
     assert.deepStrictEqual(
@@ -658,6 +683,217 @@ async function groupD() {
   }
 }
 
+// ───────── E. shadow DOM piercing + late-element retry ─────────
+
+// Minimal DOM good enough for content_script's real code paths. Each "root"
+// answers querySelector/querySelectorAll over a flat descendant list, so a
+// shadow root is just another root — which is exactly how the traversal must
+// see it.
+function fakeEl(tag, opts = {}) {
+  const el = {
+    tagName: tag.toUpperCase(),
+    id: opts.id || "",
+    textContent: opts.text || "",
+    value: "",
+    attributes: [],
+    children: [],
+    clicks: 0,
+    scrollIntoView() {},
+    focus() {},
+    closest: () => null,
+    getAttribute: () => null,
+    matches: () => false,
+    dispatchEvent(e) {
+      if (e.type === "click") el.clicks++;
+      return true;
+    },
+  };
+  if (opts.shadow) el.shadowRoot = opts.shadow;
+  if (opts.closedShadow) {
+    el.shadowRoot = null; // what page script sees for a closed root
+    el.__closedRoot = opts.closedShadow;
+  }
+  return el;
+}
+
+function fakeRoot(descendants, tracker) {
+  const match = (el, sel) =>
+    sel === "*" || (sel.startsWith("#") && el.id === sel.slice(1));
+  return {
+    __descendants: descendants,
+    children: descendants,
+    querySelector(sel) {
+      if (tracker) tracker.push(this);
+      return descendants.find((d) => match(d, sel)) || null;
+    },
+    querySelectorAll(sel) {
+      if (tracker) tracker.push(this);
+      return descendants.filter((d) => match(d, sel));
+    },
+  };
+}
+
+function shadowSandbox({ chromeDom = true, lightDescendants = [], roots = {} } = {}) {
+  const queried = [];
+  const body = fakeEl("body");
+  const light = fakeRoot(lightDescendants, queried);
+
+  const document = {
+    title: "T",
+    body,
+    documentElement: { appendChild() {} },
+    head: { appendChild() {} },
+    createElement: () => ({ set src(v) {}, remove() {} }),
+    querySelector: (s) => light.querySelector(s),
+    querySelectorAll: (s) => light.querySelectorAll(s),
+    // real content_script consults these before the piercing tier
+    evaluate: () => ({ singleNodeValue: null }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+  };
+
+  const chrome = {
+    runtime: {
+      getURL: (p) => p,
+      sendMessage: () => Promise.resolve(),
+      onMessage: { addListener: (fn) => listeners.push(fn) },
+    },
+    storage: { local: { get: (_k, cb) => cb && cb({}) } },
+  };
+  if (chromeDom) {
+    chrome.dom = {
+      openOrClosedShadowRoot: (el) => el.__closedRoot || el.shadowRoot || null,
+    };
+  }
+
+  const listeners = [];
+  const sandbox = {
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    Date,
+    Promise,
+    Error,
+    document,
+    chrome,
+    location: { href: "http://t/" },
+    NodeFilter: { SHOW_ELEMENT: 1 },
+    XPathResult: { FIRST_ORDERED_NODE_TYPE: 9 },
+    MouseEvent: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    Event: class {
+      constructor(type) {
+        this.type = type;
+      }
+    },
+    addEventListener() {},
+  };
+  vm.createContext(sandbox);
+  sandbox.window = sandbox;
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "content_script.js"), "utf8"),
+    sandbox,
+  );
+
+  return {
+    queried,
+    // Returns a promise for the response, since actions may now await.
+    send: (action, params) =>
+      new Promise((resolve) => {
+        listeners[0]({ source: "poltertab", action, params }, {}, resolve);
+      }),
+  };
+}
+
+async function groupE() {
+  console.log("\nE. shadow DOM piercing + late-element retry");
+
+  await test("E1 clicks an element two nested open shadow roots deep", async () => {
+    const deep = fakeEl("button", { id: "deep", text: "DEEP" });
+    const innerHost = fakeEl("div", { id: "inner", shadow: fakeRoot([deep]) });
+    const outerHost = fakeEl("div", { id: "outer", shadow: fakeRoot([innerHost]) });
+    const s = shadowSandbox({ lightDescendants: [outerHost] });
+    const res = await s.send("click", { selector: "#deep" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(deep.clicks, 1, "deep element was not clicked");
+  });
+
+  await test("E2 reaches a CLOSED shadow root via chrome.dom", async () => {
+    const deep = fakeEl("button", { id: "sealed" });
+    const host = fakeEl("div", { closedShadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("click", { selector: "#sealed" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(deep.clicks, 1, "closed root was not pierced");
+  });
+
+  await test("E3 without chrome.dom, a closed root stays unreachable", async () => {
+    const deep = fakeEl("button", { id: "sealed" });
+    const host = fakeEl("div", { closedShadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ chromeDom: false, lightDescendants: [host] });
+    const res = await s.send("click", { selector: "#sealed" });
+    assert.strictEqual(res.success, false, "should not resolve without chrome.dom");
+    assert.strictEqual(deep.clicks, 0);
+  });
+
+  await test("E4 light DOM wins: a light match never traverses shadow roots", async () => {
+    const target = fakeEl("button", { id: "here" });
+    const shadowChild = fakeEl("button", { id: "elsewhere" });
+    const host = fakeEl("div", { shadow: fakeRoot([shadowChild]) });
+    const s = shadowSandbox({ lightDescendants: [target, host] });
+    const res = await s.send("click", { selector: "#here" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(target.clicks, 1);
+    assert.strictEqual(
+      s.queried.length,
+      1,
+      `traversed ${s.queried.length} roots for a light-DOM hit`,
+    );
+  });
+
+  await test("E5 a self-referential host cannot hang the page", async () => {
+    const host = fakeEl("div", { id: "loop" });
+    host.shadowRoot = fakeRoot([host]); // points back at itself
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const started = Date.now();
+    const res = await s.send("click", { selector: "#nope" });
+    assert.strictEqual(res.success, false);
+    assert.ok(
+      Date.now() - started < 12000,
+      `took ${Date.now() - started}ms — depth cap missing?`,
+    );
+  });
+
+  await test("E6 waits for a late-rendering modal instead of failing instantly", async () => {
+    const late = fakeEl("button", { id: "modal-btn" });
+    const present = [];
+    const s = shadowSandbox({ lightDescendants: present });
+    setTimeout(() => present.push(late), 400); // portal mounts after the click
+    const res = await s.send("click", { selector: "#modal-btn" });
+    assert.strictEqual(res.success, true, `gave up too early: ${res.error}`);
+    assert.strictEqual(late.clicks, 1);
+  });
+
+  await test("E7 a genuinely absent element still reports not found", async () => {
+    const s = shadowSandbox({ lightDescendants: [] });
+    const res = await s.send("click", { selector: "#ghost" });
+    assert.strictEqual(res.success, false);
+    assert.ok(/not found/i.test(res.error), res.error);
+  });
+
+  await test("E8 scrape reaches into shadow roots too", async () => {
+    const deep = fakeEl("span", { id: "val", text: "shadow value" });
+    const host = fakeEl("div", { shadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("scrape", { selector: "#val" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(res.data.length, 1, "scrape stayed light-DOM only");
+    assert.strictEqual(res.data[0].text, "shadow value");
+  });
+}
+
 // ───────────────────────────── runner ─────────────────────────────
 
 (async () => {
@@ -666,6 +902,7 @@ async function groupD() {
   await groupB();
   await groupC();
   await groupD();
+  await groupE();
 
   const total = pass + failures.length;
   console.log(`\n${pass}/${total} passed`);

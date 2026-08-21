@@ -2,6 +2,12 @@
 // Injected into every page to handle snapshot/scrape/click/fill/scroll/hover/get_text commands.
 
 (() => {
+  // How deep to follow nested shadow roots, and how long to wait for an
+  // element that has not rendered yet. Raise ELEMENT_WAIT_MS for apps that
+  // mount dialogs slowly.
+  const MAX_SHADOW_DEPTH = 10;
+  const ELEMENT_WAIT_MS = 3000;
+
   // background.js re-injects this file before every DOM command so tabs that
   // were already open when the extension loaded still get a content script
   // without the user reloading them. Re-execution must therefore be a no-op:
@@ -83,7 +89,82 @@
       if (node.textContent.trim() === selector.trim()) return node;
     }
 
+    // Same lookups again, this time piercing shadow roots. Deliberately last:
+    // a page that resolves in the light DOM takes the exact path it always
+    // did, and only a miss pays for the walk.
+    return deepQuery(selector) || deepTextMatch(selector);
+  }
+
+  // chrome.dom.openOrClosedShadowRoot is an extension-only API that reaches
+  // CLOSED roots, which page script cannot touch at all. The property fallback
+  // still covers open roots where the API is unavailable.
+  function shadowRootOf(el) {
+    try {
+      if (chrome.dom && chrome.dom.openOrClosedShadowRoot) {
+        return chrome.dom.openOrClosedShadowRoot(el);
+      }
+    } catch (_) {
+      // Not a shadow host, or the API refused the node.
+    }
+    return el.shadowRoot || null;
+  }
+
+  // The document, then every shadow root nested inside it.
+  // ponytail: querySelectorAll("*") per root is O(nodes) per level. Fine as a
+  // fallback that only runs on a light-DOM miss; the depth cap keeps a
+  // pathological or self-referential component tree from hanging the page.
+  function* shadowRoots(root, depth = 0) {
+    yield root;
+    if (depth >= MAX_SHADOW_DEPTH) return;
+    for (const el of root.querySelectorAll("*")) {
+      const sr = shadowRootOf(el);
+      if (sr) yield* shadowRoots(sr, depth + 1);
+    }
+  }
+
+  function deepQuery(selector, all = false) {
+    const found = [];
+    for (const root of shadowRoots(document)) {
+      try {
+        if (all) {
+          found.push(...root.querySelectorAll(selector));
+        } else {
+          const el = root.querySelector(selector);
+          if (el) return el;
+        }
+      } catch (_) {
+        return all ? [] : null; // not valid CSS at all — nothing to find
+      }
+    }
+    return all ? found : null;
+  }
+
+  function deepTextMatch(selector) {
+    const target = selector.trim();
+    for (const root of shadowRoots(document)) {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.textContent.trim() === target) return el;
+      }
+    }
     return null;
+  }
+
+  // Modals and portals mount a moment after the click that triggers them, so a
+  // miss is usually "too early" rather than "not there". Back off between
+  // attempts so a genuinely absent element in a large app does not pay for the
+  // full piercing walk thirty times over.
+  async function waitForElement(selector) {
+    const deadline = Date.now() + ELEMENT_WAIT_MS;
+    let delay = 100;
+    for (;;) {
+      const el = resolveElement(selector);
+      if (el) return el;
+      if (Date.now() >= deadline) {
+        throw new Error(`Element not found: ${selector}`);
+      }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 800);
+    }
   }
 
   function snapshot(params) {
@@ -163,6 +244,15 @@
         walk(child, depth + 1);
         if (nodes.length >= max_nodes) return;
       }
+      // Descend into the shadow tree as well, otherwise the agent cannot even
+      // see the elements it is expected to produce selectors for.
+      const shadow = shadowRootOf(el);
+      if (shadow) {
+        for (const child of shadow.children) {
+          walk(child, depth + 1);
+          if (nodes.length >= max_nodes) return;
+        }
+      }
     };
 
     if (root) walk(root, 0);
@@ -180,8 +270,8 @@
 
     if (selector) {
       const elements = multiple
-        ? Array.from(document.querySelectorAll(selector))
-        : [document.querySelector(selector)].filter(Boolean);
+        ? deepQuery(selector, true)
+        : [deepQuery(selector)].filter(Boolean);
 
       return elements.map((el) => {
         if (attribute) return el.getAttribute(attribute);
@@ -222,9 +312,8 @@
     return { title, url, meta, links, headings, bodyText };
   }
 
-  function click(params) {
-    const el = resolveElement(params.selector);
-    if (!el) throw new Error(`Element not found: ${params.selector}`);
+  async function click(params) {
+    const el = await waitForElement(params.selector);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
 
@@ -237,9 +326,8 @@
     return { clicked: params.selector, tag: el.tagName.toLowerCase() };
   }
 
-  function fill(params) {
-    const el = resolveElement(params.selector);
-    if (!el) throw new Error(`Element not found: ${params.selector}`);
+  async function fill(params) {
+    const el = await waitForElement(params.selector);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.focus();
@@ -269,11 +357,10 @@
     return { filled: params.selector, value: params.value };
   }
 
-  function scroll(params) {
+  async function scroll(params) {
     const { direction = "down", amount = 500, selector } = params;
 
-    const target = selector ? resolveElement(selector) : window;
-    if (selector && !target) throw new Error(`Element not found: ${selector}`);
+    const target = selector ? await waitForElement(selector) : window;
 
     const scrollOpts = { behavior: "smooth" };
     switch (direction) {
@@ -324,9 +411,8 @@
     };
   }
 
-  function hover(params) {
-    const el = resolveElement(params.selector);
-    if (!el) throw new Error(`Element not found: ${params.selector}`);
+  async function hover(params) {
+    const el = await waitForElement(params.selector);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
@@ -335,9 +421,8 @@
     return { hovered: params.selector, tag: el.tagName.toLowerCase() };
   }
 
-  function getText(params) {
-    const el = resolveElement(params.selector);
-    if (!el) throw new Error(`Element not found: ${params.selector}`);
+  async function getText(params) {
+    const el = await waitForElement(params.selector);
     return { text: el.textContent.trim().slice(0, 10000) };
   }
 
@@ -351,52 +436,42 @@
 
     const { action, params = {} } = message;
 
-    try {
-      let result;
-      switch (action) {
-        case "update_patterns":
-          window.postMessage(
-            { type: "ZC_UPDATE_PATTERNS", patterns: params.patterns },
-            "*",
-          );
-          sendResponse({ success: true });
-          return true;
-        case "snapshot":
-          result = snapshot(params);
-          break;
-        case "scrape":
-          result = scrape(params);
-          break;
-        case "click":
-          result = click(params);
-          break;
-        case "fill":
-          result = fill(params);
-          break;
-        case "scroll":
-          result = scroll(params);
-          break;
-        case "hover":
-          result = hover(params);
-          break;
-        case "get_text":
-          result = getText(params);
-          break;
-        case "get_title":
-          result = getTitle();
-          break;
-        default:
-          sendResponse({
-            success: false,
-            error: `Unknown content action: ${action}`,
-          });
-          return true;
-      }
-      sendResponse({ success: true, data: result });
-    } catch (err) {
-      sendResponse({ success: false, error: err.message });
+    if (action === "update_patterns") {
+      window.postMessage(
+        { type: "ZC_UPDATE_PATTERNS", patterns: params.patterns },
+        "*",
+      );
+      sendResponse({ success: true });
+      return true;
     }
 
-    return true; // keep sendResponse channel open
+    const handlers = {
+      snapshot,
+      scrape,
+      click,
+      fill,
+      scroll,
+      hover,
+      get_text: getText,
+      get_title: getTitle,
+    };
+
+    const handler = handlers[action];
+    if (!handler) {
+      sendResponse({
+        success: false,
+        error: `Unknown content action: ${action}`,
+      });
+      return true;
+    }
+
+    // Actions can now await a late-rendering element, so the reply is always
+    // asynchronous. Returning true keeps the sendResponse channel open.
+    Promise.resolve()
+      .then(() => handler(params))
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+
+    return true;
   });
 })();
