@@ -1,0 +1,47 @@
+{
+  "name": "poltertab",
+  "version": "1.0.0",
+  "description": "Let any AI assistant drive and scrape your existing Chrome profile — no headless browser, no complex setup.",
+  "bin": {
+    "poltertab": "./bin/poltertab.js"
+  },
+  "main": "mcp-server/index.js",
+  "scripts": {
+    "test": "node mcp-server/test/run.js && node test/setup.test.js",
+    "setup": "node bin/poltertab.js setup"
+  },
+  "files": [
+    "bin/",
+    "mcp-server/",
+    "skills/",
+    "assets/",
+    "!mcp-server/test/",
+    "!mcp-server/test-client.js",
+    "!mcp-server/downloads/",
+    "!mcp-server/navigation_memory/"
+  ],
+  "keywords": [
+    "mcp",
+    "chrome",
+    "browser-automation",
+    "claude",
+    "model-context-protocol",
+    "browser-control"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/abhinav162/poltertab.git"
+  },
+  "homepage": "https://github.com/abhinav162/poltertab#readme",
+  "bugs": {
+    "url": "https://github.com/abhinav162/poltertab/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ws": "^8.21.3"
+  }
+}

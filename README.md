@@ -31,32 +31,56 @@ the WebSocket port serves the extension and the rest proxy through it. See
 
 ## Setup
 
-### 1. Install the Chrome Extension
+Requires Node 18 or newer.
 
-1. Open Chrome → `chrome://extensions/`
-2. Enable **Developer mode** (top right toggle)
-3. Click **Load unpacked**
-4. Select the `chrome-extension/` directory from this repo
+### 1. Run the installer
 
-### 2. Configure Your Agent (Claude Desktop / Cursor)
+```bash
+npm install -g poltertab
+poltertab setup
+```
 
-You need to have `node` installed on your machine.
+The wizard asks whether to install for all projects or just the current one,
+then puts three things in place:
 
-**For Claude Desktop:**
-Add this to your `claude_desktop_config.json`:
+- the `browser-navigation-strategy` skill, so the agent knows how to drive a
+  browser that fights back
+- a `CLAUDE.md` section, so it knows the tools exist
+- the MCP server registration, via `claude mcp add`
+
+It is safe to re-run — each step detects its own prior work, so an upgrade or a
+second pass will not duplicate anything.
+
+Prefer not to install globally? `npx poltertab setup` does the same thing.
+
+### 2. Install the Chrome Extension
+
+The installer prints this link when it finishes:
+
+1. Download the latest [release zip](https://github.com/abhinav162/poltertab/releases/latest) and unzip it
+2. Open Chrome → `chrome://extensions/`
+3. Enable **Developer mode** (top right toggle)
+4. Click **Load unpacked** and select the unzipped `chrome-extension/` directory
+
+Then restart your AI tool so it picks up the new tools.
+
+### Other MCP clients
+
+The wizard targets Claude Code. Any other MCP client works too — register
+`poltertab` as a stdio command:
 
 ```json
 {
   "mcpServers": {
-    "chrome-browser-control": {
-      "command": "node",
-      "args": ["/absolute/path/to/poltertab/mcp-server/index.js"]
+    "poltertab": {
+      "command": "poltertab"
     }
   }
 }
 ```
 
-Any other MCP-compatible client works the same way — point it at `mcp-server/index.js` over stdio.
+Running from a clone instead of npm? Point the client at the file directly:
+`{"command": "node", "args": ["/absolute/path/to/poltertab/mcp-server/index.js"]}`
 
 > **Legacy:** This extension began as a ZeroClaw plugin and still speaks ZeroClaw's built-in REST bridge (`backend = "bridge"` in `~/.zeroclaw/config.toml`). That path is optional and not required for the MCP setup above.
 
@@ -180,11 +204,20 @@ PolterTab servers share that port by design (see above). Both sides must move:
 
 ```
 poltertab/
+├── package.json               # Published npm package (deps + bin)
+├── bin/
+│   ├── poltertab.js           # Entry: bare = MCP server, `setup` = wizard
+│   └── setup.js               # Installer (skill, CLAUDE.md, MCP registration)
+├── skills/
+│   └── browser-navigation-strategy/   # Shipped skill, installed by the wizard
+├── assets/
+│   └── claude-md-snippet.md   # The CLAUDE.md section the wizard appends
 ├── mcp-server/
 │   ├── index.js               # MCP server (stdio) + WebSocket hub
-│   ├── test/run.js            # Regression suite
-│   ├── navigation_memory/     # Per-domain obstacles and fixes
-│   └── package.json
+│   ├── test/run.js            # Extension + server regression suite
+│   └── navigation_memory/     # Per-domain obstacles and fixes
+├── test/
+│   └── setup.test.js          # Installer regression suite
 ├── chrome-extension/
 │   ├── manifest.json          # MV3 manifest
 │   ├── background.js          # WebSocket client, session manager, command router
@@ -200,10 +233,16 @@ poltertab/
 ## Tests
 
 ```bash
-node mcp-server/test/run.js
+npm install
+npm test
 ```
 
-No framework and no browser needed. The suite covers content-script injection
-idempotence, the tab-navigation load race, and the MCP server end to end —
-spawning real server processes against a fake extension on port `7931`, so it
-never disturbs a PolterTab already running on `7822`.
+No framework and no browser needed. Two suites run:
+
+- `mcp-server/test/run.js` — content-script injection idempotence, shadow DOM
+  piercing, cross-frame search, the tab-navigation load race, and the MCP server
+  end to end. It spawns real server processes against a fake extension on port
+  `7931`, so it never disturbs a PolterTab already running on `7822`.
+- `test/setup.test.js` — the installer: scope resolution, skill install, and
+  `CLAUDE.md` idempotence. Every case runs in a throwaway temp directory, so a
+  leaked write cannot reach your real `~/.claude`.
