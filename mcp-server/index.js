@@ -11,12 +11,49 @@ const {
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
-const MEMORY_DIR = path.join(__dirname, "navigation_memory");
-if (!fs.existsSync(MEMORY_DIR)) {
-  fs.mkdirSync(MEMORY_DIR);
-}
+// Anything the user accumulates lives outside the package. Under a global npm
+// install __dirname resolves inside node_modules/poltertab/, so site memory
+// written next to the code is destroyed by the next `npm update -g` — the
+// upgrade would read as amnesia. Downloads have it worse: output_file exists to
+// keep large payloads out of the context window, and burying them in
+// node_modules makes them hard to find and just as easy to lose.
+//
+// POLTERTAB_HOME exists so the test suite can point this somewhere disposable
+// instead of writing into the real one.
+const POLTERTAB_HOME =
+  process.env.POLTERTAB_HOME || path.join(os.homedir(), ".poltertab");
+const MEMORY_DIR = path.join(POLTERTAB_HOME, "navigation_memory");
+const DOWNLOADS_DIR = path.join(POLTERTAB_HOME, "downloads");
+
+fs.mkdirSync(MEMORY_DIR, { recursive: true });
+
+// Installs predating the move kept memory beside the code. Copy it forward once
+// so an upgrade does not look like the agent forgot everything it learned.
+// Never overwrite: if both sides have a note for a domain, the one already in
+// the new location is the live one.
+(() => {
+  const legacy = path.join(__dirname, "navigation_memory");
+  if (legacy === MEMORY_DIR || !fs.existsSync(legacy)) return;
+  let copied = 0;
+  for (const name of fs.readdirSync(legacy)) {
+    const to = path.join(MEMORY_DIR, name);
+    if (!name.endsWith(".json") || fs.existsSync(to)) continue;
+    try {
+      fs.copyFileSync(path.join(legacy, name), to);
+      copied++;
+    } catch (_) {
+      // A read-only or half-removed legacy dir is not worth failing startup.
+    }
+  }
+  if (copied) {
+    console.error(
+      `[PolterTab MCP] Migrated ${copied} site memory file(s) to ${MEMORY_DIR}`,
+    );
+  }
+})();
 
 // Port configuration: use MCP_BROWSER_WS_PORT env, or --port CLI arg, or 7822 fallback
 let WS_PORT = process.env.MCP_BROWSER_WS_PORT
@@ -879,12 +916,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const base = parts.join(".");
         const finalName = `${base}_${Date.now()}${ext}`;
 
-        const downloadsDir = path.join(__dirname, "downloads");
-        if (!fs.existsSync(downloadsDir)) {
-          fs.mkdirSync(downloadsDir, { recursive: true });
-        }
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 
-        const safePath = path.join(downloadsDir, finalName);
+        const safePath = path.join(DOWNLOADS_DIR, finalName);
         fs.writeFileSync(safePath, JSON.stringify(responsePayload, null, 2));
 
         return {

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json claims engines >=18; testing the floor is what makes
+        # that claim true rather than aspirational.
+        node: [18, 22]
+    name: test (node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  release-meta:
+    # Cheap guard so a version mismatch surfaces on the PR that introduced it,
+    # not at publish time when the tag already exists.
+    runs-on: ubuntu-latest
+    name: version consistency
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: package.json and manifest.json agree
+        run: node scripts/release-meta.js "v$(node -p 'require("./package.json").version')"
