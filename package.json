@@ -8,7 +8,8 @@
   "main": "mcp-server/index.js",
   "scripts": {
     "test": "node mcp-server/test/run.js && node test/setup.test.js",
-    "setup": "node bin/poltertab.js setup"
+    "setup": "node bin/poltertab.js setup",
+    "version": "node scripts/sync-manifest-version.js && git add chrome-extension/manifest.json"
   },
   "files": [
     "bin/",

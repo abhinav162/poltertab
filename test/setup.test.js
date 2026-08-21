@@ -325,6 +325,225 @@ test("E5  migration never overwrites a note already in the new location", (box) 
   }
 });
 
+console.log("\nF  release plumbing\n");
+
+const { spawnSync } = require("child_process");
+
+// Run the real script against a throwaway copy of the repo's two version
+// files, so these exercise the shipped logic without touching the checkout.
+function releaseMeta(box, { pkgVersion, manifest, tag, prerelease }) {
+  fs.mkdirSync(path.join(box, "chrome-extension"), { recursive: true });
+  fs.mkdirSync(path.join(box, "scripts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(box, "package.json"),
+    JSON.stringify({ name: "poltertab", version: pkgVersion }),
+  );
+  fs.writeFileSync(
+    path.join(box, "chrome-extension", "manifest.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+  );
+  fs.copyFileSync(
+    path.join(REPO, "scripts", "release-meta.js"),
+    path.join(box, "scripts", "release-meta.js"),
+  );
+  const r = spawnSync(
+    process.execPath,
+    [path.join(box, "scripts", "release-meta.js"), tag, String(prerelease)],
+    { encoding: "utf8" },
+  );
+  const out = {};
+  for (const line of (r.stdout || "").trim().split("\n")) {
+    const [k, v] = line.split("=");
+    if (k) out[k] = v;
+  }
+  return { status: r.status, out, stderr: r.stderr || "" };
+}
+
+const stable = (v) => ({ version: v });
+const pre = (v, name) => ({ version: v, version_name: name });
+
+test("F1  a stable version publishes to latest", (box) => {
+  const r = releaseMeta(box, {
+    pkgVersion: "2.0.0",
+    manifest: stable("2.0.0"),
+    tag: "v2.0.0",
+    prerelease: false,
+  });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.out.dist_tag, "latest");
+});
+
+test("F2  alpha, beta, and rc each get their own channel", (box) => {
+  for (const [id, expected] of [
+    ["alpha.1", "alpha"],
+    ["beta.4", "beta"],
+    ["rc.2", "rc"],
+  ]) {
+    const v = `2.1.0-${id}`;
+    const r = releaseMeta(box, {
+      pkgVersion: v,
+      manifest: pre("2.1.0", v),
+      tag: `v${v}`,
+      prerelease: true,
+    });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.out.dist_tag, expected, `${v} -> ${r.out.dist_tag}`);
+  }
+});
+
+test("F3  an unrecognised identifier never lands on latest", (box) => {
+  // The dangerous default. A typo'd channel must not become the tag that every
+  // plain `npm install poltertab` resolves to.
+  const v = "2.1.0-wierd.1";
+  const r = releaseMeta(box, {
+    pkgVersion: v,
+    manifest: pre("2.1.0", v),
+    tag: `v${v}`,
+    prerelease: true,
+  });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.notStrictEqual(r.out.dist_tag, "latest");
+});
+
+test("F4  a tag that disagrees with package.json is refused", (box) => {
+  const r = releaseMeta(box, {
+    pkgVersion: "2.0.0",
+    manifest: stable("2.0.0"),
+    tag: "v9.9.9",
+    prerelease: false,
+  });
+  assert.notStrictEqual(r.status, 0, "published despite a version mismatch");
+  assert.match(r.stderr, /package\.json/);
+});
+
+test("F5  a manifest left behind is refused", (box) => {
+  const r = releaseMeta(box, {
+    pkgVersion: "2.0.0",
+    manifest: stable("1.0.0"),
+    tag: "v2.0.0",
+    prerelease: false,
+  });
+  assert.notStrictEqual(r.status, 0, "published with a stale extension version");
+  assert.match(r.stderr, /manifest\.json/);
+});
+
+test("F6  a stable version flagged prerelease on GitHub is refused", (box) => {
+  // Publishing this would put a release the author called unfinished on the
+  // tag everyone installs by default.
+  const r = releaseMeta(box, {
+    pkgVersion: "2.0.0",
+    manifest: stable("2.0.0"),
+    tag: "v2.0.0",
+    prerelease: true,
+  });
+  assert.notStrictEqual(r.status, 0, "prerelease footgun not caught");
+  assert.match(r.stderr, /latest/);
+});
+
+test("F7  a non-semver tag is refused", (box) => {
+  const r = releaseMeta(box, {
+    pkgVersion: "2.0.0",
+    manifest: stable("2.0.0"),
+    tag: "release-two",
+    prerelease: false,
+  });
+  assert.notStrictEqual(r.status, 0, "accepted a non-semver tag");
+});
+
+test("F8  the manifest sync writes a Chrome-legal version", (box) => {
+  // Chrome rejects a manifest whose version has a prerelease identifier, so the
+  // numeric base goes in version and the full string in version_name.
+  const pkg = path.join(box, "package.json");
+  fs.mkdirSync(path.join(box, "chrome-extension"), { recursive: true });
+  fs.mkdirSync(path.join(box, "scripts"), { recursive: true });
+  fs.writeFileSync(pkg, JSON.stringify({ version: "3.4.5-beta.2" }));
+  fs.writeFileSync(
+    path.join(box, "chrome-extension", "manifest.json"),
+    '{\n  "manifest_version": 3,\n  "version": "0.0.1",\n  "permissions": ["tabs"]\n}\n',
+  );
+  fs.copyFileSync(
+    path.join(REPO, "scripts", "sync-manifest-version.js"),
+    path.join(box, "scripts", "sync-manifest-version.js"),
+  );
+  const r = spawnSync(
+    process.execPath,
+    [path.join(box, "scripts", "sync-manifest-version.js")],
+    { encoding: "utf8" },
+  );
+  assert.strictEqual(r.status, 0, r.stderr);
+  const body = fs.readFileSync(
+    path.join(box, "chrome-extension", "manifest.json"),
+    "utf8",
+  );
+  const m = JSON.parse(body);
+  assert.strictEqual(m.version, "3.4.5", "Chrome would reject this version");
+  assert.strictEqual(m.version_name, "3.4.5-beta.2");
+  assert.ok(/^\d+(\.\d+){0,3}$/.test(m.version), "version is not Chrome-legal");
+  // Untouched keys keep their original formatting — a version bump should not
+  // reformat the whole file.
+  assert.ok(body.includes('"permissions": ["tabs"]'), `reformatted: ${body}`);
+});
+
+test("F9  syncing a stable version clears a stale prerelease label", (box) => {
+  const pkg = path.join(box, "package.json");
+  fs.mkdirSync(path.join(box, "chrome-extension"), { recursive: true });
+  fs.mkdirSync(path.join(box, "scripts"), { recursive: true });
+  fs.writeFileSync(pkg, JSON.stringify({ version: "3.4.5" }));
+  fs.writeFileSync(
+    path.join(box, "chrome-extension", "manifest.json"),
+    '{\n  "version": "3.4.5",\n  "version_name": "3.4.5-beta.2",\n  "x": 1\n}\n',
+  );
+  fs.copyFileSync(
+    path.join(REPO, "scripts", "sync-manifest-version.js"),
+    path.join(box, "scripts", "sync-manifest-version.js"),
+  );
+  const r = spawnSync(
+    process.execPath,
+    [path.join(box, "scripts", "sync-manifest-version.js")],
+    { encoding: "utf8" },
+  );
+  assert.strictEqual(r.status, 0, r.stderr);
+  const m = JSON.parse(
+    fs.readFileSync(path.join(box, "chrome-extension", "manifest.json"), "utf8"),
+  );
+  assert.strictEqual(m.version, "3.4.5");
+  assert.strictEqual(
+    m.version_name,
+    undefined,
+    "chrome://extensions would still show the beta label",
+  );
+});
+
+test("F10  the repo's own version files agree right now", () => {
+  // Catches drift on any PR, rather than at publish time when the tag exists.
+  const r = spawnSync(
+    process.execPath,
+    [
+      path.join(REPO, "scripts", "release-meta.js"),
+      `v${JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version}`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.strictEqual(r.status, 0, r.stderr);
+});
+
+test("F11  the publish workflow gates on tests and resolves a channel", () => {
+  const wf = fs.readFileSync(
+    path.join(REPO, ".github", "workflows", "publish.yml"),
+    "utf8",
+  );
+  assert.ok(/release-meta\.js/.test(wf), "publish never validates the version");
+  assert.ok(/npm test/.test(wf), "publish is not gated on the test suite");
+  assert.ok(/--tag "\$\{\{ steps\.meta\.outputs\.dist_tag \}\}"/.test(wf),
+    "publish does not use the resolved dist-tag");
+  assert.ok(/id-token: write/.test(wf), "provenance needs id-token: write");
+  // A publish step that runs before the tests would defeat the gate.
+  assert.ok(
+    wf.indexOf("npm test") < wf.indexOf("npm publish"),
+    "publish runs before the tests",
+  );
+});
+
 console.log(
   `\n${pass} passed, ${failures.length} failed` +
     (failures.length ? `\n  ${failures.join("\n  ")}` : "") +

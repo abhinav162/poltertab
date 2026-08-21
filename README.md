@@ -248,6 +248,43 @@ Set `POLTERTAB_HOME` to move the whole tree. Upgrading from a version that kept
 memory in `mcp-server/navigation_memory/`? It is copied forward on first start,
 and an existing note at the destination always wins.
 
+## Releasing
+
+Publishing is driven by GitHub Releases. The version string decides the npm
+channel, so the git tag is the only thing you have to get right:
+
+| Version | npm tag | Installed by |
+|---|---|---|
+| `1.2.0` | `latest` | `npm install -g poltertab` |
+| `1.2.0-rc.1` | `rc` | `npm install -g poltertab@rc` |
+| `1.2.0-beta.1` | `beta` | `npm install -g poltertab@beta` |
+| `1.2.0-alpha.1` | `alpha` | `npm install -g poltertab@alpha` |
+
+To cut one:
+
+```bash
+npm version 1.2.0-beta.1     # bumps package.json, syncs the manifest, tags
+git push --follow-tags
+gh release create v1.2.0-beta.1 --generate-notes --prerelease
+```
+
+`npm version` runs `scripts/sync-manifest-version.js`, which keeps
+`chrome-extension/manifest.json` in step. The two files cannot hold the same
+string — Chrome rejects a manifest version with a prerelease identifier — so the
+numeric base goes in `version` and the full string in `version_name`.
+
+Publishing the release then runs the workflow: tests, a version-consistency
+check, `npm publish --provenance` on the resolved tag, and the extension zip
+gets built and attached to the release.
+
+The checks refuse to publish rather than guess. A tag that disagrees with
+`package.json`, a manifest left behind, or a stable version on a release marked
+*pre-release* all fail the run — that last one because it would otherwise land on
+`latest` and become the default install for everyone.
+
+Use the workflow's manual trigger (`dry_run: true`) to rehearse all of it
+without publishing.
+
 ## Tests
 
 ```bash

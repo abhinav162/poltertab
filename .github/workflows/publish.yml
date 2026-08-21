@@ -1,0 +1,85 @@
+name: Publish
+
+# Publishing is driven by GitHub Releases: cut a release, this ships it.
+# The version string decides the npm channel — see scripts/release-meta.js.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to publish (e.g. v1.1.0-beta.1)"
+        required: true
+      dry_run:
+        description: "Run every check and pack the tarball, but do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # attach the extension zip to the release
+  id-token: write # npm provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A release points at a tag; a manual run names one. Either way we
+          # publish the tagged tree, never whatever main happens to be at.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      # Nothing reaches the registry that cannot pass its own suite. npm
+      # unpublish is heavily restricted, so this is the last cheap gate.
+      - name: Test
+        run: npm test
+
+      - name: Resolve channel
+        id: meta
+        run: |
+          node scripts/release-meta.js \
+            "${{ github.event.release.tag_name || inputs.tag }}" \
+            "${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public --tag "${{ steps.meta.outputs.dist_tag }}"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build extension zip
+        run: |
+          zip -rq "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" \
+            chrome-extension -x '*.DS_Store'
+
+      # --clobber so re-running a release replaces the asset instead of failing.
+      - name: Attach extension zip to the release
+        if: ${{ github.event_name == 'release' }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`poltertab@${{ steps.meta.outputs.version }}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| npm tag | \`${{ steps.meta.outputs.dist_tag }}\` |"
+            echo "| install | \`npm install -g poltertab@${{ steps.meta.outputs.dist_tag }}\` |"
+            echo "| dry run | ${{ inputs.dry_run && 'yes — nothing published' || 'no' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
