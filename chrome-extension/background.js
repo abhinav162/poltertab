@@ -98,9 +98,9 @@
       let tab;
       if (url) {
         const targetUrl = url.startsWith("http") ? url : `https://${url}`;
+        const since = Date.now();
         tab = await chrome.tabs.create({ url: targetUrl });
-        await waitForTabLoad(tab.id);
-        tab = await chrome.tabs.get(tab.id);
+        tab = await waitForTabLoad(tab.id, since);
       } else {
         const [activeTab] = await chrome.tabs.query({
           active: true,
@@ -163,9 +163,9 @@
       if (!session || !session.url)
         throw new Error(`Session "${name}" has no URL to recover`);
 
+      const since = Date.now();
       const tab = await chrome.tabs.create({ url: session.url });
-      await waitForTabLoad(tab.id);
-      const updated = await chrome.tabs.get(tab.id);
+      const updated = await waitForTabLoad(tab.id, since);
 
       await this.addTabToGroup(updated.id);
 
@@ -544,6 +544,16 @@
     sessionManager.handleTabUpdated(tabId, changeInfo);
   });
 
+  // tabId -> timestamp of the last completed top-frame load. Registered once,
+  // at worker start, so no navigation's completion event can be missed.
+  const tabLoadEpoch = new Map();
+  chrome.webNavigation.onCompleted.addListener((details) => {
+    if (details.frameId === 0) tabLoadEpoch.set(details.tabId, Date.now());
+  });
+  chrome.tabs.onRemoved.addListener((closedTabId) => {
+    tabLoadEpoch.delete(closedTabId);
+  });
+
   // --- Command routing ---
 
   async function handleCommand(action, params) {
@@ -612,9 +622,9 @@
 
     let tab;
     if (resolvedTabId) {
+      const since = Date.now();
       tab = await chrome.tabs.update(resolvedTabId, { url: targetUrl });
-      await waitForTabLoad(tab.id);
-      tab = await chrome.tabs.get(tab.id);
+      tab = await waitForTabLoad(tab.id, since);
     } else {
       // No session context — use active tab or create new
       const [activeTab] = await chrome.tabs.query({
@@ -622,13 +632,13 @@
         currentWindow: true,
       });
       if (activeTab) {
+        const since = Date.now();
         tab = await chrome.tabs.update(activeTab.id, { url: targetUrl });
-        await waitForTabLoad(tab.id);
-        tab = await chrome.tabs.get(tab.id);
+        tab = await waitForTabLoad(tab.id, since);
       } else {
+        const since = Date.now();
         tab = await chrome.tabs.create({ url: targetUrl });
-        await waitForTabLoad(tab.id);
-        tab = await chrome.tabs.get(tab.id);
+        tab = await waitForTabLoad(tab.id, since);
       }
     }
 
@@ -661,23 +671,34 @@
     return { tabId: tab.id, url: tab.url, title: tab.title };
   }
 
-  function waitForTabLoad(tabId, timeoutMs = 30000) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        chrome.webNavigation.onCompleted.removeListener(listener);
-        reject(new Error("Navigation timed out after 30s"));
-      }, timeoutMs);
-
-      function listener(details) {
-        if (details.tabId === tabId && details.frameId === 0) {
-          clearTimeout(timer);
-          chrome.webNavigation.onCompleted.removeListener(listener);
-          setTimeout(resolve, 500);
-        }
+  // Resolves once the tab reports a top-frame load that finished at or after
+  // `since` (captured BEFORE the navigation is issued). The old version
+  // attached a fresh onCompleted listener after chrome.tabs.create/update had
+  // already begun loading, so a fast page — localhost, cached, small static —
+  // completed before the listener existed and the command hung for the full
+  // 30s. The persistent listener above cannot miss an event, and comparing
+  // against `since` ignores loads that predate this navigation without any
+  // brittle URL matching (so redirects still work).
+  // ponytail: tabLoadEpoch is in-memory, so an MV3 service-worker suspension
+  // mid-navigation falls back to the timeout. Persist to session storage if
+  // that ever shows up in practice.
+  async function waitForTabLoad(tabId, since, timeoutMs = 30000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const loadedAt = tabLoadEpoch.get(tabId);
+      if (loadedAt !== undefined && loadedAt >= since) {
+        // Let the document's own scripts settle before we act on it.
+        await new Promise((r) => setTimeout(r, 500));
+        return chrome.tabs.get(tabId);
       }
-
-      chrome.webNavigation.onCompleted.addListener(listener);
-    });
+      try {
+        await chrome.tabs.get(tabId);
+      } catch {
+        throw new Error("Tab was closed during navigation");
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("Navigation timed out after 30s");
   }
 
   async function screenshot(params) {
