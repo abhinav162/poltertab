@@ -550,6 +550,18 @@ test("F11  the publish workflow gates on tests and resolves a channel", () => {
   assert.ok(/--tag "\$\{\{ steps\.meta\.outputs\.dist_tag \}\}"/.test(wf),
     "publish does not use the resolved dist-tag");
   assert.ok(/id-token: write/.test(wf), "provenance needs id-token: write");
+  // A manual re-run exists to repair a half-finished release, so it must be
+  // able to attach the zip too — gating that on the release event meant a
+  // re-run could publish to npm and still leave the release empty.
+  const attach = wf.slice(wf.indexOf("Attach extension zip"));
+  assert.ok(
+    !/if:\s*\$\{\{\s*github\.event_name == 'release'\s*\}\}/.test(attach.slice(0, 200)),
+    "zip attach is still gated on the release event only",
+  );
+  assert.ok(
+    /inputs\.tag/.test(attach.slice(0, 400)),
+    "zip attach cannot resolve a tag on a manual re-run",
+  );
   // A publish step that runs before the tests would defeat the gate.
   assert.ok(
     wf.indexOf("npm test") < wf.indexOf("npm publish"),
