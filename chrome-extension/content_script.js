@@ -153,16 +153,25 @@
   // miss is usually "too early" rather than "not there". Back off between
   // attempts so a genuinely absent element in a large app does not pay for the
   // full piercing walk thirty times over.
-  async function waitForElement(selector) {
+  //
+  // When the background worker is searching across multiple frames, it passes
+  // _noWait: true so each frame answers instantly. The retry is reserved for a
+  // targeted second pass on the frame most likely to contain a late element
+  // (frame 0, where portals mount into document.body).
+  async function waitForElement(selector, noWait = false) {
+    const el = resolveElement(selector);
+    if (el) return el;
+    if (noWait) throw new Error(`Element not found: ${selector}`);
+
     const deadline = Date.now() + ELEMENT_WAIT_MS;
     let delay = 100;
     for (;;) {
-      const el = resolveElement(selector);
-      if (el) return el;
+      await new Promise((r) => setTimeout(r, delay));
+      const found = resolveElement(selector);
+      if (found) return found;
       if (Date.now() >= deadline) {
         throw new Error(`Element not found: ${selector}`);
       }
-      await new Promise((r) => setTimeout(r, delay));
       delay = Math.min(delay * 2, 800);
     }
   }
@@ -313,7 +322,7 @@
   }
 
   async function click(params) {
-    const el = await waitForElement(params.selector);
+    const el = await waitForElement(params.selector, params._noWait);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
 
@@ -327,7 +336,7 @@
   }
 
   async function fill(params) {
-    const el = await waitForElement(params.selector);
+    const el = await waitForElement(params.selector, params._noWait);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.focus();
@@ -371,7 +380,7 @@
   async function scroll(params) {
     const { direction = "down", amount = 500, selector } = params;
 
-    const target = selector ? await waitForElement(selector) : window;
+    const target = selector ? await waitForElement(selector, params._noWait) : window;
 
     const scrollOpts = { behavior: "smooth" };
     switch (direction) {
@@ -423,7 +432,7 @@
   }
 
   async function hover(params) {
-    const el = await waitForElement(params.selector);
+    const el = await waitForElement(params.selector, params._noWait);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
@@ -433,7 +442,7 @@
   }
 
   async function getText(params) {
-    const el = await waitForElement(params.selector);
+    const el = await waitForElement(params.selector, params._noWait);
     return { text: el.textContent.trim().slice(0, 10000) };
   }
 

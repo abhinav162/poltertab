@@ -995,6 +995,311 @@ async function groupF() {
   });
 }
 
+
+// ─────────────── G. cross-frame element search ───────────────
+
+// These tests verify the background.js frame-search logic. Since
+// background.js runs in a service-worker context with chrome.* APIs that the
+// vm sandbox cannot faithfully model at the message-routing level, group G
+// tests against the REAL background.js by driving it through the same stubbed
+// chrome environment that group C uses — plus a multi-frame model where each
+// frame's content script is a simple function mapping (action, selector) to
+// success/failure.
+
+function frameSearchSandbox(cfg = {}) {
+  // cfg.frames: [{frameId, elements: {selector: response}}]
+  const frames = cfg.frames || [
+    { frameId: 0, elements: {} },
+    { frameId: 123, elements: {} },
+  ];
+  const sent = [];
+  const navListeners = [];
+  const sockets = [];
+
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    JSON,
+    Date,
+    Math,
+    Promise,
+    Error,
+    Object,
+    Array,
+    WebSocket: class {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        sockets.push(this);
+      }
+      send(data) { sent.push(JSON.parse(data)); }
+      close() {}
+    },
+    chrome: {
+      runtime: {
+        getManifest: () => ({ version: "test" }),
+        sendMessage: () => Promise.resolve(),
+        onMessage: { addListener() {} },
+        onStartup: { addListener() {} },
+        onInstalled: { addListener() {} },
+        lastError: null,
+      },
+      alarms: {
+        get: (_n, cb) => cb && cb(null),
+        create() {},
+        clear() {},
+        onAlarm: { addListener() {} },
+      },
+      storage: {
+        local: {
+          get: (keys, cb) => (cb ? cb({}) : Promise.resolve({})),
+          set: (_o, cb) => (cb ? cb() : Promise.resolve()),
+        },
+        onChanged: { addListener() {} },
+      },
+      tabs: {
+        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete" }),
+        create: async (props) => ({ id: 99, url: props.url || "about:blank", title: "T" }),
+        update: async (id, props) => ({ id, url: props.url || "http://t/", title: "T" }),
+        query: async () => [{ id: 99, url: "http://t/", title: "T" }],
+        remove: async () => {},
+        group: async () => 1,
+        sendMessage: async (tabId, msg, opts, cb) => {
+          // Simulate per-frame content script responses
+          if (typeof opts === "function") { cb = opts; opts = {}; }
+          const frameId = (opts && opts.frameId) || 0;
+          const frame = frames.find((f) => f.frameId === frameId);
+
+          if (!frame) {
+            // Frame not found - simulate "Receiving end does not exist"
+            sandbox.chrome.runtime.lastError = { message: "Could not establish connection. Receiving end does not exist." };
+            cb(undefined);
+            sandbox.chrome.runtime.lastError = null;
+            return;
+          }
+
+          const { action, params = {} } = msg;
+          const sel = params.selector;
+
+          // snapshot/scrape-without-selector: always returns something
+          if (action === "snapshot") {
+            const nodes = frame.snapshotNodes || [];
+            cb({ success: true, data: { title: "T", url: "http://t/", count: nodes.length, nodes } });
+            return;
+          }
+          if (action === "scrape" && !sel) {
+            cb({ success: true, data: frame.scrapeData || { title: "T", url: "http://t/", meta: {}, links: [], headings: [], bodyText: "" } });
+            return;
+          }
+
+          // element-targeting actions
+          if (sel && frame.elements[sel]) {
+            cb({ success: true, data: frame.elements[sel] });
+          } else if (sel && params._noWait) {
+            // Fast probe — instant miss
+            cb({ success: false, error: "Element not found: " + sel });
+          } else if (sel) {
+            // Retry pass — poll for up to 3s like the real content script
+            const deadline = Date.now() + 3000;
+            const poll = setInterval(() => {
+              if (frame.elements[sel]) {
+                clearInterval(poll);
+                cb({ success: true, data: frame.elements[sel] });
+              } else if (Date.now() >= deadline) {
+                clearInterval(poll);
+                cb({ success: false, error: "Element not found: " + sel });
+              }
+            }, 100);
+          } else {
+            cb({ success: true, data: { ok: true } });
+          }
+        },
+        onRemoved: { addListener() {} },
+        onUpdated: { addListener() {} },
+      },
+      tabGroups: {
+        get: async () => ({ id: 1 }),
+        query: async () => [],
+        update: async () => {},
+      },
+      webNavigation: {
+        getAllFrames: async ({ tabId }) => frames.map((f) => ({
+          tabId,
+          frameId: f.frameId,
+          url: f.url || "http://t/",
+          parentFrameId: f.frameId === 0 ? -1 : 0,
+        })),
+        onCompleted: {
+          addListener: (fn) => navListeners.push(fn),
+          removeListener() {},
+        },
+      },
+      scripting: { executeScript: async () => [] },
+    },
+  };
+
+  const vm = require("vm");
+  vm.createContext(sandbox);
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "background.js"), "utf8"),
+    sandbox,
+  );
+
+  const ws = sockets[0];
+  if (ws && ws.onopen) ws.onopen();
+
+  // Fire a load event so waitForTabLoad succeeds
+  for (const fn of navListeners) fn({ tabId: 99, frameId: 0 });
+
+  return {
+    command: (msg) =>
+      new Promise((resolve) => {
+        ws.onmessage({ data: JSON.stringify(msg) });
+        // Poll for the reply
+        const check = setInterval(() => {
+          const reply = sent.find((m) => m.id === msg.id);
+          if (reply) {
+            clearInterval(check);
+            resolve(reply);
+          }
+        }, 20);
+        setTimeout(() => { clearInterval(check); resolve(null); }, 12000);
+      }),
+    sent,
+  };
+}
+
+async function groupG() {
+  console.log("\nG. cross-frame element search");
+
+  await test("G1 click finds an element in the second frame when top frame misses", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 123, elements: { "#app-btn": { clicked: "#app-btn", tag: "button" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g1", action: "click", selector: "#app-btn" });
+    assert.ok(reply, "no reply received");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    assert.strictEqual(reply.data.clicked, "#app-btn");
+  });
+
+  await test("G2 fill works in an iframe (the OCI textarea bug)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 456, elements: { "#chat": { filled: "#chat", value: "hi" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g2", action: "fill", selector: "#chat", value: "hi" });
+    assert.ok(reply, "no reply");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+  });
+
+  await test("G3 top frame wins when it has the element (no unnecessary frame search)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: { "#nav": { clicked: "#nav", tag: "a" } } },
+        { frameId: 789, elements: { "#nav": { clicked: "#nav", tag: "button" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g3", action: "click", selector: "#nav" });
+    assert.strictEqual(reply.success, true);
+    // Top frame served it — tag is "a" not "button"
+    assert.strictEqual(reply.data.tag, "a");
+  });
+
+  await test("G4 genuinely absent element reports not found across all frames", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 100, elements: {} },
+        { frameId: 200, elements: {} },
+      ],
+    });
+    const reply = await bg.command({ id: "g4", action: "click", selector: "#ghost" });
+    assert.strictEqual(reply.success, false);
+    assert.ok(/not found/i.test(reply.error), reply.error);
+  });
+
+  await test("G5 scrape with selector searches frames (empty result = miss)", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {} },
+        { frameId: 555, elements: { "#data": [{ tag: "span", text: "value" }] } },
+      ],
+    });
+    const reply = await bg.command({ id: "g5", action: "scrape", selector: "#data" });
+    assert.ok(reply, "no reply");
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+  });
+
+  await test("G7 many empty frames do not burn the timeout budget (was: 54s)", async () => {
+    // 20 empty frames + 1 with the target. Without _noWait, this would take
+    // 20 x 3s = 60s. With fast-probe it should resolve in < 2s.
+    const frames = [];
+    for (let i = 0; i < 20; i++) {
+      frames.push({ frameId: i * 10, elements: {} });
+    }
+    frames.push({
+      frameId: 999,
+      elements: { "#target": { clicked: "#target", tag: "button" } },
+    });
+    const bg = frameSearchSandbox({ frames });
+    const start = Date.now();
+    const reply = await bg.command({ id: "g7", action: "click", selector: "#target" });
+    const elapsed = Date.now() - start;
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    assert.strictEqual(reply.data.clicked, "#target");
+    assert.ok(
+      elapsed < 5000,
+      `took ${elapsed}ms across 21 frames — _noWait is not being passed`,
+    );
+  });
+
+  await test("G8 late modal in top frame still resolves after fast-probe miss", async () => {
+    // All frames miss on the fast probe. Frame 0 gets a retry with the wait.
+    // Simulate the element appearing 500ms into the retry window.
+    const frames = [
+      { frameId: 0, elements: {} },
+      { frameId: 100, elements: {} },
+    ];
+    const bg = frameSearchSandbox({ frames });
+    // Inject the element into frame 0 after a delay
+    setTimeout(() => {
+      frames[0].elements["#late"] = { clicked: "#late", tag: "div" };
+    }, 500);
+    const reply = await bg.command({ id: "g8", action: "click", selector: "#late" });
+    assert.strictEqual(reply.success, true, reply.error || "late modal not found");
+  });
+
+  await test("G6 snapshot aggregates across all frames", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, snapshotNodes: [{ ref: "@e1", tag: "nav", text: "shell" }] },
+        { frameId: 777, snapshotNodes: [{ ref: "@e1", tag: "button", text: "app btn" }] },
+      ],
+    });
+    const reply = await bg.command({ id: "g6", action: "snapshot" });
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    // Should have nodes from both frames
+    assert.ok(
+      reply.data.nodes.length >= 2,
+      "snapshot did not aggregate across frames: " + reply.data.nodes.length,
+    );
+  });
+}
+
 // ───────────────────────────── runner ─────────────────────────────
 
 (async () => {
@@ -1005,6 +1310,7 @@ async function groupF() {
   await groupD();
   await groupE();
   await groupF();
+  await groupG();
 
   const total = pass + failures.length;
   console.log(`\n${pass}/${total} passed`);
