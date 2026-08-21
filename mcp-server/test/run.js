@@ -716,6 +716,58 @@ function fakeEl(tag, opts = {}) {
   return el;
 }
 
+// The DOM's value setters are branded: calling HTMLInputElement's setter with
+// a textarea receiver throws "Illegal invocation". Model that faithfully, or
+// the bug this guards against is invisible to the suite.
+class FakeHTMLElement {}
+class FakeHTMLInputElement extends FakeHTMLElement {}
+class FakeHTMLTextAreaElement extends FakeHTMLElement {}
+for (const [Cls, brand] of [
+  [FakeHTMLInputElement, "input"],
+  [FakeHTMLTextAreaElement, "textarea"],
+]) {
+  Object.defineProperty(Cls.prototype, "value", {
+    configurable: true,
+    get() {
+      return this.__value === undefined ? "" : this.__value;
+    },
+    set(v) {
+      if (this.__brand !== brand) throw new TypeError("Illegal invocation");
+      this.__value = v;
+    },
+  });
+}
+
+function fakeField(kind, opts = {}) {
+  const Cls =
+    kind === "textarea"
+      ? FakeHTMLTextAreaElement
+      : kind === "input"
+        ? FakeHTMLInputElement
+        : FakeHTMLElement;
+  const el = new Cls();
+  Object.assign(el, {
+    tagName: kind === "div" ? "DIV" : kind.toUpperCase(),
+    id: opts.id || "",
+    textContent: "",
+    events: [],
+    attributes: [],
+    children: [],
+    isContentEditable: !!opts.contentEditable,
+    scrollIntoView() {},
+    focus() {},
+    closest: () => null,
+    getAttribute: () => null,
+    matches: () => false,
+    dispatchEvent(e) {
+      el.events.push(e.type);
+      return true;
+    },
+  });
+  if (kind !== "div") el.__brand = kind;
+  return el;
+}
+
 function fakeRoot(descendants, tracker) {
   const match = (el, sel) =>
     sel === "*" || (sel.startsWith("#") && el.id === sel.slice(1));
@@ -778,6 +830,9 @@ function shadowSandbox({ chromeDom = true, lightDescendants = [], roots = {} } =
     location: { href: "http://t/" },
     NodeFilter: { SHOW_ELEMENT: 1 },
     XPathResult: { FIRST_ORDERED_NODE_TYPE: 9 },
+    HTMLElement: FakeHTMLElement,
+    HTMLInputElement: FakeHTMLInputElement,
+    HTMLTextAreaElement: FakeHTMLTextAreaElement,
     MouseEvent: class {
       constructor(type) {
         this.type = type;
@@ -894,6 +949,52 @@ async function groupE() {
   });
 }
 
+// ───────────────── F. fill across field types ─────────────────
+
+async function groupF() {
+  console.log("\nF. fill across field types");
+
+  await test("F1 fills a <textarea> (was: Illegal invocation)", async () => {
+    const ta = fakeField("textarea", { id: "chat" });
+    const s = shadowSandbox({ lightDescendants: [ta] });
+    const res = await s.send("fill", { selector: "#chat", value: "hello" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(ta.value, "hello");
+  });
+
+  await test("F2 still fills an <input>", async () => {
+    const inp = fakeField("input", { id: "q" });
+    const s = shadowSandbox({ lightDescendants: [inp] });
+    const res = await s.send("fill", { selector: "#q", value: "typed" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(inp.value, "typed");
+  });
+
+  await test("F3 fills a contenteditable composer", async () => {
+    const div = fakeField("div", { id: "composer", contentEditable: true });
+    const s = shadowSandbox({ lightDescendants: [div] });
+    const res = await s.send("fill", { selector: "#composer", value: "rich" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(div.textContent, "rich");
+  });
+
+  await test("F4 dispatches input and change so frameworks notice", async () => {
+    const inp = fakeField("input", { id: "q" });
+    const s = shadowSandbox({ lightDescendants: [inp] });
+    await s.send("fill", { selector: "#q", value: "x" });
+    assert.deepStrictEqual(inp.events, ["input", "change"]);
+  });
+
+  await test("F5 fills a textarea nested in a shadow root", async () => {
+    const ta = fakeField("textarea", { id: "deep-chat" });
+    const host = fakeEl("div", { shadow: fakeRoot([ta]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("fill", { selector: "#deep-chat", value: "deep" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(ta.value, "deep");
+  });
+}
+
 // ───────────────────────────── runner ─────────────────────────────
 
 (async () => {
@@ -903,6 +1004,7 @@ async function groupE() {
   await groupC();
   await groupD();
   await groupE();
+  await groupF();
 
   const total = pass + failures.length;
   console.log(`\n${pass}/${total} passed`);

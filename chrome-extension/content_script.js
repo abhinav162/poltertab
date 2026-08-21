@@ -332,15 +332,26 @@
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.focus();
 
-    // Clear existing value
+    // The DOM's value setters are branded to their own interface: reading the
+    // setter off HTMLInputElement and calling it on a <textarea> throws
+    // "Illegal invocation". The old `input || textarea` chain always resolved
+    // to input (its descriptor always exists), leaving the textarea branch
+    // unreachable — so fill never worked on a textarea anywhere. Pick the
+    // setter that matches the element in front of us.
+    const valueProto =
+      el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : el instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : null;
     const nativeInputValueSetter =
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
-        ?.set ||
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")
-        ?.set;
+      valueProto && Object.getOwnPropertyDescriptor(valueProto, "value")?.set;
 
     if (nativeInputValueSetter) {
       nativeInputValueSetter.call(el, params.value);
+    } else if (el.isContentEditable) {
+      // Chat composers and rich editors are contenteditable, not form fields.
+      el.textContent = params.value;
     } else {
       el.value = params.value;
     }
