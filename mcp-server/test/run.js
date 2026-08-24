@@ -5,6 +5,8 @@
 //   C  background.js navigation load race        (the 30s hang on fast pages)
 //   D  mcp-server end-to-end over stdio          (output_file, stdout purity)
 //   E  shadow DOM piercing + late-element retry  (the OCI-console class of bug)
+//   I  record-scoped extraction                  (the field-shift / silent-empty bugs)
+//   J  the pagination loop                       (halt conditions, CSV output)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -267,7 +269,14 @@ function backgroundSandbox() {
     activeTabs: [],
     fireOnCompleteFor: null, // tabId to complete immediately, or null for none
     nextTabId: 100,
+    // Lets a test walk past a 30s deadline without waiting 30s for it.
+    clockOffset: 0,
+    // What chrome.tabs.get reports, so "loaded but no completion event" and
+    // "genuinely still loading" can be told apart.
+    tabStatus: "complete",
   };
+  const created = [];
+  const updated = [];
   const sent = [];
   const navListeners = [];
   const removedListeners = [];
@@ -286,7 +295,7 @@ function backgroundSandbox() {
     id,
     url: "http://fast.test/",
     title: "Fast",
-    status: "complete",
+    status: cfg.tabStatus,
   });
 
   const sandbox = {
@@ -296,7 +305,13 @@ function backgroundSandbox() {
     setInterval,
     clearInterval,
     JSON,
-    Date,
+    // Deadlines are measured with Date.now(), so an offset the test controls is
+    // how a 30s timeout gets exercised in well under a second.
+    Date: class extends Date {
+      static now() {
+        return Date.now() + cfg.clockOffset;
+      }
+    },
     Math,
     Promise,
     Error,
@@ -341,11 +356,13 @@ function backgroundSandbox() {
         get: async (id) => tab(id),
         create: async (props) => {
           const id = cfg.nextTabId++;
+          created.push({ id, url: props.url });
           const t = { ...tab(id), url: props.url || "about:blank" };
           maybeFire(id);
           return t;
         },
         update: async (id, props) => {
+          updated.push({ id, url: props.url });
           const t = { ...tab(id), url: props.url };
           maybeFire(id);
           return t;
@@ -385,6 +402,8 @@ function backgroundSandbox() {
 
   return {
     cfg,
+    created,
+    updated,
     fireComplete,
     navListenerCount: () => navListeners.length,
     command: (msg) => ws.onmessage({ data: JSON.stringify(msg) }),
@@ -424,13 +443,65 @@ async function groupC() {
     assert.strictEqual(reply.data.tabId, 100);
   });
 
-  await test("C3 fast page via existing tab resolves too", async () => {
+  // This runs against the user's real browser. navigate used to commandeer
+  // whatever tab they were looking at, which is a data-loss-shaped bug dressed
+  // up as convenience — and the workaround for it got written into site memory
+  // instead of being fixed.
+  await test("C3 navigate opens its own tab, then reuses it", async () => {
     const bg = backgroundSandbox();
-    bg.cfg.activeTabs = [{ id: 7, url: "http://old/", title: "old" }];
-    bg.cfg.fireOnCompleteFor = 7;
+    bg.cfg.activeTabs = [{ id: 7, url: "http://mine/", title: "the user's tab" }];
+    bg.cfg.fireOnCompleteFor = 100; // the tab navigate is about to create
+
     bg.command({ id: "n3", action: "navigate", url: "http://fast.test/" });
-    await waitFor("navigate reply", () => bg.replyFor("n3"), 5000);
-    assert.strictEqual(bg.replyFor("n3").success, true);
+    await waitFor("first navigate", () => bg.replyFor("n3"), 5000);
+    assert.strictEqual(bg.replyFor("n3").data.tabId, 100);
+    assert.deepStrictEqual(
+      bg.updated,
+      [],
+      "navigated the user's own tab out from under them",
+    );
+    assert.strictEqual(bg.created.length, 1);
+
+    // ...and the next one must not open another, or a 17-page loop leaves 17
+    // tabs behind.
+    bg.command({ id: "n3b", action: "navigate", url: "http://second.test/" });
+    await waitFor("second navigate", () => bg.replyFor("n3b"), 5000);
+    assert.strictEqual(bg.replyFor("n3b").data.tabId, 100);
+    assert.strictEqual(bg.created.length, 1, "opened a second tab");
+    assert.deepStrictEqual(bg.updated.map((u) => u.id), [100]);
+  });
+
+  await test("C5 a loaded page that fired no completion event is not an error", async () => {
+    const bg = backgroundSandbox();
+    bg.cfg.fireOnCompleteFor = null; // SPA soft-nav, or a suspended worker
+    bg.command({ id: "n5", action: "navigate", url: "http://spa.test/" });
+    await sleep(50);
+    bg.cfg.clockOffset = 31000; // walk past the 30s deadline
+
+    await waitFor("navigate reply", () => bg.replyFor("n5"), 5000);
+    const reply = bg.replyFor("n5");
+    assert.strictEqual(
+      reply.success,
+      true,
+      `reported a timeout on a page the tab says is loaded: ${reply.error}`,
+    );
+    assert.strictEqual(reply.data.status, "timeout_but_loaded");
+    assert.strictEqual(reply.data.tabId, 100);
+  });
+
+  await test("C6 a page that really is still loading still fails", async () => {
+    const bg = backgroundSandbox();
+    bg.cfg.fireOnCompleteFor = null;
+    bg.cfg.tabStatus = "loading";
+    bg.command({ id: "n6", action: "navigate", url: "http://slow.test/" });
+    await sleep(50);
+    bg.cfg.clockOffset = 31000;
+
+    await waitFor("navigate reply", () => bg.replyFor("n6"), 5000);
+    const reply = bg.replyFor("n6");
+    assert.strictEqual(reply.success, false, "claimed success on a loading tab");
+    assert.ok(/timed out/.test(reply.error), reply.error);
+    assert.ok(/loading/.test(reply.error), `error should name the real state: ${reply.error}`);
   });
 
   await test("C4 a load that predates the navigation does not satisfy it", async () => {
@@ -583,7 +654,7 @@ async function groupD() {
     await test("D1 tools/list exposes the full browser toolset", async () => {
       const r = await rpc(primary, "tools/list", {});
       const names = r.result.tools.map((t) => t.name);
-      assert.strictEqual(names.length, 21, `got ${names.length} tools`);
+      assert.strictEqual(names.length, 23, `got ${names.length} tools`);
       assert.ok(names.includes("browser_get_network_state"));
       assert.ok(names.every((n) => n.startsWith("browser_")));
     });
@@ -1417,6 +1488,656 @@ async function groupH() {
   }
 }
 
+// ────────── I. record-scoped extraction ──────────
+//
+// The bug class this group exists for is silent: a flat scrape of 90 agents
+// where one had no phone number shifted every later phone up a row, and the
+// result looked entirely plausible. Nothing here asserts "it worked" — each
+// test asserts that a specific wrong answer is no longer produced.
+
+// A DOM with real selector support: classes and attribute operators, matched
+// over actual descendants, so "resolve this field inside that record" is a
+// thing the harness can actually get wrong.
+function recEl(tag, opts = {}) {
+  const attrs = opts.attrs || {};
+  const e = {
+    tagName: tag.toUpperCase(),
+    id: opts.id || "",
+    __cls: opts.cls ? opts.cls.split(/\s+/) : [],
+    __attrs: attrs,
+    textContent: opts.text || "",
+    innerText: opts.text || "",
+    children: opts.children || [],
+    attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })),
+    getAttribute(n) {
+      return n in this.__attrs ? this.__attrs[n] : null;
+    },
+    matches: () => false,
+    scrollIntoView() {},
+    dispatchEvent: () => true,
+  };
+  // href/src are resolved properties on a real anchor; a raw attribute of
+  // "/agent/x" is useless to the caller.
+  if (attrs.href !== undefined) {
+    e.href = /^[a-z]+:/i.test(attrs.href)
+      ? attrs.href
+      : `http://t${attrs.href.startsWith("/") ? "" : "/"}${attrs.href}`;
+  }
+  if (attrs.src !== undefined) e.src = attrs.src;
+
+  const kids = () => e.children.flatMap((c) => [c, ...recDescendants(c)]);
+  e.querySelector = (sel) => kids().find((d) => recMatch(d, sel)) || null;
+  e.querySelectorAll = (sel) => kids().filter((d) => recMatch(d, sel));
+  return e;
+}
+
+function recDescendants(e) {
+  return (e.children || []).flatMap((c) => [c, ...recDescendants(c)]);
+}
+
+function recMatchOne(e, term) {
+  const t = term.trim();
+  if (!t) return false;
+  if (t === "*") return true;
+  const m = /^([a-z0-9]*)(#[\w-]+)?((?:\.[\w-]+)*)((?:\[[^\]]+\])*)$/i.exec(t);
+  if (!m) return false;
+  const [, tag, hashId, classes, attrPart] = m;
+  if (tag && e.tagName !== tag.toUpperCase()) return false;
+  if (hashId && e.id !== hashId.slice(1)) return false;
+  for (const c of classes.split(".").filter(Boolean)) {
+    if (!e.__cls.includes(c)) return false;
+  }
+  for (const a of attrPart.match(/\[[^\]]+\]/g) || []) {
+    const am = /^\[([\w-]+)(?:([~^$*]?=)['"]?([^\]'"]*)['"]?)?\]$/.exec(a);
+    if (!am) return false;
+    const [, name, op, val] = am;
+    const actual = e.getAttribute(name);
+    if (actual === null) return false;
+    if (!op) continue;
+    if (op === "=" && actual !== val) return false;
+    if (op === "^=" && !actual.startsWith(val)) return false;
+    if (op === "*=" && !actual.includes(val)) return false;
+    if (op === "$=" && !actual.endsWith(val)) return false;
+  }
+  return true;
+}
+
+const recMatch = (e, sel) => sel.split(",").some((t) => recMatchOne(e, t));
+
+function recordSandbox(topChildren, opts = {}) {
+  const body = recEl("body", { children: topChildren });
+  const all = () => recDescendants(body);
+
+  const document = {
+    title: opts.title || "T",
+    body,
+    documentElement: { appendChild() {} },
+    head: { appendChild() {} },
+    createElement: () => ({ set src(v) {}, remove() {} }),
+    querySelector: (s) => all().find((d) => recMatch(d, s)) || null,
+    querySelectorAll: (s) => all().filter((d) => recMatch(d, s)),
+    evaluate: () => ({ singleNodeValue: null }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+  };
+
+  const listeners = [];
+  const sandbox = {
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    Date,
+    Promise,
+    Error,
+    JSON,
+    Set,
+    Object,
+    Array,
+    Number,
+    parseInt,
+    document,
+    chrome: {
+      runtime: {
+        getURL: (p) => p,
+        sendMessage: () => Promise.resolve(),
+        onMessage: { addListener: (fn) => listeners.push(fn) },
+      },
+      storage: { local: { get: (_k, cb) => cb && cb({}) } },
+    },
+    location: { href: opts.url || "http://t/" },
+    NodeFilter: { SHOW_ELEMENT: 1 },
+    XPathResult: { FIRST_ORDERED_NODE_TYPE: 9 },
+    HTMLElement: class {},
+    HTMLInputElement: class {},
+    HTMLTextAreaElement: class {},
+    MouseEvent: class {
+      constructor(t) {
+        this.type = t;
+      }
+    },
+    Event: class {
+      constructor(t) {
+        this.type = t;
+      }
+    },
+    addEventListener() {},
+  };
+  vm.createContext(sandbox);
+  sandbox.window = sandbox;
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "content_script.js"), "utf8"),
+    sandbox,
+  );
+
+  return {
+    // Round-tripped through JSON on the way out, because that is what the real
+    // chrome.runtime message boundary does — and because objects minted inside
+    // the vm realm are not deepStrictEqual to plain ones out here.
+    send: (action, params) =>
+      new Promise((resolve) => {
+        listeners[0]({ source: "poltertab", action, params }, {}, (r) =>
+          resolve(JSON.parse(JSON.stringify(r))),
+        );
+      }),
+  };
+}
+
+// One kw.com-shaped agent card. Socials deliberately live OUTSIDE the
+// .agent-card-info box, exactly as they do on the real page.
+function agentCard({ name, path: p, phone, email, socials = [] }) {
+  const info = [];
+  if (p) info.push(recEl("a", { cls: "agent-card-name", text: name, attrs: { href: p } }));
+  if (phone)
+    info.push(recEl("a", { text: phone, attrs: { href: `tel:${phone}` } }));
+  if (email)
+    info.push(recEl("a", { text: email, attrs: { href: `mailto:${email}` } }));
+
+  return recEl("div", {
+    cls: "agent-card",
+    children: [
+      recEl("div", { cls: "agent-card-info", children: info }),
+      recEl("div", {
+        cls: "agent-card-socials",
+        children: socials.map((s) =>
+          recEl("a", { cls: "agent-card-social-button", attrs: { href: s } }),
+        ),
+      }),
+    ],
+  });
+}
+
+const AGENT_FIELDS = {
+  name: { sel: "a.agent-card-name", get: "text" },
+  url: { sel: "a.agent-card-name", get: "href" },
+  phone: { sel: "a[href^='tel:']", get: "href", strip: "tel:" },
+  email: { sel: "a[href^='mailto:']", get: "href", strip: "mailto:" },
+};
+
+async function groupI() {
+  console.log("\nI. record-scoped extraction");
+
+  await test("I1 a record missing an optional field does NOT shift later records", async () => {
+    const s = recordSandbox([
+      agentCard({ name: "Ann", path: "/agent/ann", phone: "111" }),
+      agentCard({ name: "Dani", path: "/agent/dani" }), // no phone — the shifter
+      agentCard({ name: "Cal", path: "/agent/cal", phone: "333" }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: AGENT_FIELDS,
+    });
+    assert.strictEqual(res.success, true, res.error);
+    const rows = res.data.rows;
+    assert.strictEqual(rows.length, 3);
+    assert.strictEqual(rows[0].phone, "111");
+    assert.strictEqual(rows[1].phone, null, "missing field must be null");
+    assert.strictEqual(
+      rows[2].phone,
+      "333",
+      "phone shifted up — every later record is now mis-assigned",
+    );
+    assert.strictEqual(rows[1].name, "Dani", "name/phone came from different records");
+  });
+
+  await test("I2 a too-narrow record root is reported, not silently empty", async () => {
+    const s = recordSandbox([
+      agentCard({ name: "Ann", path: "/agent/ann", socials: ["http://fb/ann"] }),
+      agentCard({ name: "Cal", path: "/agent/cal", socials: ["http://fb/cal"] }),
+    ]);
+    // .agent-card-info is the container that LOOKS like the card. Socials are
+    // its sibling, so this scope cannot see them.
+    const res = await s.send("extract", {
+      record: ".agent-card-info",
+      fields: {
+        name: { sel: "a.agent-card-name", get: "text" },
+        socials: { sel: "a.agent-card-social-button", get: "href", many: true },
+      },
+    });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(res.data.fill_rates.socials, 0);
+    const warn = res.data.warnings.join(" ");
+    assert.ok(
+      /socials: 0\/2 within record scope, but 2 matches page-wide/.test(warn),
+      `no loosening probe — an empty column reads as "these agents have no socials": ${warn}`,
+    );
+    assert.ok(/too narrow/.test(warn), warn);
+  });
+
+  await test("I3 a wrong selector is distinguished from a wrong boundary", async () => {
+    const s = recordSandbox([agentCard({ name: "Ann", path: "/agent/ann" })]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: {
+        name: { sel: "a.agent-card-name", get: "text" },
+        license: { sel: "span.nope", get: "text" },
+      },
+    });
+    const warn = res.data.warnings.join(" ");
+    assert.ok(/no matches for "span.nope" anywhere/.test(warn), warn);
+    assert.ok(!/too narrow/.test(warn), `misdiagnosed as a boundary problem: ${warn}`);
+  });
+
+  await test("I4 anchor drops placeholder records and counts them", async () => {
+    const s = recordSandbox([
+      agentCard({ name: "Ann", path: "/agent/ann" }),
+      agentCard({ name: "", path: null }), // phantom card, page 10 of kw.com
+      agentCard({ name: "", path: null }),
+      agentCard({ name: "Cal", path: "/agent/cal" }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: AGENT_FIELDS,
+      anchor: "url",
+    });
+    assert.strictEqual(res.data.count, 2);
+    assert.strictEqual(res.data.dropped, 2, "phantoms emitted as null rows");
+    assert.strictEqual(res.data.records_found, 4);
+    assert.deepStrictEqual(
+      res.data.rows.map((r) => r.name),
+      ["Ann", "Cal"],
+    );
+  });
+
+  await test("I5 fill_rates count real values, not row slots", async () => {
+    const s = recordSandbox([
+      agentCard({ name: "Ann", path: "/agent/ann", phone: "111", email: "a@x" }),
+      agentCard({ name: "Cal", path: "/agent/cal", email: "c@x" }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: AGENT_FIELDS,
+    });
+    assert.deepStrictEqual(res.data.fill_rates, {
+      name: 2,
+      url: 2,
+      phone: 1,
+      email: 2,
+    });
+  });
+
+  await test("I6 get:'text' works where attribute:'textContent' returned nulls", async () => {
+    const s = recordSandbox([agentCard({ name: "Ann", path: "/agent/ann" })]);
+    const ex = await s.send("extract", {
+      record: ".agent-card",
+      fields: { name: { sel: "a.agent-card-name", get: "text" } },
+    });
+    assert.strictEqual(ex.data.rows[0].name, "Ann");
+
+    // Same trap via scrape's attribute param, which is where it was found.
+    const sc = await s.send("scrape", {
+      selector: "a.agent-card-name",
+      attribute: "textContent",
+      multiple: true,
+    });
+    assert.deepStrictEqual(sc.data, ["Ann"], "attribute:textContent still nulls");
+  });
+
+  await test("I7 href comes back absolute and strip removes the scheme", async () => {
+    const s = recordSandbox([
+      agentCard({ name: "Ann", path: "/agent/ann", phone: "555-1234" }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: AGENT_FIELDS,
+    });
+    assert.strictEqual(res.data.rows[0].url, "http://t/agent/ann");
+    assert.strictEqual(res.data.rows[0].phone, "555-1234");
+  });
+
+  await test("I8 many:true keeps each record's list to itself", async () => {
+    const s = recordSandbox([
+      agentCard({
+        name: "Ann",
+        path: "/agent/ann",
+        socials: ["http://fb/ann", "http://li/ann"],
+      }),
+      agentCard({ name: "Cal", path: "/agent/cal", socials: ["http://fb/cal"] }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".agent-card",
+      fields: {
+        name: { sel: "a.agent-card-name", get: "text" },
+        socials: { sel: "a.agent-card-social-button", get: "href", many: true },
+      },
+    });
+    assert.deepStrictEqual(res.data.rows[0].socials, [
+      "http://fb/ann",
+      "http://li/ann",
+    ]);
+    assert.deepStrictEqual(res.data.rows[1].socials, ["http://fb/cal"]);
+  });
+
+  await test("I9 a field with no sel reads the record root itself", async () => {
+    const s = recordSandbox([agentCard({ name: "Ann", path: "/agent/ann" })]);
+    const res = await s.send("extract", {
+      record: "a.agent-card-name",
+      fields: { name: { get: "text" }, url: { get: "href" } },
+    });
+    assert.strictEqual(res.data.rows[0].name, "Ann");
+    assert.strictEqual(res.data.rows[0].url, "http://t/agent/ann");
+  });
+
+  await test("I10 truncation is reported instead of silently cutting", async () => {
+    const s = recordSandbox([
+      recEl("div", {
+        cls: "card",
+        children: [recEl("p", { cls: "bio", text: "x".repeat(400) })],
+      }),
+    ]);
+    const res = await s.send("extract", {
+      record: ".card",
+      fields: { bio: { sel: "p.bio", get: "text" } },
+      max_text: 50,
+    });
+    assert.strictEqual(res.data.rows[0].bio.length, 50);
+    assert.ok(
+      /truncated at max_text=50: bio/.test(res.data.warnings.join(" ")),
+      res.data.warnings.join(" "),
+    );
+  });
+
+  await test("I11 a record selector matching nothing says so", async () => {
+    const s = recordSandbox([agentCard({ name: "Ann", path: "/agent/ann" })]);
+    const res = await s.send("extract", {
+      record: ".listing-row",
+      fields: { name: { sel: "a", get: "text" } },
+    });
+    assert.strictEqual(res.data.count, 0);
+    assert.strictEqual(res.data.records_found, 0);
+    assert.ok(/no matches for ".listing-row"/.test(res.data.warnings.join(" ")));
+  });
+
+  await test("I12 scrape fields:['meta','jsonld'] skips the 50KB body", async () => {
+    const s = recordSandbox([
+      recEl("meta", { attrs: { property: "og:title", content: "Ann | NJ" } }),
+      recEl("script", {
+        attrs: { type: "application/ld+json" },
+        text: '{"@type":"RealEstateAgent","name":"Ann"}',
+      }),
+      recEl("script", {
+        attrs: { type: "application/ld+json" },
+        text: "{ not json",
+      }),
+      recEl("a", { attrs: { href: "/x" }, text: "x" }),
+    ]);
+    const res = await s.send("scrape", { fields: ["meta", "jsonld"] });
+    assert.strictEqual(res.data.meta["og:title"], "Ann | NJ");
+    assert.strictEqual(res.data.jsonld.length, 1, "malformed blob broke the scrape");
+    assert.strictEqual(res.data.jsonld[0].name, "Ann");
+    assert.ok(res.data.title, "title should always come along");
+    assert.strictEqual(res.data.bodyText, undefined, "body text was not asked for");
+    assert.strictEqual(res.data.links, undefined);
+  });
+
+  await test("I13 get_text flags a cut instead of hiding it", async () => {
+    const s = recordSandbox([recEl("p", { id: "long", text: "y".repeat(300) })]);
+    const cut = await s.send("get_text", { selector: "#long", max_text: 100 });
+    assert.strictEqual(cut.data.truncated, true);
+    assert.strictEqual(cut.data.full_length, 300);
+    const whole = await s.send("get_text", { selector: "#long" });
+    assert.strictEqual(whole.data.truncated, undefined);
+  });
+}
+
+// ────────── J. the pagination loop ──────────
+//
+// The loop exists so the model stops being the for-loop. Every assertion here
+// is about a halt condition: continuing past any of them yields a dataset that
+// looks complete and is not.
+
+// An extension that serves scripted pages. `pageRows(n)` returns the records
+// for page n; returning null means "this page does not exist".
+function scriptedExtension(pageRows) {
+  const ws = new WebSocket(`ws://localhost:${PORT}`);
+  const state = { ws, open: false, navigations: [], extracts: 0, page: 1 };
+  ws.on("open", () => {
+    state.open = true;
+    ws.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+  });
+  ws.on("message", (raw) => {
+    const m = JSON.parse(raw);
+    if (!m.id || !m.action) return;
+    let data;
+    // The server puts command params flat on the message, not under `params`.
+    if (m.action === "navigate") {
+      state.navigations.push(m.url);
+      const hit = /[?&]page=(\d+)/.exec(m.url || "");
+      state.page = hit ? Number(hit[1]) : 1;
+      data = { tabId: TAB, url: m.url, title: "T", status: "ok" };
+    } else if (m.action === "extract") {
+      state.extracts++;
+      const rows = pageRows(state.page) || [];
+      const fill_rates = {};
+      for (const f of Object.keys(rows[0] || {})) {
+        fill_rates[f] = rows.filter((r) => r[f] !== null && r[f] !== "").length;
+      }
+      data = {
+        url: `http://t/?page=${state.page}`,
+        count: rows.length,
+        records_found: rows.length,
+        dropped: 0,
+        fill_rates,
+        warnings: [],
+        rows,
+      };
+    } else {
+      data = { ok: true, tabId: TAB };
+    }
+    ws.send(JSON.stringify({ id: m.id, success: true, data }));
+  });
+  return state;
+}
+
+// 12 records per page, keyed by a stable detail URL, like the real thing.
+const page12 = (n) =>
+  Array.from({ length: 12 }, (_, i) => ({
+    name: `Agent ${n}-${i}`,
+    url: `http://t/agent/${n}-${i}`,
+    phone: i % 6 === 0 ? null : `${n}${i}`,
+  }));
+
+async function callExtractAll(srv, args) {
+  const reply = await rpc(srv, "tools/call", {
+    name: "browser_extract_all",
+    arguments: {
+      url_template: "http://t/agents?page={page}",
+      record: ".agent-card",
+      fields: { name: { sel: "a", get: "text" } },
+      key: "url",
+      ...args,
+    },
+  });
+  return JSON.parse(textOf(reply));
+}
+
+async function groupJ() {
+  console.log("\nJ. the pagination loop");
+
+  await test("J1 walks pages to the limit in ONE tool call, deduped", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      const ext = scriptedExtension(page12);
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 30 });
+      assert.strictEqual(out.count, 30, JSON.stringify(out).slice(0, 400));
+      assert.strictEqual(out.stopped_because, "limit_reached");
+      assert.strictEqual(out.pages_fetched, 3, "should need exactly 3 pages of 12");
+      assert.strictEqual(
+        new Set(out.rows.map((r) => r.url)).size,
+        30,
+        "duplicate records in the output",
+      );
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J2 a site that ignores ?page halts instead of returning page 1 forever", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      // Every page returns page 1's records — the ?size=50 trap.
+      const ext = scriptedExtension(() => page12(1));
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 100 });
+      assert.strictEqual(out.stopped_because, "duplicate_page");
+      assert.strictEqual(out.count, 12, "emitted repeats of the same page as new data");
+      assert.ok(out.pages_fetched <= 3, `kept going: ${out.pages_fetched} pages`);
+      assert.ok(
+        /not advancing/.test(out.warnings.join(" ")),
+        out.warnings.join(" "),
+      );
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J3 an empty page ends the run and says so", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      const ext = scriptedExtension((n) => (n <= 2 ? page12(n) : []));
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 500 });
+      assert.strictEqual(out.stopped_because, "empty_page");
+      assert.strictEqual(out.count, 24);
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J4 fill rates collapsing halts the run and keeps what was collected", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      // Page 3 is a different layout: the name column stops being populated.
+      const ext = scriptedExtension((n) =>
+        n < 3
+          ? page12(n)
+          : page12(n).map((r) => ({ ...r, name: null })),
+      );
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 500 });
+      assert.strictEqual(out.stopped_because, "fill_rate_deviation");
+      assert.strictEqual(out.count, 24, "should keep pages 1-2 rather than lose them");
+      assert.ok(/name 0% vs baseline 100%/.test(out.warnings.join(" ")), out.warnings.join(" "));
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J5 max_pages is a hard guard", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      const ext = scriptedExtension(page12);
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 1000, max_pages: 2 });
+      assert.strictEqual(out.stopped_because, "max_pages");
+      assert.strictEqual(out.pages_fetched, 2);
+      assert.strictEqual(out.count, 24);
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J6 output_file writes a real CSV and returns only a summary", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      const ext = scriptedExtension((n) =>
+        n === 1
+          ? [
+              { name: 'Ann "The Closer", Lee', url: "http://t/a", phone: "1" },
+              { name: "Cal\nBrown", url: "http://t/c", phone: null },
+            ]
+          : [],
+      );
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const out = await callExtractAll(srv, { limit: 50, output_file: "agents.csv" });
+
+      assert.ok(out.file, "no file path returned");
+      assert.strictEqual(out.rows, undefined, "raw rows came back inline anyway");
+      assert.strictEqual(out.sample.length, 2);
+      assert.deepStrictEqual(out.fields, ["name", "url", "phone"]);
+
+      const csv = fs.readFileSync(out.file, "utf8");
+      assert.ok(csv.startsWith("name,url,phone\n"), csv);
+      // A quote inside a quoted field must be doubled and a comma must not
+      // split the row — the difference between a file that imports and one that
+      // imports wrongly. A field holding a newline legitimately spans two
+      // lines, so this is asserted against the whole text, not line by line.
+      assert.ok(csv.includes('"Ann ""The Closer"", Lee",http://t/a,1'), csv);
+      assert.ok(csv.includes('"Cal\nBrown",http://t/c,'), csv);
+      assert.ok(!/null/.test(csv), "a null was written as the text 'null'");
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+
+  await test("J7 url_template without {page} is rejected up front", async () => {
+    const srv = startServer();
+    try {
+      await waitFor("listening", () => srv.stderr.includes("WebSocket server listening"));
+      const ext = scriptedExtension(page12);
+      await waitFor("ext open", () => ext.open);
+      await initialize(srv);
+
+      const reply = await rpc(srv, "tools/call", {
+        name: "browser_extract_all",
+        arguments: {
+          url_template: "http://t/agents",
+          record: ".agent-card",
+          fields: { name: { sel: "a", get: "text" } },
+        },
+      });
+      assert.ok(reply.result.isError, "silently scraped page 1 N times");
+      assert.ok(/\{page\}/.test(textOf(reply)), textOf(reply));
+      ext.ws.close();
+    } finally {
+      srv.proc.kill();
+    }
+  });
+}
+
 // ───────────────────────────── runner ─────────────────────────────
 
 (async () => {
@@ -1429,6 +2150,8 @@ async function groupH() {
   await groupF();
   await groupG();
   await groupH();
+  await groupI();
+  await groupJ();
 
   const total = pass + failures.length;
   console.log(`\n${pass}/${total} passed`);

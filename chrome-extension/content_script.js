@@ -122,9 +122,9 @@
     }
   }
 
-  function deepQuery(selector, all = false) {
+  function deepQuery(selector, all = false, from = document) {
     const found = [];
-    for (const root of shadowRoots(document)) {
+    for (const root of shadowRoots(from)) {
       try {
         if (all) {
           found.push(...root.querySelectorAll(selector));
@@ -274,8 +274,157 @@
     };
   }
 
+  // Reading one value off one element. `get` is the name of a DOM property when
+  // resolving it is what the caller almost certainly wants (href="/a/b" is
+  // useless as a raw attribute) and an attribute name otherwise.
+  //
+  // "text" is not an attribute, so the old attribute-only path answered
+  // attribute:"textContent" with a column of nulls — a documented footgun on
+  // kw.com, and silent, because nulls read as "the page doesn't have this".
+  const TEXT_GETS = new Set(["text", "textContent", "innerText"]);
+  const PROP_GETS = new Set(["href", "src", "value", "currentSrc"]);
+
+  function fieldValue(el, spec, maxText, onTruncate) {
+    const get = spec.get || "text";
+    let v;
+
+    if (TEXT_GETS.has(get)) {
+      v = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+      if (maxText > 0 && v.length > maxText) {
+        v = v.slice(0, maxText);
+        if (onTruncate) onTruncate();
+      }
+    } else if (PROP_GETS.has(get)) {
+      v = el[get] != null ? el[get] : el.getAttribute(get);
+    } else {
+      v = el.getAttribute(get);
+    }
+
+    if (v == null) return null;
+    if (spec.strip && v.startsWith(spec.strip)) v = v.slice(spec.strip.length);
+    return v;
+  }
+
+  const isEmpty = (v) =>
+    v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
+
+  // Record-scoped extraction.
+  //
+  // Two semantics carry the whole point of this function, because violating
+  // either produces data that looks right and is wrong:
+  //
+  //   1. Every field resolves INSIDE its record root, so a value can never be
+  //      claimed by a neighbouring record.
+  //   2. A field that does not match yields null. It never shifts. One agent
+  //      with no phone number used to move every later phone up a row and
+  //      silently mis-assign the rest of the page's contact details.
+  //
+  // Everything else here exists to report what happened: fill rates so a field
+  // that came back empty is visible, and a page-wide probe so "empty" can be
+  // told apart from "your record boundary is too narrow" — the failure that
+  // reported 90 agents as having no social accounts.
+  function extract(params) {
+    const {
+      record,
+      fields = {},
+      anchor,
+      max_text = 500,
+      probe = true,
+    } = params;
+
+    if (!record) throw new Error("extract requires a 'record' selector");
+    const names = Object.keys(fields);
+    if (!names.length) throw new Error("extract requires at least one field");
+
+    const roots = deepQuery(record, true);
+    const rows = [];
+    const fill_rates = {};
+    const truncated = new Set();
+    const warnings = [];
+    let dropped = 0;
+
+    for (const name of names) fill_rates[name] = 0;
+
+    for (const root of roots) {
+      const row = {};
+
+      for (const name of names) {
+        const spec = fields[name];
+        const sel = spec.sel;
+        const mark = () => truncated.add(name);
+
+        // No selector (or ".") means the record root itself — the anchor field
+        // is often the element the record is keyed on.
+        if (!sel || sel === "." || sel === ":scope") {
+          row[name] = fieldValue(root, spec, max_text, mark);
+          continue;
+        }
+
+        if (spec.many) {
+          row[name] = deepQuery(sel, true, root)
+            .map((el) => fieldValue(el, spec, max_text, mark))
+            .filter((v) => v !== null);
+        } else {
+          const el = deepQuery(sel, false, root);
+          row[name] = el ? fieldValue(el, spec, max_text, mark) : null;
+        }
+      }
+
+      // Placeholder cards carry no anchor. Dropping them and saying how many
+      // beats emitting rows of nulls that look like real records with missing
+      // data.
+      if (anchor && isEmpty(row[anchor])) {
+        dropped++;
+        continue;
+      }
+
+      rows.push(row);
+      for (const name of names) if (!isEmpty(row[name])) fill_rates[name]++;
+    }
+
+    if (!roots.length) {
+      warnings.push(
+        `record: no matches for "${record}" — wrong selector, or the records live in another frame`,
+      );
+    }
+
+    // The loosening probe. A field at zero inside the record scope, matching
+    // freely on the page, means the boundary is wrong rather than the data
+    // absent. Distinguishing the two is the difference between a fixable
+    // selector and a confidently empty column.
+    if (probe && rows.length) {
+      for (const name of names) {
+        if (fill_rates[name] > 0) continue;
+        const sel = fields[name].sel;
+        if (!sel || sel === "." || sel === ":scope") continue;
+        const wide = deepQuery(sel, true).length;
+        warnings.push(
+          wide > 0
+            ? `${name}: 0/${rows.length} within record scope, but ${wide} matches page-wide for "${sel}" — record boundary likely too narrow`
+            : `${name}: no matches for "${sel}" anywhere on the page — selector likely wrong`,
+        );
+      }
+    }
+
+    if (truncated.size) {
+      warnings.push(
+        `truncated at max_text=${max_text}: ${[...truncated].join(", ")}`,
+      );
+    }
+
+    return {
+      url: location.href,
+      count: rows.length,
+      records_found: roots.length,
+      dropped,
+      fill_rates,
+      warnings,
+      rows,
+    };
+  }
+
   function scrape(params) {
-    const { selector, attribute, multiple } = params;
+    const { selector, attribute, multiple, max_text = 500, fields } = params;
 
     if (selector) {
       const elements = multiple
@@ -283,10 +432,10 @@
         : [deepQuery(selector)].filter(Boolean);
 
       return elements.map((el) => {
-        if (attribute) return el.getAttribute(attribute);
+        if (attribute) return fieldValue(el, { get: attribute }, max_text);
         return {
           tag: el.tagName.toLowerCase(),
-          text: el.textContent.trim().slice(0, 500),
+          text: el.textContent.trim().slice(0, max_text),
           attributes: Object.fromEntries(
             Array.from(el.attributes).map((a) => [a.name, a.value]),
           ),
@@ -294,31 +443,66 @@
       });
     }
 
-    // Full page scrape — return structured data
-    const title = document.title;
-    const url = location.href;
-    const meta = {};
-    document.querySelectorAll("meta[name], meta[property]").forEach((m) => {
-      const key = m.getAttribute("name") || m.getAttribute("property");
-      meta[key] = m.getAttribute("content");
-    });
+    // Full page scrape. `fields` selects which parts to return: title and meta
+    // are the cheapest structured data on any page (og:* included) and were
+    // already here, but unreachable without also paying for 50KB of body text.
+    const want =
+      Array.isArray(fields) && fields.length ? new Set(fields) : null;
+    const wanted = (k) => !want || want.has(k);
 
-    const links = Array.from(document.querySelectorAll("a[href]"))
-      .slice(0, 200)
-      .map((a) => ({ text: a.textContent.trim().slice(0, 200), href: a.href }));
+    const out = { title: document.title, url: location.href };
 
-    const headings = Array.from(
-      document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
-    )
-      .slice(0, 100)
-      .map((h) => ({
-        level: parseInt(h.tagName[1]),
-        text: h.textContent.trim().slice(0, 500),
-      }));
+    if (wanted("meta")) {
+      out.meta = {};
+      document.querySelectorAll("meta[name], meta[property]").forEach((m) => {
+        const key = m.getAttribute("name") || m.getAttribute("property");
+        out.meta[key] = m.getAttribute("content");
+      });
+    }
 
-    const bodyText = document.body.innerText.slice(0, 50000);
+    // schema.org blobs give clean typed records for free on a large share of
+    // real estate, job, product and event pages. Malformed ones are common
+    // enough that a parse failure must not take the whole scrape down.
+    if (wanted("jsonld")) {
+      out.jsonld = [];
+      Array.from(
+        document.querySelectorAll('script[type="application/ld+json"]'),
+      )
+        .slice(0, 20)
+        .forEach((s) => {
+          try {
+            out.jsonld.push(JSON.parse(s.textContent));
+          } catch (_) {
+            // Unparseable blob — skip it, keep the rest.
+          }
+        });
+    }
 
-    return { title, url, meta, links, headings, bodyText };
+    if (wanted("links")) {
+      out.links = Array.from(document.querySelectorAll("a[href]"))
+        .slice(0, 200)
+        .map((a) => ({
+          text: a.textContent.trim().slice(0, 200),
+          href: a.href,
+        }));
+    }
+
+    if (wanted("headings")) {
+      out.headings = Array.from(
+        document.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+      )
+        .slice(0, 100)
+        .map((h) => ({
+          level: parseInt(h.tagName[1]),
+          text: h.textContent.trim().slice(0, max_text),
+        }));
+    }
+
+    if (wanted("bodyText")) {
+      out.bodyText = document.body.innerText.slice(0, 50000);
+    }
+
+    return out;
   }
 
   async function click(params) {
@@ -443,7 +627,14 @@
 
   async function getText(params) {
     const el = await waitForElement(params.selector, params._noWait);
-    return { text: el.textContent.trim().slice(0, 10000) };
+    const max = params.max_text || 10000;
+    const full = el.textContent.trim();
+    const text = full.slice(0, max);
+    // A silent cut is what pushes a caller off text parsing entirely, having
+    // never been told the tail existed.
+    return full.length > max
+      ? { text, truncated: true, full_length: full.length }
+      : { text };
   }
 
   function getTitle() {
@@ -468,6 +659,7 @@
     const handlers = {
       snapshot,
       scrape,
+      extract,
       click,
       fill,
       scroll,
