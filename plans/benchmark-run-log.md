@@ -256,3 +256,27 @@ needs neither `div.location` nor title-parsing. Enrichment is still one
 navigation per record, but each navigation now yields a complete typed record
 with no per-site selector discovery. That raises the value of building the
 `enrich` fan-out and lowers its cost.
+
+## Post-fix verification — single Primary, extension reloaded
+
+Stale PID 64005 killed, extension reloaded, one server (PID 82417) holding 7822
+as **Primary**. No session injection, so these carry no caveat.
+
+- **Bug 1 fix confirmed.** The identical `browser_extract` call on
+  `div.profile-contact` that twice returned *Could not establish connection.
+  Receiving end does not exist.* now returns
+  `record: no matches for "div.profile-contact" — wrong selector, or the records
+  live in another frame`, with `records_found: 0` and per-field fill rates.
+- **T6 re-run natively.** `active: null`, `lastNavigatedTabId` cleared by the
+  reload, so `resolve()` returned nothing and the create-a-tab branch ran for
+  real rather than via a non-existent injected session. Active tab `…131`
+  untouched at `chrome://newtab/`; navigate opened `…132`.
+- **`output_file` on `browser_scrape`** (previously untested live): 1814 bytes
+  to disk, `{file, bytes, keys}` inline.
+- **T3 closed against an authoritative source.** McCarty is the record directly
+  after the two consecutive nulls. His profile page's own schema.org data —
+  `telephone: +1 682 302 1750`, `email: michael@yourdavisteam.com`,
+  `addressLocality: Plano, TX` — matches the CSV row produced by the
+  listing-page extract exactly. Field↔record alignment proven on the hardest
+  case from the page's own structured data, not from the card it was scraped
+  from.
