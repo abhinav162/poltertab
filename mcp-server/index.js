@@ -682,7 +682,7 @@ const BROWSER_TOOLS = [
         output_file: {
           type: "string",
           description:
-            "Write the payload to disk and return only a summary (e.g. 'page.json')",
+            "Filename to write the payload under ~/.poltertab/downloads/, returning only a summary. A path is reduced to its basename — output cannot be written elsewhere.",
         },
         tabId: { type: "number" },
         session: { type: "string" },
@@ -733,7 +733,7 @@ const BROWSER_TOOLS = [
         output_file: {
           type: "string",
           description:
-            "Write rows to disk and return only a summary. .jsonl and .csv are written in those formats; anything else as JSON.",
+            "Filename to write rows under ~/.poltertab/downloads/, returning only a summary. .jsonl and .csv are written in those formats, anything else as JSON. A path is reduced to its basename — output cannot be written elsewhere.",
         },
         tabId: { type: "number" },
         session: { type: "string" },
@@ -1076,10 +1076,46 @@ function toCsv(rows) {
   ].join("\n");
 }
 
+// Site memory is keyed by hostname, and that key arrives from a model — so it
+// is untrusted input rather than a filename. Two failures this closes: a note
+// saved under kw.com was invisible to a lookup for www.kw.com (the same site),
+// and the raw value was interpolated straight into a path, so "../.." reached
+// outside MEMORY_DIR.
+function memoryFile(rawHost) {
+  let host = String(rawHost).trim().toLowerCase();
+
+  // The parameter is also documented as accepting `url`, so a full URL turning
+  // up here is expected rather than a caller mistake.
+  if (host.includes("/")) {
+    try {
+      host = new URL(host.includes("://") ? host : `https://${host}`).hostname;
+    } catch {
+      host = host.split("/")[0];
+    }
+  }
+
+  host = host.replace(/[^a-z0-9.-]/g, "").replace(/^\.+/, "");
+  if (!host) throw new Error(`Not a usable hostname: ${rawHost}`);
+
+  // Existing notes live under whichever spelling first created them — the store
+  // already holds both kw.com.json and www.linkedin.com.json — so try the
+  // variants before concluding this is a new file.
+  const bare = host.replace(/^www\./, "");
+  for (const name of [bare, host, `www.${bare}`]) {
+    const p = path.join(MEMORY_DIR, `${name}.json`);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(MEMORY_DIR, `${bare}.json`);
+}
+
+const isBlank = (v) =>
+  v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
+
 // `rows` is passed separately when the payload has a records array: .jsonl and
 // .csv are formats for records, not for envelopes.
 function writeOutput(name, payload, rows) {
-  const safeName = path.basename(name);
+  const requested = String(name);
+  const safeName = path.basename(requested);
   const parts = safeName.split(".");
   const ext = parts.length > 1 ? `.${parts.pop()}` : "";
   const base = parts.join(".");
@@ -1098,7 +1134,16 @@ function writeOutput(name, payload, rows) {
   }
 
   fs.writeFileSync(safePath, body);
-  return { file: safePath, bytes: Buffer.byteLength(body) };
+  const out = { file: safePath, bytes: Buffer.byteLength(body) };
+
+  // Output stays inside DOWNLOADS_DIR: this path comes from a model, and a tool
+  // that writes to an arbitrary absolute path is a different capability than
+  // one that saves a scrape. But relocating without a word is how a caller ends
+  // up looking for a file that was never going to be there.
+  if (safeName !== requested) {
+    out.note = `output_file is confined to ${DOWNLOADS_DIR} — "${requested}" was written as ${path.basename(safePath)}, not to the path requested.`;
+  }
+  return out;
 }
 
 // What comes back inline when the payload went to disk: enough to know the call
@@ -1255,6 +1300,14 @@ async function extractAll(args) {
     );
   }
 
+  // extract reports fill as counts, so extract_all does too — the per-page
+  // baseline is a fraction because it is compared across pages of differing
+  // size, and carries the unit in its name rather than looking like a count.
+  const fill_rates = {};
+  for (const name of Object.keys(fields)) {
+    fill_rates[name] = sliced.filter((r) => !isBlank(r[name])).length;
+  }
+
   return {
     rows: sliced,
     count: sliced.length,
@@ -1262,7 +1315,8 @@ async function extractAll(args) {
     pages_fetched: fetched,
     last_page: page,
     stopped_because,
-    baseline_fill_rates: baseline,
+    fill_rates,
+    baseline_fill_ratios: baseline,
     pages,
     warnings,
   };
@@ -1375,7 +1429,7 @@ const handleToolCall = async (request) => {
     if (action === "get_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
-      const file = path.join(MEMORY_DIR, `${host}.json`);
+      const file = memoryFile(host);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1388,7 +1442,7 @@ const handleToolCall = async (request) => {
     if (action === "save_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
-      const file = path.join(MEMORY_DIR, `${host}.json`);
+      const file = memoryFile(host);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
