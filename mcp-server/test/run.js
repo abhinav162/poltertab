@@ -1165,7 +1165,9 @@ function frameSearchSandbox(cfg = {}) {
           const frameId = (opts && opts.frameId) || 0;
           const frame = frames.find((f) => f.frameId === frameId);
 
-          if (!frame) {
+          // noContentScript models the real shape of a detail page: a map or
+          // chat iframe that the manifest never reached.
+          if (!frame || frame.noContentScript) {
             // Frame not found - simulate "Receiving end does not exist"
             sandbox.chrome.runtime.lastError = { message: "Could not establish connection. Receiving end does not exist." };
             cb(undefined);
@@ -1180,6 +1182,24 @@ function frameSearchSandbox(cfg = {}) {
           if (action === "snapshot") {
             const nodes = frame.snapshotNodes || [];
             cb({ success: true, data: { title: "T", url: "http://t/", count: nodes.length, nodes } });
+            return;
+          }
+          if (action === "extract") {
+            const rows = (frame.records || {})[params.record] || [];
+            cb({
+              success: true,
+              data: {
+                url: "http://t/",
+                count: rows.length,
+                records_found: rows.length,
+                dropped: 0,
+                fill_rates: {},
+                warnings: rows.length
+                  ? []
+                  : [`record: no matches for "${params.record}"`],
+                rows,
+              },
+            });
             return;
           }
           if (action === "scrape" && !sel) {
@@ -1369,6 +1389,53 @@ async function groupG() {
     }, 500);
     const reply = await bg.command({ id: "g8", action: "click", selector: "#late" });
     assert.strictEqual(reply.success, true, reply.error || "late modal not found");
+  });
+
+  await test("G9 extract finds records in a child frame when the top frame has none", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, records: {} },
+        { frameId: 123, records: { ".card": [{ name: "Ann" }, { name: "Cal" }] } },
+      ],
+    });
+    const reply = await bg.command({
+      id: "g9",
+      action: "extract",
+      record: ".card",
+      fields: { name: { sel: "a", get: "text" } },
+    });
+    assert.strictEqual(reply.success, true, reply.error || "failed");
+    assert.strictEqual(reply.data.count, 2);
+  });
+
+  await test("G10 zero records returns the explanation, not an iframe's error", async () => {
+    // The live shape on a kw.com profile page: frame 0 has the content script
+    // and no matching records; a child iframe has no content script at all.
+    // The frameless child's "Receiving end does not exist" was being thrown as
+    // the result, which read as "the content script never attached" when the
+    // real answer was "that record selector matches nothing here".
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, records: {} },
+        { frameId: 7, noContentScript: true },
+      ],
+    });
+    const reply = await bg.command({
+      id: "g10",
+      action: "extract",
+      record: "div.profile-contact",
+      fields: { phone: { sel: "a", get: "href" } },
+    });
+    assert.strictEqual(
+      reply.success,
+      true,
+      `threw instead of answering: ${reply.error}`,
+    );
+    assert.strictEqual(reply.data.records_found, 0);
+    assert.ok(
+      /no matches for "div.profile-contact"/.test(reply.data.warnings.join(" ")),
+      `lost the diagnostic: ${JSON.stringify(reply.data.warnings)}`,
+    );
   });
 
   await test("G6 snapshot aggregates across all frames", async () => {

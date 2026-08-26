@@ -938,12 +938,33 @@
     // that took ~1 s × N frames before even finding the element.
     const probeParams = { ...params, _noWait: true };
 
+    // A successful extract that found no records is an answer, not a miss to
+    // escalate — it carries the fill rates and the page-wide probe that explain
+    // *why* it came back empty. Frame search still advances past it in case a
+    // later frame holds the records, but if none do, the caller gets this
+    // payload instead of an error borrowed from an iframe that never had a
+    // content script. That borrowed error is what "Receiving end does not
+    // exist" on a detail page actually was, and it read as the content script
+    // failing to attach when the real answer was "that selector matches
+    // nothing here, and here is what does".
+    let emptyAnswer = null;
+    const keepEmptyAnswer = (r) => {
+      if (!emptyAnswer && action === "extract" && r && r.success && r.data) {
+        emptyAnswer = r.data;
+      }
+    };
+
     // Step 1: top frame first (cheap, most common hit)
     const topResponse = await sendToFrame(targetTabId, 0, action, probeParams);
     if (topResponse && topResponse.success && !isElementMiss(action, params, topResponse)) {
       return topResponse.data;
     }
-    if (topResponse && !topResponse.success && !/not found/i.test(topResponse.error || "")) {
+    keepEmptyAnswer(topResponse);
+    // isElementMiss already decides what counts as "keep searching" — including
+    // a frame with no content script. Second-guessing it with a narrower test
+    // here meant a frame-0 injection race threw immediately instead of falling
+    // through to the waited retry that exists to absorb it.
+    if (topResponse && !topResponse.success && !isElementMiss(action, params, topResponse)) {
       throw new Error(topResponse.error || "Content script error");
     }
 
@@ -961,6 +982,7 @@
       for (const response of childResults) {
         if (!response) continue;
         if (isElementMiss(action, params, response)) {
+          keepEmptyAnswer(response);
           if (response.error) lastError = response.error;
           continue;
         }
@@ -977,11 +999,13 @@
       if (!isElementMiss(action, params, retryResponse)) {
         return retryResponse.data;
       }
+      keepEmptyAnswer(retryResponse);
     }
     if (retryResponse && retryResponse.error) {
       lastError = retryResponse.error;
     }
 
+    if (emptyAnswer) return emptyAnswer;
     throw new Error(lastError);
   }
 
