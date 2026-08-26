@@ -96,6 +96,26 @@ async function groupA() {
     assert.deepStrictEqual(bogus, [], `README names non-existent tools: ${bogus}`);
   });
 
+  await test("A7 the skill names the extraction tools, and no phantom ones", () => {
+    // The skill is what an agent reads before working a site. New tools that
+    // never reach it are new tools nobody uses: the agent takes the
+    // flat-scrape-and-reassemble route these exist to replace.
+    const skill = fs.readFileSync(
+      path.join(REPO, "skills", "browser-navigation-strategy", "SKILL.md"),
+      "utf8",
+    );
+    const idx = fs.readFileSync(SERVER, "utf8");
+    const tools = new Set(
+      [...idx.matchAll(/name:\s*"(browser_[a-z_]+)"/g)].map((m) => m[1]),
+    );
+    const named = new Set(skill.match(/browser_[a-z_]+/g) || []);
+    for (const must of ["browser_extract", "browser_extract_all"]) {
+      assert.ok(named.has(must), `skill never mentions ${must}`);
+    }
+    const phantom = [...named].filter((n) => !tools.has(n));
+    assert.deepStrictEqual(phantom, [], `skill names non-existent tools: ${phantom}`);
+  });
+
   await test("A5 README does not claim the server exits on a busy port", () => {
     const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
     assert.ok(
