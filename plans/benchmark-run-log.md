@@ -172,3 +172,87 @@ no-session `browser_navigate`.
 The one metric that does *not* favour the new path: **single-page inline bytes** (T1),
 where verbose per-record JSON costs slightly more than raw href lists. The byte win is
 entirely `output_file`'s, and only shows up at multi-page scale.
+
+---
+
+# Second run — 2026-08-26, after the fixes
+
+Re-run on `feat/extraction-loop` at `de5e4f3`, extension reloaded, against
+`chrome-browser-control` (the repo server). T6 ran first, before any other
+navigation, which the first run could not do.
+
+## Server topology mattered
+
+Two servers were live: PID 64005 (14:14, pre-fix) holding port 7822 as
+**Primary**, and PID 20574 (17:03, current tree) as **Secondary** proxying
+through it. That matters for T6 specifically — `sendCommand` injects
+`params.session = "agent_<nodeId>"` into every Secondary call, so "sessionless
+navigate" can never be truly sessionless. It is the most likely reason the
+first run's T6 came back inconclusive. T6 was still reachable here because the
+injected session did not exist yet, so `resolve()` returned null on the first
+navigate and took the create-a-tab branch under test.
+
+## Results
+
+| Task | Result | Verdict |
+|---|---|---|
+| T6 active tab preserved | active tab `…117` still `chrome://newtab/`; navigate opened `…123` | **pass** |
+| T6 tab reuse | second sessionless navigate returned `…123` | **pass** |
+| T5 empty-field probe | `socials: 0/12 in record scope, but 31 matches page-wide … boundary likely too narrow` | **pass** |
+| T1 new arm | 1 call, 12 records, all 5 fields, `warnings: []` | **pass** |
+| T4 duplicate halt | `duplicate_page` after 2 pages, 12 rows not 100 | **pass** |
+| T2 loop | **1 call**, 100 records, 9 pages, 21.7 KB to CSV, ~1 KB inline | **pass** |
+| T3 alignment | see below | **pass** |
+
+`fill_rates` came back as counts and `baseline_fill_ratios` as fractions,
+confirming that fix live. `output_file` returned a summary, not the payload.
+
+## T3 verified mechanically, not by eyeball
+
+Parsed the 100-row CSV rather than spot-checking:
+
+- 100 rows, 5 columns, 0 missing anchor, **100/100 unique URLs**
+- **0 phones shared by more than one agent** across 83 phones — a zip-shift
+  necessarily duplicates values, so its absence is the decisive signal
+- 17 empty-phone rows, including **three consecutive-null runs** (indexes 4,
+  25, 95); every successor keeps its own distinct phone
+- 78/89 rows with contact data carry an own-name token in their email or
+  socials. All 11 that do not were inspected: team-branded emails
+  (`mike@adamflinchbaugh.com`, `jan@sueadler.com`), three empty emails, and two
+  false negatives of the heuristic's own ≥4-char cutoff (Tim **Scott** at
+  `realestatetim@`, David B. **Ahn** at `esendiahn@`). None indicate
+  misalignment.
+
+## Bug 1 was a misdiagnosis — and the cause was ours
+
+The first run's "content script never attaches on kw.com profile pages" does
+not hold. On a profile page, both a selector-less `browser_scrape` and
+`browser_scrape` with `div.location` returned data. `browser_extract` with a
+record that exists (`div.location`) also worked. Only `browser_extract` with a
+record that matches nothing (`div.profile-contact`) produced *Could not
+establish connection. Receiving end does not exist.* — reproducibly.
+
+Chain: frame 0 answers `records_found: 0` (a success, but `isElementMiss` flags
+it so the search advances) → child iframes on the profile page have no content
+script and answer "Receiving end does not exist", setting `lastError` → the
+waited retry on frame 0 again returns 0 records → `throw new Error(lastError)`
+throws an unrelated iframe's connection error as the result.
+
+So the payload this branch exists to produce — "no records here, and here is
+the page-wide probe explaining why" — was replaced by a message that reads as a
+broken content script. Fixed in `de5e4f3`; covered by G9/G10, which needed a
+frame with no content script to reproduce. The unit test for zero records talks
+to the content script directly and structurally cannot see this.
+
+## The deferred enrichment problem is smaller than assumed
+
+Profile pages ship a schema.org `ProfilePage` blob containing
+`address.addressLocality` / `addressRegion`, plus `telephone`, `email`,
+`jobTitle`, `worksFor` and every social in `sameAs`. `browser_scrape` with
+`fields: ["jsonld"]` returns it in one call.
+
+So `location` — the field that motivated the whole N+1 detail-page discussion —
+needs neither `div.location` nor title-parsing. Enrichment is still one
+navigation per record, but each navigation now yields a complete typed record
+with no per-site selector discovery. That raises the value of building the
+`enrich` fan-out and lowers its cost.
