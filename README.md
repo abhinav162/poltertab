@@ -86,10 +86,11 @@ Running from a clone instead of npm? Point the client at the file directly:
 
 ## Supported MCP Tools
 
-The server exposes 21 tools to the LLM (all prefixed with `browser_`). Every
+The server exposes 23 tools to the LLM (all prefixed with `browser_`). Every
 page-facing tool also takes optional `tabId` and `session` to target a specific
-tab — omit both and PolterTab uses the last tab it navigated, falling back to
-your active tab.
+tab — omit both and PolterTab uses the last tab it navigated. The first
+`browser_navigate` of a session opens its own tab rather than commandeering the
+one you are looking at.
 
 ### Page actions
 
@@ -104,14 +105,76 @@ your active tab.
 
 ### Reading the page
 
+Every tool here takes `output_file`, which writes the payload to
+`~/.poltertab/downloads/` and returns only a summary — row count, field names,
+fill rates and two sample records. Use it for anything bigger than a glance; the
+raw payload should never be the default path into a context window.
+
 | Action | Parameters | Description |
 | -------- | ----------- | ------------- |
-| `browser_scrape` | `selector`, `attribute`, `multiple` | Scrape given elements, or the whole page (title, meta, links, headings, body text) |
-| `browser_snapshot` | — | Ref-tagged tree of visible and interactive nodes, capped at 400 |
-| `browser_get_text` | `selector` (required) | Text content of one element |
+| `browser_extract` | `record`, `fields` (required), `anchor`, `max_text`, `probe`, `output_file` | Repeating records with fields grouped per record — see below |
+| `browser_extract_all` | `url_template`, `record`, `fields` (required), `key`, `limit`, `offset`, `start_page`, `max_pages`, `fill_tolerance`, `output_file` | Paginate and extract in one call, no model round-trip per page |
+| `browser_scrape` | `selector`, `attribute`, `multiple`, `fields`, `max_text`, `output_file` | Scrape given elements, or the whole page. `attribute` accepts `text` as well as any attribute name; `href`/`src` come back absolute. `fields` picks which parts of a full-page scrape to return — `["meta","jsonld"]` gets og: tags and schema.org blobs without 50KB of body text |
+| `browser_snapshot` | `interactive_only`, `max_nodes`, `max_depth`, `output_file` | Ref-tagged tree of visible and interactive nodes, capped at 400 |
+| `browser_get_text` | `selector` (required), `max_text`, `output_file` | Text content of one element. Flags it in the result when text was cut |
 | `browser_get_title` | — | Page title and URL |
 | `browser_get_url` | — | Page URL and title |
 | `browser_screenshot` | — | Visible tab as base64 PNG (focuses the tab) |
+
+### Extracting records
+
+`browser_scrape` returns a flat list, which loses track of which value belongs
+to which record. That is fine for one element and dangerous for ninety: the
+moment a field is optional, a flat scrape of names against phone numbers shifts
+every later phone up a row and mis-assigns the rest of the page.
+
+`browser_extract` takes a record container and resolves each field *inside* it:
+
+```json
+{
+  "record": ".agent-card",
+  "fields": {
+    "name":    { "sel": "a.agent-card-name", "get": "text" },
+    "url":     { "sel": "a.agent-card-name", "get": "href" },
+    "phone":   { "sel": "a[href^='tel:']",   "get": "href", "strip": "tel:" },
+    "socials": { "sel": "a.social-button",   "get": "href", "many": true }
+  },
+  "anchor": "url",
+  "output_file": "agents.csv"
+}
+```
+
+- **A missing field yields `null`.** It never shifts.
+- `sel` is relative to the record root; omit it (or use `"."`) for the root itself.
+- `get` is `text` (default), `href`, `src`, or any attribute name.
+- `anchor` names the field a real record always has. Records missing it — the
+  placeholder cards that pad the last page of a listing — are dropped and
+  counted in `dropped` rather than emitted as rows of nulls.
+
+The result reports what happened, so an empty column cannot pass for an answer:
+
+```
+{ "count": 12, "dropped": 0,
+  "fill_rates": { "name": 12, "phone": 10, "socials": 0 },
+  "warnings": ["socials: 0/12 within record scope, but 40 matches page-wide
+                for a.social-button — record boundary likely too narrow"] }
+```
+
+That warning is the loosening probe. Any field that comes back entirely empty is
+re-checked page-wide, because the container that *looks* like the record often
+excludes a sibling holding some of the fields — and "0 socials" reads as "these
+people have no social accounts" rather than "your selector scope is wrong".
+
+**`browser_extract_all`** takes the same spec plus a `url_template` containing
+`{page}`, and runs the loop itself. It dedups on `key` and halts on the first of:
+`limit_reached`, `empty_page`, `duplicate_page` (a page whose records repeat an
+earlier one — what a site does when it ignores an unrecognised page-size
+param), `fill_rate_deviation` (a page whose fill rates collapse against the
+first page's baseline, which is how a spec learned on page 1 quietly degrades on
+page 10), or `max_pages`. It always reports which condition fired and returns
+everything collected up to that point, so a halt never costs you the run.
+
+`.csv` and `.jsonl` output files are written in those formats.
 
 ### Network capture
 
@@ -271,7 +334,7 @@ Nothing the server accumulates is stored inside the package:
 ```
 ~/.poltertab/
 ├── navigation_memory/   # Per-domain obstacles and fixes (browser_save_site_memory)
-└── downloads/           # output_file payloads from browser_get_network_state
+└── downloads/           # output_file payloads from any read tool
 ```
 
 This matters for a global npm install. The package sits in `node_modules/`, so

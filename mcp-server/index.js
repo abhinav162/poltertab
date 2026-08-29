@@ -654,17 +654,137 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_scrape",
-    description: "Scrape the page or specific elements",
+    description:
+      "Scrape the page or specific elements. For repeating records (cards, rows, listings) use browser_extract instead — it keeps fields grouped per record.",
     inputSchema: {
       type: "object",
       properties: {
         selector: { type: "string" },
-        attribute: { type: "string" },
+        attribute: {
+          type: "string",
+          description:
+            "Attribute to read, or 'text' for the element's text. 'href'/'src' come back absolute.",
+        },
         multiple: { type: "boolean" },
+        fields: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["meta", "jsonld", "links", "headings", "bodyText"],
+          },
+          description:
+            "Full-page scrape only (no selector): which parts to return. title and url are always included. ['meta','jsonld'] is the cheap structured-data path — og: tags and schema.org blobs without 50KB of body text. Omit for everything.",
+        },
+        max_text: {
+          type: "number",
+          description: "Max characters of text per element (default 500)",
+        },
+        output_file: {
+          type: "string",
+          description:
+            "Filename to write the payload under ~/.poltertab/downloads/, returning only a summary. A path is reduced to its basename — output cannot be written elsewhere.",
+        },
         tabId: { type: "number" },
         session: { type: "string" },
       },
       required: [],
+    },
+  },
+  {
+    name: "browser_extract",
+    description:
+      "Extract repeating records (cards, rows, listings) with fields grouped per record. Fields resolve INSIDE each record root and a missing field yields null instead of shifting later records' values. Returns fill rates and warns when a field is empty inside the record scope but matches page-wide (record boundary too narrow).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        record: {
+          type: "string",
+          description:
+            "Selector for the repeating container, e.g. '.agent-card'. Verify with browser_snapshot that it encloses ALL the fields you want — the element that looks like the card often excludes siblings holding some of them.",
+        },
+        fields: {
+          type: "object",
+          description:
+            "Map of field name -> {sel, get, many, strip}. sel is relative to the record root; omit it (or use '.') for the root itself. get: 'text' (default) | 'href' | 'src' | any attribute name. many: true collects all matches into an array. strip removes a leading prefix, e.g. 'tel:'.",
+          additionalProperties: {
+            type: "object",
+            properties: {
+              sel: { type: "string" },
+              get: { type: "string" },
+              many: { type: "boolean" },
+              strip: { type: "string" },
+            },
+          },
+        },
+        anchor: {
+          type: "string",
+          description:
+            "Name of the field that is always present on a real record (usually the detail-page link). Records missing it are dropped as placeholders and counted in 'dropped'.",
+        },
+        max_text: {
+          type: "number",
+          description: "Max characters per text field (default 500)",
+        },
+        probe: {
+          type: "boolean",
+          description:
+            "Page-wide re-check of any field that came back entirely empty (default true)",
+        },
+        output_file: {
+          type: "string",
+          description:
+            "Filename to write rows under ~/.poltertab/downloads/, returning only a summary. .jsonl and .csv are written in those formats, anything else as JSON. A path is reduced to its basename — output cannot be written elsewhere.",
+        },
+        tabId: { type: "number" },
+        session: { type: "string" },
+      },
+      required: ["record", "fields"],
+    },
+  },
+  {
+    name: "browser_extract_all",
+    description:
+      "Paginate and extract in one call, with no model round-trip per page. Takes browser_extract's spec plus a URL template, walks pages, dedups on a key, and halts on: limit reached, empty page, a page whose records repeat an earlier page's (the trap where ignored page-size params silently return page 1 again), fill rates collapsing against page 1's baseline, or max_pages. Always reports which condition fired and returns everything collected so far.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url_template: {
+          type: "string",
+          description:
+            "URL with a {page} placeholder, e.g. 'https://www.kw.com/agents?page={page}'",
+        },
+        record: { type: "string" },
+        fields: { type: "object" },
+        anchor: { type: "string" },
+        key: {
+          type: "string",
+          description:
+            "Field name to dedup on — use a stable per-record identifier such as the detail URL. Falls back to whole-row equality.",
+        },
+        limit: {
+          type: "number",
+          description: "Stop after this many records (default 200)",
+        },
+        offset: {
+          type: "number",
+          description:
+            "Skip this many records from the start of the stream. Pages are re-fetched to reach the offset; pass start_page to skip cheaply.",
+        },
+        start_page: { type: "number", description: "First page (default 1)" },
+        max_pages: {
+          type: "number",
+          description: "Hard guard on pages fetched (default 50)",
+        },
+        fill_tolerance: {
+          type: "number",
+          description:
+            "Halt when a field well-populated on the baseline page falls below this fraction of it (default 0.5). 0 disables the check.",
+        },
+        max_text: { type: "number" },
+        output_file: { type: "string" },
+        session: { type: "string" },
+      },
+      required: ["url_template", "record", "fields"],
     },
   },
   {
@@ -718,6 +838,12 @@ const BROWSER_TOOLS = [
       type: "object",
       properties: {
         selector: { type: "string" },
+        max_text: {
+          type: "number",
+          description:
+            "Max characters (default 10000). The result flags it when text was cut.",
+        },
+        output_file: { type: "string" },
         tabId: { type: "number" },
         session: { type: "string" },
       },
@@ -750,10 +876,21 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_snapshot",
-    description: "Get a snapshot of the DOM",
+    description:
+      "Get a snapshot of the DOM. Large pages run to tens of KB — narrow it with interactive_only/max_nodes, or send it to output_file, before spending the context on it.",
     inputSchema: {
       type: "object",
       properties: {
+        interactive_only: {
+          type: "boolean",
+          description: "Only clickable/typable elements",
+        },
+        max_nodes: {
+          type: "number",
+          description: "Cap on nodes returned (default 400)",
+        },
+        max_depth: { type: "number" },
+        output_file: { type: "string" },
         tabId: { type: "number" },
         session: { type: "string" },
       },
@@ -910,6 +1047,281 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+// --- Output handling ---
+//
+// The raw payload must never be the default path into the context window. Two
+// costs dominated a 100-record scrape and neither was the data: envelopes
+// several lines of JSON deep to carry one short string, and the agent then
+// re-typing every record by hand into a file. Writing straight to disk removes
+// both.
+
+function toCsv(rows) {
+  if (!rows.length) return "";
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const cell = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = Array.isArray(v)
+      ? v.join(" | ")
+      : typeof v === "object"
+        ? JSON.stringify(v) // beats a column of "[object Object]"
+        : String(v);
+    // Quote only when it would otherwise break the row, and double any
+    // embedded quote — the two mistakes that produce a file which imports
+    // silently and wrongly.
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [
+    cols.join(","),
+    ...rows.map((r) => cols.map((c) => cell(r[c])).join(",")),
+  ].join("\n");
+}
+
+// Site memory is keyed by hostname, and that key arrives from a model — so it
+// is untrusted input rather than a filename. Two failures this closes: a note
+// saved under kw.com was invisible to a lookup for www.kw.com (the same site),
+// and the raw value was interpolated straight into a path, so "../.." reached
+// outside MEMORY_DIR.
+function memoryFile(rawHost) {
+  let host = String(rawHost).trim().toLowerCase();
+
+  // The parameter is also documented as accepting `url`, so a full URL turning
+  // up here is expected rather than a caller mistake.
+  if (host.includes("/")) {
+    try {
+      host = new URL(host.includes("://") ? host : `https://${host}`).hostname;
+    } catch {
+      host = host.split("/")[0];
+    }
+  }
+
+  host = host.replace(/[^a-z0-9.-]/g, "").replace(/^\.+/, "");
+  if (!host) throw new Error(`Not a usable hostname: ${rawHost}`);
+
+  // Existing notes live under whichever spelling first created them — the store
+  // already holds both kw.com.json and www.linkedin.com.json — so try the
+  // variants before concluding this is a new file.
+  const bare = host.replace(/^www\./, "");
+  for (const name of [bare, host, `www.${bare}`]) {
+    const p = path.join(MEMORY_DIR, `${name}.json`);
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(MEMORY_DIR, `${bare}.json`);
+}
+
+const isBlank = (v) =>
+  v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length);
+
+// `rows` is passed separately when the payload has a records array: .jsonl and
+// .csv are formats for records, not for envelopes.
+function writeOutput(name, payload, rows) {
+  const requested = String(name);
+  const safeName = path.basename(requested);
+  const parts = safeName.split(".");
+  const ext = parts.length > 1 ? `.${parts.pop()}` : "";
+  const base = parts.join(".");
+  const finalName = `${base}_${Date.now()}${ext}`;
+
+  fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+  const safePath = path.join(DOWNLOADS_DIR, finalName);
+
+  let body;
+  if (rows && ext === ".jsonl") {
+    body = rows.map((r) => JSON.stringify(r)).join("\n");
+  } else if (rows && ext === ".csv") {
+    body = toCsv(rows);
+  } else {
+    body = JSON.stringify(payload, null, 2);
+  }
+
+  fs.writeFileSync(safePath, body);
+  const out = { file: safePath, bytes: Buffer.byteLength(body) };
+
+  // Output stays inside DOWNLOADS_DIR: this path comes from a model, and a tool
+  // that writes to an arbitrary absolute path is a different capability than
+  // one that saves a scrape. But relocating without a word is how a caller ends
+  // up looking for a file that was never going to be there.
+  if (safeName !== requested) {
+    out.note = `output_file is confined to ${DOWNLOADS_DIR} — "${requested}" was written as ${path.basename(safePath)}, not to the path requested.`;
+  }
+  return out;
+}
+
+// What comes back inline when the payload went to disk: enough to know the call
+// worked and the shape is right, and nothing more.
+function summarizeOutput(payload, rows, written) {
+  const summary = { ...written };
+  if (rows) {
+    summary.rows = rows.length;
+    summary.fields = rows.length ? Object.keys(rows[0]) : [];
+    summary.sample = rows.slice(0, 2);
+    for (const k of ["fill_rates", "dropped", "warnings", "stopped_because", "pages_fetched"]) {
+      if (payload && payload[k] !== undefined) summary[k] = payload[k];
+    }
+  } else if (Array.isArray(payload)) {
+    summary.items = payload.length;
+    summary.sample = payload.slice(0, 2);
+  } else if (payload && typeof payload === "object") {
+    summary.keys = Object.keys(payload);
+  }
+  return summary;
+}
+
+// Payload shapes that carry a records array worth writing as jsonl/csv.
+function rowsOf(payload) {
+  if (payload && Array.isArray(payload.rows)) return payload.rows;
+  if (Array.isArray(payload)) return payload;
+  return null;
+}
+
+// --- The pagination loop ---
+//
+// This exists so the model stops being the for-loop. It supplies the spec once
+// and receives records; every page in between costs a browser round-trip
+// instead of a model round-trip.
+//
+// Every halt condition below is a case where continuing would produce data
+// that looks complete and is not, so each one names itself in the result. A
+// paused run costs far less than a confidently wrong dataset.
+async function extractAll(args) {
+  const {
+    url_template,
+    record,
+    fields,
+    anchor,
+    key,
+    limit = 200,
+    offset = 0,
+    start_page = 1,
+    max_pages = 50,
+    fill_tolerance = 0.5,
+    max_text,
+    session,
+  } = args;
+
+  if (!url_template.includes("{page}")) {
+    throw new Error("url_template must contain a {page} placeholder");
+  }
+
+  const spec = { record, fields, anchor, max_text, session, probe: true };
+  const target = offset + limit;
+  const rows = [];
+  const seen = new Set();
+  const warnings = [];
+  const pages = [];
+
+  let baseline = null;
+  let stopped_because = "max_pages";
+  let page = start_page;
+  let fetched = 0;
+
+  const keyOf = (row) =>
+    key ? String(row[key] ?? "") : JSON.stringify(row);
+
+  while (fetched < max_pages) {
+    const url = url_template.replace("{page}", String(page));
+    const nav = await sendCommand("navigate", { url, session });
+    fetched++;
+
+    const res = await sendCommand("extract", spec);
+    const pageRows = (res && res.rows) || [];
+    pages.push({
+      page,
+      url: nav && nav.url,
+      found: res ? res.records_found : 0,
+      kept: pageRows.length,
+      dropped: res ? res.dropped : 0,
+    });
+    if (res && res.warnings && res.warnings.length) {
+      warnings.push(`page ${page}: ${res.warnings.join("; ")}`);
+    }
+
+    if (!pageRows.length) {
+      stopped_because = "empty_page";
+      break;
+    }
+
+    // A site that ignores an unrecognised page param answers every request with
+    // page 1. Identical content reads as real data, which is how a "next 100"
+    // silently becomes the same 12 records eight times over.
+    const fresh = pageRows.filter((r) => !seen.has(keyOf(r)));
+    if (!fresh.length) {
+      stopped_because = "duplicate_page";
+      warnings.push(
+        `page ${page} returned only records already seen — pagination is not advancing`,
+      );
+      break;
+    }
+
+    // Fill rates against the first page. A spec learned on page 1 degrades
+    // quietly later: variant card layouts, a column that stops being populated.
+    // Halting beats emitting rows that are 40% empty.
+    const ratios = {};
+    for (const [name, n] of Object.entries(res.fill_rates || {})) {
+      ratios[name] = n / pageRows.length;
+    }
+    if (!baseline) {
+      baseline = ratios;
+    } else if (fill_tolerance > 0) {
+      const collapsed = Object.keys(baseline).filter(
+        (name) =>
+          baseline[name] >= 0.5 &&
+          ratios[name] < baseline[name] * fill_tolerance,
+      );
+      if (collapsed.length) {
+        stopped_because = "fill_rate_deviation";
+        warnings.push(
+          `page ${page}: ${collapsed
+            .map(
+              (n) =>
+                `${n} ${(ratios[n] * 100).toFixed(0)}% vs baseline ${(baseline[n] * 100).toFixed(0)}%`,
+            )
+            .join(", ")} — page layout likely differs from the learned spec`,
+        );
+        break;
+      }
+    }
+
+    for (const r of fresh) {
+      seen.add(keyOf(r));
+      rows.push(r);
+    }
+
+    if (rows.length >= target) {
+      stopped_because = "limit_reached";
+      break;
+    }
+    page++;
+  }
+
+  const sliced = rows.slice(offset, offset + limit);
+  if (offset && fetched) {
+    warnings.push(
+      `offset ${offset} was reached by fetching from page ${start_page}; pass start_page to skip pages instead of re-reading them`,
+    );
+  }
+
+  // extract reports fill as counts, so extract_all does too — the per-page
+  // baseline is a fraction because it is compared across pages of differing
+  // size, and carries the unit in its name rather than looking like a count.
+  const fill_rates = {};
+  for (const name of Object.keys(fields)) {
+    fill_rates[name] = sliced.filter((r) => !isBlank(r[name])).length;
+  }
+
+  return {
+    rows: sliced,
+    count: sliced.length,
+    collected: rows.length,
+    pages_fetched: fetched,
+    last_page: page,
+    stopped_because,
+    fill_rates,
+    baseline_fill_ratios: baseline,
+    pages,
+    warnings,
+  };
+}
+
 const handleToolCall = async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -951,24 +1363,12 @@ const handleToolCall = async (request) => {
       // payload would flood the very context window this parameter exists to
       // protect.
       if (opts.output_file) {
-        // Sanitize the file name to prevent Path Traversal
-        const safeName = path.basename(opts.output_file);
-        // Add timestamp to prevent collisions
-        const parts = safeName.split(".");
-        const ext = parts.length > 1 ? `.${parts.pop()}` : "";
-        const base = parts.join(".");
-        const finalName = `${base}_${Date.now()}${ext}`;
-
-        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
-
-        const safePath = path.join(DOWNLOADS_DIR, finalName);
-        fs.writeFileSync(safePath, JSON.stringify(responsePayload, null, 2));
-
+        const written = writeOutput(opts.output_file, responsePayload);
         return {
           content: [
             {
               type: "text",
-              text: `Data successfully written to ${safePath}. Captured ${responsePayload.capturedRequests} requests.`,
+              text: `Data successfully written to ${written.file}. Captured ${responsePayload.capturedRequests} requests.`,
             },
           ],
         };
@@ -1029,7 +1429,7 @@ const handleToolCall = async (request) => {
     if (action === "get_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
-      const file = path.join(MEMORY_DIR, `${host}.json`);
+      const file = memoryFile(host);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1042,7 +1442,7 @@ const handleToolCall = async (request) => {
     if (action === "save_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
-      const file = path.join(MEMORY_DIR, `${host}.json`);
+      const file = memoryFile(host);
       let data = [];
       if (fs.existsSync(file)) {
         data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1058,6 +1458,32 @@ const handleToolCall = async (request) => {
       };
     }
 
+    // Loops in the server, not in the model. One tool call covers every page.
+    if (action === "extract_all") {
+      const payload = await extractAll(args || {});
+      const opts = args || {};
+
+      if (opts.output_file) {
+        const written = writeOutput(opts.output_file, payload, payload.rows);
+        const { rows, pages, ...rest } = payload;
+        const summary = {
+          ...rest,
+          ...written,
+          fields: rows.length ? Object.keys(rows[0]) : [],
+          sample: rows.slice(0, 2),
+        };
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(summary, null, 2) },
+          ],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      };
+    }
+
     const result = await sendCommand(action, args || {});
 
     if (!isSecondary) {
@@ -1069,6 +1495,25 @@ const handleToolCall = async (request) => {
         primaryLastTabId = args.tabId;
         broadcastSessionState();
       }
+    }
+
+    // Any read tool can send its payload to disk. Placed after tab tracking so
+    // taking the file path does not cost the session its tab bookkeeping.
+    if (args && args.output_file && result && typeof result === "object") {
+      const rows = rowsOf(result);
+      const written = writeOutput(args.output_file, result, rows);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              summarizeOutput(result, rows, written),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
     }
 
     // Check if error result string (graceful error handling)

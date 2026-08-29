@@ -585,6 +585,7 @@
       case "fill":
       case "snapshot":
       case "scrape":
+      case "extract":
       case "scroll":
       case "hover":
       case "get_text":
@@ -638,26 +639,19 @@
     const resolvedTabId = await sessionManager.resolve(params);
 
     let tab;
+    const since = Date.now();
     if (resolvedTabId) {
-      const since = Date.now();
       tab = await chrome.tabs.update(resolvedTabId, { url: targetUrl });
-      tab = await waitForTabLoad(tab.id, since);
     } else {
-      // No session context — use active tab or create new
-      const [activeTab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (activeTab) {
-        const since = Date.now();
-        tab = await chrome.tabs.update(activeTab.id, { url: targetUrl });
-        tab = await waitForTabLoad(tab.id, since);
-      } else {
-        const since = Date.now();
-        tab = await chrome.tabs.create({ url: targetUrl });
-        tab = await waitForTabLoad(tab.id, since);
-      }
+      // Nothing resolved means nothing has been navigated yet this session.
+      // This runs against the user's real browser, so the old behaviour here —
+      // commandeering whatever tab they happened to be looking at — navigated
+      // them away from their own work. Open our own tab instead; resolve()
+      // returns it via lastNavigatedTabId from the next call onward, so a
+      // paginating loop still reuses one tab rather than opening hundreds.
+      tab = await chrome.tabs.create({ url: targetUrl });
     }
+    tab = await waitForTabLoad(tab.id, since);
 
     // Always track the last navigated tab for implicit fallback
     sessionManager.lastNavigatedTabId = tab.id;
@@ -685,7 +679,12 @@
       await sessionManager.persist();
     }
 
-    return { tabId: tab.id, url: tab.url, title: tab.title };
+    return {
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title,
+      status: tab._loadTimedOut ? "timeout_but_loaded" : "ok",
+    };
   }
 
   // Resolves once the tab reports a top-frame load that finished at or after
@@ -715,7 +714,27 @@
       }
       await new Promise((r) => setTimeout(r, 100));
     }
-    throw new Error("Navigation timed out after 30s");
+
+    // The deadline passed without an onCompleted we could match, which is not
+    // the same thing as a page that failed to load. The epoch is in-memory, so
+    // an MV3 worker suspension mid-navigation loses it; an SPA soft-navigation
+    // never fires onCompleted at all. Both cases used to throw "Navigation
+    // timed out" over a fully loaded page — an error the caller can only answer
+    // by guessing whether to retry.
+    //
+    // Ask the tab what it actually did, and report that instead.
+    let tab = null;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      throw new Error("Tab was closed during navigation");
+    }
+    if (tab.status === "complete") {
+      return { ...tab, _loadTimedOut: true };
+    }
+    throw new Error(
+      `Navigation timed out after ${Math.round(timeoutMs / 1000)}s (tab status: ${tab.status})`,
+    );
   }
 
   async function screenshot(params) {
@@ -778,10 +797,36 @@
     ) {
       return true;
     }
+    // Same for extract: a frame with no matching record root succeeded at
+    // finding nothing, and the records may well be in the next frame.
+    if (
+      action === "extract" &&
+      response.success &&
+      response.data &&
+      response.data.records_found === 0
+    ) {
+      return true;
+    }
     return false;
   }
 
-  function sendToFrame(tabId, frameId, action, params) {
+  // executeScript resolving does not guarantee the content script's
+  // onMessage listener is registered yet, so the first message into a
+  // freshly-injected frame can lose a race and come back "Receiving end does
+  // not exist" — a transient that succeeded on a bare retry, unchanged. Absorb
+  // it here, once, rather than leaving every caller to guess whether a retry
+  // is legitimate.
+  async function sendToFrame(tabId, frameId, action, params) {
+    const first = await postToFrame(tabId, frameId, action, params);
+    if (first && first.success) return first;
+    if (!/Receiving end|Could not establish connection/i.test(first?.error || "")) {
+      return first;
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    return postToFrame(tabId, frameId, action, params);
+  }
+
+  function postToFrame(tabId, frameId, action, params) {
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         resolve({ success: false, error: `Content script timeout (frame ${frameId})` });
@@ -893,12 +938,33 @@
     // that took ~1 s × N frames before even finding the element.
     const probeParams = { ...params, _noWait: true };
 
+    // A successful extract that found no records is an answer, not a miss to
+    // escalate — it carries the fill rates and the page-wide probe that explain
+    // *why* it came back empty. Frame search still advances past it in case a
+    // later frame holds the records, but if none do, the caller gets this
+    // payload instead of an error borrowed from an iframe that never had a
+    // content script. That borrowed error is what "Receiving end does not
+    // exist" on a detail page actually was, and it read as the content script
+    // failing to attach when the real answer was "that selector matches
+    // nothing here, and here is what does".
+    let emptyAnswer = null;
+    const keepEmptyAnswer = (r) => {
+      if (!emptyAnswer && action === "extract" && r && r.success && r.data) {
+        emptyAnswer = r.data;
+      }
+    };
+
     // Step 1: top frame first (cheap, most common hit)
     const topResponse = await sendToFrame(targetTabId, 0, action, probeParams);
     if (topResponse && topResponse.success && !isElementMiss(action, params, topResponse)) {
       return topResponse.data;
     }
-    if (topResponse && !topResponse.success && !/not found/i.test(topResponse.error || "")) {
+    keepEmptyAnswer(topResponse);
+    // isElementMiss already decides what counts as "keep searching" — including
+    // a frame with no content script. Second-guessing it with a narrower test
+    // here meant a frame-0 injection race threw immediately instead of falling
+    // through to the waited retry that exists to absorb it.
+    if (topResponse && !topResponse.success && !isElementMiss(action, params, topResponse)) {
       throw new Error(topResponse.error || "Content script error");
     }
 
@@ -916,6 +982,7 @@
       for (const response of childResults) {
         if (!response) continue;
         if (isElementMiss(action, params, response)) {
+          keepEmptyAnswer(response);
           if (response.error) lastError = response.error;
           continue;
         }
@@ -932,11 +999,13 @@
       if (!isElementMiss(action, params, retryResponse)) {
         return retryResponse.data;
       }
+      keepEmptyAnswer(retryResponse);
     }
     if (retryResponse && retryResponse.error) {
       lastError = retryResponse.error;
     }
 
+    if (emptyAnswer) return emptyAnswer;
     throw new Error(lastError);
   }
 
