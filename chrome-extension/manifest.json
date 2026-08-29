@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PolterTab Browser Control",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Let any AI assistant drive and scrape your existing Chrome profile — no headless browser, no complex setup.",
   "permissions": [
     "tabs",
