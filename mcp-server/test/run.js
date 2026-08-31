@@ -134,6 +134,43 @@ async function groupA() {
     );
   });
 
+  await test("A8 the ref snapshot stamps is the ref resolveElement accepts", () => {
+    // Two halves of one contract in one file, 160 lines apart. If snapshot's
+    // prefix changes and the resolver's regex does not, every ref silently
+    // stops resolving again — which is exactly how it shipped broken.
+    const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
+    assert.ok(
+      /setAttribute\("data-zc-ref", ref\)/.test(src),
+      "snapshot no longer stamps data-zc-ref",
+    );
+    assert.ok(
+      /"@e"\s*\+\s*\+\+counter/.test(src),
+      "snapshot's ref is no longer @e<n>",
+    );
+    assert.ok(
+      /\/\^@e\\d\+\$\/\.test\(selector\)/.test(src),
+      "resolveElement no longer translates an @e ref",
+    );
+    assert.ok(
+      /\[data-zc-ref="\$\{selector\}"\]/.test(src),
+      "the ref is translated to some other attribute than the one stamped",
+    );
+  });
+
+  await test("A9 the interceptor posts no synthetic startup record", () => {
+    // TEST_INIT travelled content script → background → server and landed in
+    // networkState as a real captured request, so every get_network_state on a
+    // freshly loaded tab returned a fake entry that also ate the 500-cap.
+    const src = fs.readFileSync(path.join(EXT, "interceptor.js"), "utf8");
+    const posts = [...src.matchAll(/postMessage\(/g)];
+    assert.ok(!/TEST_INIT/.test(src), "the TEST_INIT debug record is back");
+    assert.strictEqual(
+      posts.length,
+      2,
+      "interceptor should postMessage only from the fetch and XHR paths",
+    );
+  });
+
   await test("A3 content_script guards re-execution before registering anything", () => {
     const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
     const guard = src.indexOf("__polterTabInjected");
@@ -810,7 +847,13 @@ function fakeEl(tag, opts = {}) {
     scrollIntoView() {},
     focus() {},
     closest: () => null,
-    getAttribute: () => null,
+    // A real attribute map, so snapshot's data-zc-ref stamp and the selector
+    // that reads it back are talking about the same thing.
+    __attrs: { ...(opts.attrs || {}) },
+    getAttribute: (k) => (k in el.__attrs ? el.__attrs[k] : null),
+    setAttribute: (k, v) => {
+      el.__attrs[k] = String(v);
+    },
     matches: () => false,
     dispatchEvent(e) {
       if (e.type === "click") el.clicks++;
@@ -878,8 +921,14 @@ function fakeField(kind, opts = {}) {
 }
 
 function fakeRoot(descendants, tracker) {
-  const match = (el, sel) =>
-    sel === "*" || (sel.startsWith("#") && el.id === sel.slice(1));
+  const match = (el, sel) => {
+    if (sel === "*") return true;
+    if (sel.startsWith("#")) return el.id === sel.slice(1);
+    // [attr="value"] — enough for the data-zc-ref lookup a snapshot ref becomes.
+    const attr = /^\[([\w-]+)="(.*)"\]$/.exec(sel);
+    if (attr) return el.getAttribute && el.getAttribute(attr[1]) === attr[2];
+    return false;
+  };
   return {
     __descendants: descendants,
     children: descendants,
@@ -1055,6 +1104,37 @@ async function groupE() {
     assert.strictEqual(res.success, true, res.error);
     assert.strictEqual(res.data.length, 1, "scrape stayed light-DOM only");
     assert.strictEqual(res.data[0].text, "shadow value");
+  });
+
+  await test("E9 an @e ref from a snapshot resolves to the element it was stamped on", async () => {
+    // SKILL.md tells the agent to prefer a snapshot ref over a generated class
+    // chain, and snapshot hands back "@e3" for every node. But "@e3" is not
+    // valid CSS, not valid XPath and matches no text, so it fell through every
+    // strategy and threw "Element not found" — the documented path never worked.
+    const target = fakeEl("button", { attrs: { "data-zc-ref": "@e3" } });
+    const other = fakeEl("button", { attrs: { "data-zc-ref": "@e1" } });
+    const s = shadowSandbox({ lightDescendants: [other, target] });
+    const res = await s.send("click", { selector: "@e3" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(target.clicks, 1, "@e ref did not resolve to its element");
+    assert.strictEqual(other.clicks, 0, "@e ref hit the wrong element");
+  });
+
+  await test("E10 an @e ref reaches through a shadow root", async () => {
+    const deep = fakeEl("button", { attrs: { "data-zc-ref": "@e7" } });
+    const host = fakeEl("div", { shadow: fakeRoot([deep]) });
+    const s = shadowSandbox({ lightDescendants: [host] });
+    const res = await s.send("click", { selector: "@e7" });
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(deep.clicks, 1, "ref lookup stopped at the light DOM");
+  });
+
+  await test("E11 a bare @-string that is not a ref is not treated as one", async () => {
+    // Guard the translation's blast radius: only @e<digits> is a ref.
+    const el = fakeEl("button", { attrs: { "data-zc-ref": "@email" } });
+    const s = shadowSandbox({ lightDescendants: [el] });
+    const res = await s.send("click", { selector: "@email" });
+    assert.strictEqual(res.success, false, "@email was rewritten as a ref selector");
   });
 }
 

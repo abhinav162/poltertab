@@ -57,6 +57,17 @@
   function resolveElement(selector) {
     if (!selector) return null;
 
+    // snapshot() stamps every node it returns with data-zc-ref="@eN" and hands
+    // the agent that ref back — and SKILL.md tells it to prefer a ref over a
+    // generated class chain. But "@e5" is not valid CSS, not valid XPath, and
+    // matches no text, so it fell through all four strategies and threw. Every
+    // ref the snapshot emitted was dead weight, and the skill steered callers
+    // straight into it. Translate the ref into the attribute selector it stands
+    // for and the documented path works.
+    if (/^@e\d+$/.test(selector)) {
+      selector = `[data-zc-ref="${selector}"]`;
+    }
+
     // Try CSS selector first
     try {
       const el = document.querySelector(selector);
