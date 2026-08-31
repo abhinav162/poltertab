@@ -1,5 +1,10 @@
 # Execution tasks — modularity review
 
+> **Status: all eight complete** on `ao/poltertab-1/modularity`, one commit each.
+> Suites went 141 → 155 cases (83→97 server, 58 installer), all passing.
+> T6 and T7 were **swapped**: the index.js split needed the shared constants
+> that config.js introduces, so config landed first.
+
 Derived from `plans/2026-08-31-modularity-review.md`. Ordered by development sequence:
 security first, then subtraction, then mechanical refactors, then structural splits.
 
