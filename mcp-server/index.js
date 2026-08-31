@@ -120,6 +120,33 @@ function broadcastSessionState() {
   }
 }
 
+// The bridge listens on localhost, and localhost is reachable from any page the
+// user happens to visit — browsers allow ws:// to loopback from an https origin.
+// Nothing below the handshake distinguishes callers, so a drive-by page could
+// send {type:"ping"}, be installed as `extensionSocket` (the nodeId-less branch
+// in setupPrimaryWss), and thereby drop the real extension *and* receive every
+// subsequent command — URLs, selectors — answering each with whatever it liked.
+//
+// Origin is the one thing the page cannot lie about: browsers set it themselves
+// on the handshake request. The extension sends chrome-extension://<its id>, and
+// a Node client (a Secondary MCP node) sends none at all. Both are us; a page is
+// never either.
+//
+// ponytail: origin check only. It stops the drive-by, which is the reachable
+// attack. It does not authenticate a hostile *local process* — that needs a
+// shared token in POLTERTAB_HOME, and any local process able to make one is
+// already able to read the browser profile directly.
+function allowOrigin(info, cb) {
+  const origin = info.origin || info.req.headers.origin;
+  if (!origin || origin.startsWith("chrome-extension://")) return cb(true);
+  // Loud on purpose: a rejected handshake is otherwise indistinguishable from
+  // an extension that never connected, which is the worst thing to debug.
+  console.error(
+    `[PolterTab MCP] Refused WebSocket handshake from origin ${origin}`,
+  );
+  return cb(false, 403, "Forbidden");
+}
+
 function setupPrimaryServer() {
   const http = require("http");
   httpServer = http.createServer();
@@ -141,6 +168,7 @@ function setupPrimaryServer() {
     );
     wss = new WebSocket.WebSocketServer({
       server: httpServer,
+      verifyClient: allowOrigin,
       perMessageDeflate: {
         zlibDeflateOptions: {
           chunkSize: 1024,
