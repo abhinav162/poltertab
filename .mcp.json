@@ -1,1 +1,8 @@
-{"mcpServers":{"chrome-browser-control":{"command":"node","args":["/Users/apple/Desktop/den/poltertab/mcp-server/index.js"]}}}
+{
+  "mcpServers": {
+    "poltertab": {
+      "command": "node",
+      "args": ["mcp-server/index.js"]
+    }
+  }
+}
