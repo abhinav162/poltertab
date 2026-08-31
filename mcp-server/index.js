@@ -84,6 +84,12 @@ if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
   WS_PORT = parseInt(process.argv[portArgIndex + 1], 10);
 }
 
+// A command that goes unanswered this long is reported as timed out. Must stay
+// comfortably above the extension's own navigation budget (30s wait + 500ms
+// settle in background.js) or a slow-but-successful page load surfaces here as
+// a timeout the caller can only answer by guessing whether to retry.
+const COMMAND_TIMEOUT_MS = 35000;
+
 // Global state
 let extensionSocket = null;
 const pendingCommands = new Map();
@@ -291,6 +297,31 @@ function connectToPrimary() {
   });
 }
 
+// Reading the capture buffer needs a tab, and the caller may not have named one
+// — so ask the extension which tab it is actually on. Written out twice before
+// (Primary answering a Secondary, and Primary answering itself), which is why
+// the `clear` default and the envelope shape had to be kept in sync by hand.
+async function readNetworkState(params = {}) {
+  let tabId = params.tabId;
+  if (!tabId) {
+    const tabInfo = await sendCommand("get_url", params);
+    tabId = tabInfo.tabId;
+  }
+
+  let data = [];
+  if (tabId && networkState.has(tabId)) {
+    data = networkState.get(tabId).requests;
+    // Reading is destructive by default: the buffer is a tail of what happened
+    // since the last read, and leaving it in place makes every later read
+    // re-report traffic the caller already saw.
+    if (params.clear !== false) {
+      networkState.get(tabId).requests = [];
+    }
+  }
+
+  return { tabId, capturedRequests: data.length, data };
+}
+
 function setupPrimaryWss(wss) {
   wss.on("connection", (ws) => {
     ws.isAlive = true;
@@ -334,26 +365,9 @@ function setupPrimaryWss(wss) {
           if (action === "get_network_state") {
             (async () => {
               try {
-                let tabId = params.tabId;
-                if (!tabId) {
-                  const tabInfo = await sendCommand("get_url", params);
-                  tabId = tabInfo.tabId;
-                }
-                let data = [];
-                if (tabId && networkState.has(tabId)) {
-                  data = networkState.get(tabId).requests;
-                  if (params.clear !== false) {
-                    networkState.get(tabId).requests = [];
-                  }
-                }
+                const data = await readNetworkState(params);
                 if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(
-                    JSON.stringify({
-                      id,
-                      success: true,
-                      data: { tabId, capturedRequests: data.length, data },
-                    }),
-                  );
+                  ws.send(JSON.stringify({ id, success: true, data }));
                 }
               } catch (err) {
                 if (ws.readyState === WebSocket.OPEN) {
@@ -393,7 +407,7 @@ function setupPrimaryWss(wss) {
                 }),
               );
             }
-          }, 35000);
+          }, COMMAND_TIMEOUT_MS);
 
           pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
           extensionSocket.send(JSON.stringify({ id, action, ...params }));
@@ -549,6 +563,33 @@ async function waitForConnection(timeoutMs = 5000) {
   return false;
 }
 
+// Register a pending command, arm its timeout, send it, and unwind all three if
+// the socket throws. This was spelled out twice below — once for the Secondary
+// proxy path and once for the direct one — differing only in the envelope and
+// the wording of two errors, which left the timeout as two independent facts.
+// The third copy (Primary answering a Secondary, in setupPrimaryWss) replies
+// over a socket instead of settling a promise, so it stays where it is and
+// shares only the constant.
+function awaitReply(envelope, { timedOut, sendFailed }) {
+  const { id } = envelope;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingCommands.delete(id);
+      reject(new Error(timedOut));
+    }, COMMAND_TIMEOUT_MS);
+
+    pendingCommands.set(id, { resolve, reject, timer });
+
+    try {
+      extensionSocket.send(JSON.stringify(envelope));
+    } catch (err) {
+      clearTimeout(timer);
+      pendingCommands.delete(id);
+      reject(new Error(sendFailed(err)));
+    }
+  });
+}
+
 // Helper to send command to the extension
 async function sendCommand(action, params) {
   const isConnected = await waitForConnection(5000);
@@ -563,31 +604,14 @@ async function sendCommand(action, params) {
       params.session = "agent_" + nodeId;
     }
 
-    return new Promise((resolve, reject) => {
-      const id = crypto.randomUUID();
-      const timer = setTimeout(() => {
-        pendingCommands.delete(id);
-        reject(
-          new Error(`Proxy Command '${action}' timed out after 35 seconds.`),
-        );
-      }, 35000);
-
-      pendingCommands.set(id, { resolve, reject, timer });
-
-      try {
-        extensionSocket.send(
-          JSON.stringify({ type: "proxy_command", id, action, params }),
-        );
-      } catch (err) {
-        clearTimeout(timer);
-        pendingCommands.delete(id);
-        reject(
-          new Error(
-            `Failed to proxy command to Primary over WebSocket: ${err.message}`,
-          ),
-        );
-      }
-    });
+    return awaitReply(
+      { type: "proxy_command", id: crypto.randomUUID(), action, params },
+      {
+        timedOut: `Proxy Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
+        sendFailed: (e) =>
+          `Failed to proxy command to Primary over WebSocket: ${e.message}`,
+      },
+    );
   }
 
   if (!isConnected) {
@@ -596,27 +620,13 @@ async function sendCommand(action, params) {
     );
   }
 
-  return new Promise((resolve, reject) => {
-    const id = crypto.randomUUID();
-
-    // Strict timeout (35 seconds) to prevent hanging
-    const timer = setTimeout(() => {
-      pendingCommands.delete(id);
-      reject(new Error(`Command '${action}' timed out after 35 seconds.`));
-    }, 35000);
-
-    pendingCommands.set(id, { resolve, reject, timer });
-
-    try {
-      extensionSocket.send(JSON.stringify({ id, action, ...params }));
-    } catch (err) {
-      clearTimeout(timer);
-      pendingCommands.delete(id);
-      reject(
-        new Error(`Failed to send command over WebSocket: ${err.message}`),
-      );
-    }
-  });
+  return awaitReply(
+    { id: crypto.randomUUID(), action, ...params },
+    {
+      timedOut: `Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
+      sendFailed: (e) => `Failed to send command over WebSocket: ${e.message}`,
+    },
+  );
 }
 
 // Create MCP Server
@@ -634,6 +644,32 @@ const server = new Server(
   },
 );
 
+// Every page-facing tool accepts the same two targeting parameters and, if it
+// reads anything back, the same sink. They were copy-pasted into all 23 schemas,
+// which is how `session` ended up described on browser_navigate and nowhere else
+// — fifteen tools offered the model a bare string with no hint what it does.
+const TARGET = {
+  tabId: {
+    type: "number",
+    description: "Target a specific tab. Omit to use the last tab navigated.",
+  },
+  session: {
+    type: "string",
+    description:
+      "Named session (tab) to run against. Created on first use by browser_navigate, so a loop can keep one tab instead of opening hundreds.",
+  },
+};
+
+// One description, because writeOutput's behaviour is uniform: records become
+// .jsonl/.csv when the extension asks for them, everything else is JSON.
+const SINK = {
+  output_file: {
+    type: "string",
+    description:
+      "Filename to write the payload under ~/.poltertab/downloads/, returning only a summary (row count, field names, fill rates, two sample records). .jsonl and .csv are written in those formats when the payload carries records, anything else as JSON. A path is reduced to its basename — output cannot be written elsewhere.",
+  },
+};
+
 // Define tools
 const BROWSER_TOOLS = [
   {
@@ -643,11 +679,7 @@ const BROWSER_TOOLS = [
       type: "object",
       properties: {
         url: { type: "string" },
-        tabId: { type: "number" },
-        session: {
-          type: "string",
-          description: "Optional session name to track this tab",
-        },
+        ...TARGET,
       },
       required: ["url"],
     },
@@ -659,8 +691,7 @@ const BROWSER_TOOLS = [
       type: "object",
       properties: {
         selector: { type: "string" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["selector"],
     },
@@ -674,8 +705,7 @@ const BROWSER_TOOLS = [
         selector: { type: "string" },
         value: { type: "string" },
         submit: { type: "boolean" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["selector", "value"],
     },
@@ -707,13 +737,8 @@ const BROWSER_TOOLS = [
           type: "number",
           description: "Max characters of text per element (default 500)",
         },
-        output_file: {
-          type: "string",
-          description:
-            "Filename to write the payload under ~/.poltertab/downloads/, returning only a summary. A path is reduced to its basename — output cannot be written elsewhere.",
-        },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...SINK,
+        ...TARGET,
       },
       required: [],
     },
@@ -758,13 +783,8 @@ const BROWSER_TOOLS = [
           description:
             "Page-wide re-check of any field that came back entirely empty (default true)",
         },
-        output_file: {
-          type: "string",
-          description:
-            "Filename to write rows under ~/.poltertab/downloads/, returning only a summary. .jsonl and .csv are written in those formats, anything else as JSON. A path is reduced to its basename — output cannot be written elsewhere.",
-        },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...SINK,
+        ...TARGET,
       },
       required: ["record", "fields"],
     },
@@ -809,8 +829,10 @@ const BROWSER_TOOLS = [
             "Halt when a field well-populated on the baseline page falls below this fraction of it (default 0.5). 0 disables the check.",
         },
         max_text: { type: "number" },
-        output_file: { type: "string" },
-        session: { type: "string" },
+        ...SINK,
+        // Session only, deliberately: this tool drives its own navigation from
+        // url_template, so a tabId would be accepted and then ignored.
+        session: TARGET.session,
       },
       required: ["url_template", "record", "fields"],
     },
@@ -822,8 +844,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: [],
     },
@@ -840,8 +861,7 @@ const BROWSER_TOOLS = [
         },
         amount: { type: "number" },
         selector: { type: "string" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["direction"],
     },
@@ -853,8 +873,7 @@ const BROWSER_TOOLS = [
       type: "object",
       properties: {
         selector: { type: "string" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["selector"],
     },
@@ -871,9 +890,8 @@ const BROWSER_TOOLS = [
           description:
             "Max characters (default 10000). The result flags it when text was cut.",
         },
-        output_file: { type: "string" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...SINK,
+        ...TARGET,
       },
       required: ["selector"],
     },
@@ -884,8 +902,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: [],
     },
@@ -896,8 +913,7 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: [],
     },
@@ -918,9 +934,8 @@ const BROWSER_TOOLS = [
           description: "Cap on nodes returned (default 400)",
         },
         max_depth: { type: "number" },
-        output_file: { type: "string" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...SINK,
+        ...TARGET,
       },
       required: [],
     },
@@ -932,17 +947,12 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
         clear: {
           type: "boolean",
           description: "Clear the buffer after reading (default: true)",
         },
-        output_file: {
-          type: "string",
-          description:
-            "Optional filename to save the data directly to disk to avoid flooding the context window (e.g., 'data.json')",
-        },
+        ...SINK,
       },
       required: [],
     },
@@ -960,8 +970,7 @@ const BROWSER_TOOLS = [
           description:
             "Array of substrings (e.g. ['graphql', '/api/v1/comments'])",
         },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["patterns"],
     },
@@ -975,8 +984,7 @@ const BROWSER_TOOLS = [
       properties: {
         direction: { type: "string", enum: ["up", "down"] },
         amount: { type: "number" },
-        tabId: { type: "number" },
-        session: { type: "string" },
+        ...TARGET,
       },
       required: ["direction"],
     },
@@ -1369,22 +1377,9 @@ const handleToolCall = async (request) => {
         // Proxy it to primary! Primary handles resolving the networkState map
         responsePayload = await sendCommand("get_network_state", opts);
       } else {
-        // First, we need to resolve the active tab ID. We can do a dummy 'get_url' command to ask the extension what the current tabId is.
-        const tabInfo = await sendCommand("get_url", opts);
-        const tabId = tabInfo.tabId;
-
-        primaryLastTabId = tabId;
+        responsePayload = await readNetworkState(opts);
+        primaryLastTabId = responsePayload.tabId;
         broadcastSessionState();
-
-        let data = [];
-        if (tabId && networkState.has(tabId)) {
-          data = networkState.get(tabId).requests;
-          if (opts.clear !== false) {
-            networkState.get(tabId).requests = [];
-          }
-        }
-
-        responsePayload = { tabId, capturedRequests: data.length, data };
       }
 
       // Must be honoured in BOTH roles. A Secondary that returned the raw
