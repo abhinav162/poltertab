@@ -110,7 +110,8 @@ test("B5  the shipped skill names no dead tools", (box) => {
   // The skill is the agent's map of the tool surface. A tool named here that
   // the server does not expose sends the agent chasing a call that cannot work.
   const body = fs.readFileSync(setup.installSkill(path.join(box, "s")), "utf8");
-  const server = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  // Tool definitions live in tools.js; index.js only dispatches them.
+  const server = fs.readFileSync(path.join(REPO, "mcp-server", "tools.js"), "utf8");
   const named = [...new Set(body.match(/browser_[a-z_]+/g) || [])];
   assert.ok(named.length > 3, `skill references almost no tools: ${named}`);
   const missing = named.filter((t) => !server.includes(`"${t}"`));
@@ -813,7 +814,8 @@ test("G17  the server reports its real version, not a hardcoded one", () => {
 });
 
 test("G18  the server keeps the extension version it used to discard", () => {
-  const src = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  // The version handshake lives with the socket that carries it, in bridge.js.
+  const src = fs.readFileSync(path.join(REPO, "mcp-server", "bridge.js"), "utf8");
   assert.ok(/recordExtension/.test(src), "extension version is never recorded");
   assert.ok(
     /extensionVersion = msg\.version/.test(src),

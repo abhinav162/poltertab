@@ -24,6 +24,21 @@ const WebSocket = require("ws");
 const REPO = path.join(__dirname, "..", "..");
 const EXT = path.join(REPO, "chrome-extension");
 const SERVER = path.join(REPO, "mcp-server", "index.js");
+const TOOLS = path.join(REPO, "mcp-server", "tools.js");
+
+// The tool surface moved out of index.js. Read it from one place so a future
+// move is a one-line change here rather than six greps that quietly find
+// nothing — an empty tool list makes several of these assertions pass
+// vacuously, so toolNames() refuses to return one.
+function toolNames() {
+  const names = [
+    ...fs
+      .readFileSync(TOOLS, "utf8")
+      .matchAll(/name:\s*"browser_([a-z_]+)"/g),
+  ].map((m) => m[1]);
+  assert.ok(names.length >= 21, `only found ${names.length} tools`);
+  return names;
+}
 const PORT = 7931;
 const TAB = 42;
 
@@ -86,11 +101,9 @@ async function groupA() {
   });
 
   await test("A4 README documents every tool the server exposes, and no others", () => {
-    const idx = fs.readFileSync(SERVER, "utf8");
     const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
-    const tools = [...idx.matchAll(/name:\s*"(browser_[a-z_]+)"/g)].map((m) => m[1]);
+    const tools = toolNames().map((n) => `browser_${n}`);
     const mentioned = new Set(readme.match(/browser_[a-z_]+/g) || []);
-    assert.ok(tools.length >= 21, `only found ${tools.length} tools in the server`);
     const undocumented = tools.filter((t) => !mentioned.has(t));
     assert.deepStrictEqual(undocumented, [], `undocumented tools: ${undocumented}`);
     const bogus = [...mentioned].filter((m) => !tools.includes(m));
@@ -105,10 +118,7 @@ async function groupA() {
       path.join(REPO, "skills", "browser-navigation-strategy", "SKILL.md"),
       "utf8",
     );
-    const idx = fs.readFileSync(SERVER, "utf8");
-    const tools = new Set(
-      [...idx.matchAll(/name:\s*"(browser_[a-z_]+)"/g)].map((m) => m[1]),
-    );
+    const tools = new Set(toolNames().map((n) => `browser_${n}`));
     const named = new Set(skill.match(/browser_[a-z_]+/g) || []);
     for (const must of ["browser_extract", "browser_extract_all"]) {
       assert.ok(named.has(must), `skill never mentions ${must}`);
@@ -176,12 +186,11 @@ async function groupA() {
   ]);
 
   await test("A10 every tool the server exposes has a route in the extension", () => {
-    const idx = fs.readFileSync(SERVER, "utf8");
     const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
     const routes = keysOf(bg, "const ROUTES = {");
     assert.ok(routes.size >= 18, `only parsed ${routes.size} routes`);
 
-    const tools = [...idx.matchAll(/name:\s*"browser_([a-z_]+)"/g)].map((m) => m[1]);
+    const tools = toolNames();
     const orphans = tools.filter(
       (t) => !SERVER_HANDLED.has(t) && !routes.has(t),
     );
@@ -195,11 +204,8 @@ async function groupA() {
   await test("A11 every extension route is a tool, or a known internal action", () => {
     // The other direction: a route nothing can reach is dead weight, and a
     // renamed tool that left its old route behind reads as still working.
-    const idx = fs.readFileSync(SERVER, "utf8");
     const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
-    const tools = new Set(
-      [...idx.matchAll(/name:\s*"browser_([a-z_]+)"/g)].map((m) => m[1]),
-    );
+    const tools = new Set(toolNames());
     // update_patterns is pushed tab-to-tab by set_intercept_patterns, never by
     // a tool call.
     const INTERNAL = new Set(["update_patterns"]);
