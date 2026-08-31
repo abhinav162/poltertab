@@ -14,19 +14,23 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-// Anything the user accumulates lives outside the package. Under a global npm
-// install __dirname resolves inside node_modules/poltertab/, so site memory
-// written next to the code is destroyed by the next `npm update -g` — the
-// upgrade would read as amnesia. Downloads have it worse: output_file exists to
-// keep large payloads out of the context window, and burying them in
-// node_modules makes them hard to find and just as easy to lose.
-//
-// POLTERTAB_HOME exists so the test suite can point this somewhere disposable
-// instead of writing into the real one.
-const POLTERTAB_HOME =
-  process.env.POLTERTAB_HOME || path.join(os.homedir(), ".poltertab");
-const MEMORY_DIR = path.join(POLTERTAB_HOME, "navigation_memory");
-const DOWNLOADS_DIR = path.join(POLTERTAB_HOME, "downloads");
+const {
+  MEMORY_DIR,
+  DOWNLOADS_DIR,
+  POLTERTAB_HOME,
+  resolvePort,
+  DEFAULT_WS_PORT,
+  COMMAND_TIMEOUT_MS,
+  HEARTBEAT_MS,
+  NETWORK_TTL_MS,
+  NETWORK_GC_INTERVAL_MS,
+  NETWORK_MAX_REQUESTS,
+  NETWORK_MAX_BODY_BYTES,
+  PROMOTION_DELAY_MS,
+  PROMOTION_JITTER_MS,
+  MAX_SECONDARIES,
+  SMART_SCROLL_SETTLE_MS,
+} = require("./config.js");
 
 fs.mkdirSync(MEMORY_DIR, { recursive: true });
 
@@ -75,20 +79,7 @@ if (!updates.disabled()) {
   }
 })();
 
-// Port configuration: use MCP_BROWSER_WS_PORT env, or --port CLI arg, or 7822 fallback
-let WS_PORT = process.env.MCP_BROWSER_WS_PORT
-  ? parseInt(process.env.MCP_BROWSER_WS_PORT, 10)
-  : 7822;
-const portArgIndex = process.argv.indexOf("--port");
-if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
-  WS_PORT = parseInt(process.argv[portArgIndex + 1], 10);
-}
-
-// A command that goes unanswered this long is reported as timed out. Must stay
-// comfortably above the extension's own navigation budget (30s wait + 500ms
-// settle in background.js) or a slow-but-successful page load surfaces here as
-// a timeout the caller can only answer by guessing whether to retry.
-const COMMAND_TIMEOUT_MS = 35000;
+let WS_PORT = resolvePort();
 
 // Global state
 let extensionSocket = null;
@@ -204,7 +195,7 @@ function setupPrimaryServer() {
         ws.isAlive = false;
         ws.ping();
       });
-    }, 60000); // 60 seconds
+    }, HEARTBEAT_MS);
 
     wss.on("close", () => {
       clearInterval(interval);
@@ -214,14 +205,14 @@ function setupPrimaryServer() {
     setInterval(() => {
       const now = Date.now();
       for (const [tabId, state] of networkState.entries()) {
-        if (now - state.lastUpdated > 5 * 60 * 1000) {
+        if (now - state.lastUpdated > NETWORK_TTL_MS) {
           console.error(
             `[PolterTab MCP] Garbage collecting network state for tab ${tabId}`,
           );
           networkState.delete(tabId);
         }
       }
-    }, 60000);
+    }, NETWORK_GC_INTERVAL_MS);
 
     setupPrimaryWss(wss);
   });
@@ -283,8 +274,8 @@ function connectToPrimary() {
     }
 
     // Try to become primary with exponential backoff & jitter
-    const jitter = Math.floor(Math.random() * 2000);
-    const delay = 500 + jitter;
+    const delay =
+      PROMOTION_DELAY_MS + Math.floor(Math.random() * PROMOTION_JITTER_MS);
 
     setTimeout(() => {
       isSecondary = false;
@@ -334,7 +325,7 @@ function setupPrimaryWss(wss) {
         const msg = JSON.parse(message);
 
         if (msg.type === "secondary_mcp") {
-          if (secondaryClients.size >= 5) {
+          if (secondaryClients.size >= MAX_SECONDARIES) {
             console.error(
               `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
             );
@@ -469,7 +460,7 @@ function setupPrimaryWss(wss) {
           try {
             // Truncate bodies over 1MB
             let processedBody = body;
-            if (body && body.length > 1024 * 1024) {
+            if (body && body.length > NETWORK_MAX_BODY_BYTES) {
               processedBody =
                 '{"error": "Payload exceeded 1MB limit and was truncated"}';
             }
@@ -480,8 +471,7 @@ function setupPrimaryWss(wss) {
             state.requests.push({ url, timestamp: Date.now(), data: body });
           }
 
-          // Cap at 500 requests
-          if (state.requests.length > 500) {
+          if (state.requests.length > NETWORK_MAX_REQUESTS) {
             state.requests.shift();
           }
           return;
@@ -616,7 +606,7 @@ async function sendCommand(action, params) {
 
   if (!isConnected) {
     throw new Error(
-      "Browser extension not connected. Please ensure the extension is installed, enabled, and pointing to the correct port (default: 7822).",
+      `Browser extension not connected. Please ensure the extension is installed, enabled, and pointing to the correct port (default: ${DEFAULT_WS_PORT}).`,
     );
   }
 
@@ -1417,7 +1407,7 @@ const handleToolCall = async (request) => {
       }
 
       // Wait for network requests to arrive (lazy loading)
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, SMART_SCROLL_SETTLE_MS));
 
       return {
         content: [

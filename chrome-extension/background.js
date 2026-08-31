@@ -6,7 +6,32 @@
 // whenever the bridge server restarts.
 
 (() => {
-  let WS_PORT = 7822;
+  // Mirrors mcp-server/config.js. It cannot be required from here — this runs
+  // in Chrome, there is no build step, and MV3 forbids remote code — so the two
+  // copies are kept in sync by hand. Read the timeout budget in that file
+  // before changing any of the waits below: each layer's budget must exceed the
+  // sum of what it waits on, or a slow-but-successful load surfaces to the
+  // agent as a timeout it can only answer by guessing whether to retry.
+  const DEFAULT_WS_PORT = 7822;
+
+  // Navigation: the server allows 35s for the whole command, so this plus the
+  // settle below has to leave room for the reply to get back.
+  const NAV_TIMEOUT_MS = 30000;
+  // Let the document's own scripts run before we act on it.
+  const NAV_SETTLE_MS = 500;
+  // One frame's answer. Bounded well under NAV_TIMEOUT_MS because frames are
+  // probed in parallel and one dead frame must not stall the batch.
+  const FRAME_TIMEOUT_MS = 10000;
+  // executeScript can resolve before the content script's listener is live, so
+  // the first message into a fresh frame can lose the race. One short retry.
+  const FRAME_RETRY_MS = 150;
+
+  // MV3 suspends a service worker after ~30s idle. The keepalive fires inside
+  // that window while connected; the reconnect poll runs when it is not.
+  const KEEPALIVE_MINUTES = 0.33; // ~20s
+  const RECONNECT_MINUTES = 0.08; // ~5s
+
+  let WS_PORT = DEFAULT_WS_PORT;
   let WS_URL = `ws://localhost:${WS_PORT}`;
   const RECONNECT_ALARM = "poltertab-reconnect";
   const KEEPALIVE_ALARM = "poltertab-keepalive";
@@ -402,7 +427,9 @@
       // Stop reconnect polling — we're connected
       chrome.alarms.clear(RECONNECT_ALARM);
       // Start keep-alive to prevent service worker suspension while connected
-      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.33 }); // ~20s
+      chrome.alarms.create(KEEPALIVE_ALARM, {
+        periodInMinutes: KEEPALIVE_MINUTES,
+      });
       send({
         type: "extension_ready",
         version: chrome.runtime.getManifest().version,
@@ -489,8 +516,8 @@
       if (!alarm) {
         // Poll every 5s to reconnect
         chrome.alarms.create(RECONNECT_ALARM, {
-          delayInMinutes: 0.08, // first attempt in ~5s
-          periodInMinutes: 0.08, // then every ~5s
+          delayInMinutes: RECONNECT_MINUTES,
+          periodInMinutes: RECONNECT_MINUTES,
         });
       }
     });
@@ -700,13 +727,13 @@
   // ponytail: tabLoadEpoch is in-memory, so an MV3 service-worker suspension
   // mid-navigation falls back to the timeout. Persist to session storage if
   // that ever shows up in practice.
-  async function waitForTabLoad(tabId, since, timeoutMs = 30000) {
+  async function waitForTabLoad(tabId, since, timeoutMs = NAV_TIMEOUT_MS) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const loadedAt = tabLoadEpoch.get(tabId);
       if (loadedAt !== undefined && loadedAt >= since) {
         // Let the document's own scripts settle before we act on it.
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, NAV_SETTLE_MS));
         return chrome.tabs.get(tabId);
       }
       try {
@@ -824,7 +851,7 @@
     if (!/Receiving end|Could not establish connection/i.test(first?.error || "")) {
       return first;
     }
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, FRAME_RETRY_MS));
     return postToFrame(tabId, frameId, action, params);
   }
 
@@ -832,7 +859,7 @@
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         resolve({ success: false, error: `Content script timeout (frame ${frameId})` });
-      }, 10000);
+      }, FRAME_TIMEOUT_MS);
 
       chrome.tabs.sendMessage(
         tabId,

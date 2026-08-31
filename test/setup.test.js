@@ -236,9 +236,16 @@ const SERVER_SRC = fs.readFileSync(
   path.join(REPO, "mcp-server", "index.js"),
   "utf8",
 );
+const CONFIG_SRC = fs.readFileSync(
+  path.join(REPO, "mcp-server", "config.js"),
+  "utf8",
+);
+// The state paths were hoisted into config.js. E1 still scans both, because a
+// package-relative path is just as wrong wherever it is written.
+const STATE_SRC = SERVER_SRC + "\n" + CONFIG_SRC;
 
 test("E1  neither state directory is built from __dirname", () => {
-  const offenders = SERVER_SRC.split("\n").filter(
+  const offenders = STATE_SRC.split("\n").filter(
     (l) =>
       l.includes("__dirname") &&
       /navigation_memory|downloads/.test(l) &&
@@ -254,12 +261,14 @@ test("E1  neither state directory is built from __dirname", () => {
 
 test("E2  both directories hang off POLTERTAB_HOME", () => {
   assert.ok(
-    /POLTERTAB_HOME\s*=[\s\S]{0,120}homedir\(\)[\s\S]{0,40}\.poltertab/.test(SERVER_SRC),
+    /POLTERTAB_HOME\s*=[\s\S]{0,120}homedir\(\)[\s\S]{0,40}\.poltertab/.test(STATE_SRC),
     "POLTERTAB_HOME does not default to ~/.poltertab",
   );
+  // Written as object properties in config.js's exports, so accept either
+  // `NAME = path.join(POLTERTAB_HOME` or `NAME: path.join(POLTERTAB_HOME`.
   for (const name of ["MEMORY_DIR", "DOWNLOADS_DIR"]) {
     assert.ok(
-      new RegExp(`${name}\\s*=\\s*path\\.join\\(\\s*POLTERTAB_HOME`).test(SERVER_SRC),
+      new RegExp(`${name}\\s*[:=]\\s*path\\.join\\(\\s*POLTERTAB_HOME`).test(STATE_SRC),
       `${name} is not resolved under POLTERTAB_HOME`,
     );
   }
