@@ -573,58 +573,60 @@
 
   // --- Command routing ---
 
+  // The action word is the contract between four places: the MCP tool name, the
+  // server's dispatch, this table, and content_script's own handler map. Nothing
+  // used to check that they agreed, so a typo here surfaced as
+  // "Unknown action: scrap" on a user's machine, mid-scrape. A table rather than
+  // a switch so the suite can read the routes back and assert against the
+  // server's tool list.
+  const ROUTES = {
+    // Background-handled: these need chrome.* APIs the page cannot reach.
+    navigate,
+    screenshot,
+    get_title: getTitle,
+    get_url: getUrl,
+
+    // Forwarded into the page, across every frame.
+    click: (p) => forwardToContentScript("click", p),
+    fill: (p) => forwardToContentScript("fill", p),
+    snapshot: (p) => forwardToContentScript("snapshot", p),
+    scrape: (p) => forwardToContentScript("scrape", p),
+    extract: (p) => forwardToContentScript("extract", p),
+    scroll: (p) => forwardToContentScript("scroll", p),
+    hover: (p) => forwardToContentScript("hover", p),
+    get_text: (p) => forwardToContentScript("get_text", p),
+    update_patterns: (p) => forwardToContentScript("update_patterns", p),
+
+    // Stored globally so new tabs inherit them, then pushed to every open tab.
+    set_intercept_patterns: async (params) => {
+      await chrome.storage.local.set({
+        zc_intercept_patterns: params.patterns,
+      });
+      const allTabs = await chrome.tabs.query({});
+      allTabs.forEach((t) =>
+        chrome.tabs
+          .sendMessage(t.id, {
+            source: "poltertab",
+            action: "update_patterns",
+            params,
+          })
+          .catch(() => {}),
+      );
+      return { success: true, patterns: params.patterns };
+    },
+
+    // Session management (accepts "name" or "session" as the identifier).
+    session_create: (p) => sessionManager.create(p.name || p.session, p.url),
+    session_switch: (p) => sessionManager.switch(p.name || p.session),
+    session_list: () => sessionManager.list(),
+    session_close: (p) => sessionManager.close(p.name || p.session),
+    session_context: () => sessionManager.context(),
+  };
+
   async function handleCommand(action, params) {
-    switch (action) {
-      case "navigate":
-        return navigate(params);
-      case "screenshot":
-        return screenshot(params);
-      case "get_title":
-        return getTitle(params);
-      case "click":
-      case "fill":
-      case "snapshot":
-      case "scrape":
-      case "extract":
-      case "scroll":
-      case "hover":
-      case "get_text":
-        return forwardToContentScript(action, params);
-      case "update_patterns":
-        return forwardToContentScript(action, params);
-      case "set_intercept_patterns": {
-        await chrome.storage.local.set({
-          zc_intercept_patterns: params.patterns,
-        });
-        const allTabs = await chrome.tabs.query({});
-        allTabs.forEach((t) =>
-          chrome.tabs
-            .sendMessage(t.id, {
-              source: "poltertab",
-              action: "update_patterns",
-              params,
-            })
-            .catch(() => {}),
-        );
-        return { success: true, patterns: params.patterns };
-      }
-      // Background-handled: get_url
-      case "get_url":
-        return getUrl(params);
-      // Session management actions (accept "name" or "session" as the session identifier)
-      case "session_create":
-        return sessionManager.create(params.name || params.session, params.url);
-      case "session_switch":
-        return sessionManager.switch(params.name || params.session);
-      case "session_list":
-        return sessionManager.list();
-      case "session_close":
-        return sessionManager.close(params.name || params.session);
-      case "session_context":
-        return sessionManager.context();
-      default:
-        throw new Error(`Unknown action: ${action}`);
-    }
+    const route = ROUTES[action];
+    if (!route) throw new Error(`Unknown action: ${action}`);
+    return route(params);
   }
 
   // --- Background-handled commands ---

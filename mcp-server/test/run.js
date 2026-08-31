@@ -134,6 +134,123 @@ async function groupA() {
     );
   });
 
+  // The action word is the contract between the MCP tool name, the server's
+  // dispatch, background.js's route table and content_script's handler map —
+  // four spellings in three files, in two runtimes, with nothing checking they
+  // agree. A typo used to surface as "Unknown action: scrap" on a user's
+  // machine, mid-scrape. These read the routes back out of the source.
+  // Brace-match from the object's opening `{` so the block is found regardless
+  // of how deeply it is nested, then take only the keys at its top level.
+  const keysOf = (src, decl) => {
+    const start = src.indexOf(decl);
+    assert.notStrictEqual(start, -1, `${decl} not found`);
+    let i = start + decl.length - 1; // sits on the `{`
+    let depth = 0;
+    const from = i + 1;
+    for (; i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) break;
+    }
+    assert.ok(depth === 0, `unbalanced braces in ${decl}`);
+    const body = src.slice(from, i);
+    // [ \t] not \s — \s would eat the leading newline into the indent.
+    const indent = /^([ \t]*)\S/m.exec(body)[1];
+    const keys = new Set(
+      [...body.matchAll(new RegExp(`^${indent}(\\w+)\\s*[,:]`, "gm"))].map(
+        (m) => m[1],
+      ),
+    );
+    assert.ok(keys.size > 0, `parsed no keys out of ${decl}`);
+    return keys;
+  };
+
+  // Tools this process answers itself; they never reach the extension, so
+  // background.js must not be expected to route them. Adding a tool here is a
+  // deliberate act — if you add one and forget, A10 tells you.
+  const SERVER_HANDLED = new Set([
+    "get_network_state", // reads the server's own capture buffer
+    "smart_scroll", // sends "scroll", then waits for lazy-loaded traffic
+    "get_site_memory", // reads ~/.poltertab/navigation_memory
+    "save_site_memory",
+    "extract_all", // drives navigate + extract in a loop
+  ]);
+
+  await test("A10 every tool the server exposes has a route in the extension", () => {
+    const idx = fs.readFileSync(SERVER, "utf8");
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const routes = keysOf(bg, "const ROUTES = {");
+    assert.ok(routes.size >= 18, `only parsed ${routes.size} routes`);
+
+    const tools = [...idx.matchAll(/name:\s*"browser_([a-z_]+)"/g)].map((m) => m[1]);
+    const orphans = tools.filter(
+      (t) => !SERVER_HANDLED.has(t) && !routes.has(t),
+    );
+    assert.deepStrictEqual(
+      orphans,
+      [],
+      `tools with no route and not server-handled: ${orphans}`,
+    );
+  });
+
+  await test("A11 every extension route is a tool, or a known internal action", () => {
+    // The other direction: a route nothing can reach is dead weight, and a
+    // renamed tool that left its old route behind reads as still working.
+    const idx = fs.readFileSync(SERVER, "utf8");
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const tools = new Set(
+      [...idx.matchAll(/name:\s*"browser_([a-z_]+)"/g)].map((m) => m[1]),
+    );
+    // update_patterns is pushed tab-to-tab by set_intercept_patterns, never by
+    // a tool call.
+    const INTERNAL = new Set(["update_patterns"]);
+    const unreachable = [...keysOf(bg, "const ROUTES = {")].filter(
+      (r) => !tools.has(r) && !INTERNAL.has(r),
+    );
+    assert.deepStrictEqual(unreachable, [], `routes nothing can call: ${unreachable}`);
+  });
+
+  await test("A12 every action forwarded into the page has a content-script handler", () => {
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const cs = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
+    const handlers = keysOf(cs, "const handlers = {");
+    assert.ok(handlers.size >= 8, `only parsed ${handlers.size} handlers`);
+
+    // A handful of actions are answered by an explicit branch ahead of the map
+    // (update_patterns just relays a postMessage into the MAIN world), so count
+    // those as handled too.
+    const branched = new Set(
+      [...cs.matchAll(/action === "([a-z_]+)"/g)].map((m) => m[1]),
+    );
+
+    const forwarded = [
+      ...bg.matchAll(/forwardToContentScript\("([a-z_]+)"/g),
+    ].map((m) => m[1]);
+    assert.ok(forwarded.length >= 8, `only found ${forwarded.length} forwards`);
+    const missing = forwarded.filter(
+      (a) => !handlers.has(a) && !branched.has(a),
+    );
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `forwarded to the page with no handler there: ${missing}`,
+    );
+  });
+
+  await test("A13 the restricted-page error is spelled the same on both sides", () => {
+    // background.js throws it; index.js string-matches it to decide isError.
+    // Two processes, one English sentence, and nothing pinning it.
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const idx = fs.readFileSync(SERVER, "utf8");
+    const thrown = /"(Cannot interact with this page[^"]*)"/.exec(bg);
+    assert.ok(thrown, "background.js no longer throws the restricted-page error");
+    const matched = /result\.includes\(\s*"([^"]+)"/.exec(idx);
+    assert.ok(matched, "index.js no longer string-matches a result");
+    assert.ok(
+      thrown[1].startsWith(matched[1]),
+      `server matches "${matched[1]}" but the extension throws "${thrown[1]}"`,
+    );
+  });
+
   await test("A8 the ref snapshot stamps is the ref resolveElement accepts", () => {
     // Two halves of one contract in one file, 160 lines apart. If snapshot's
     // prefix changes and the resolver's regex does not, every ref silently
