@@ -196,7 +196,29 @@ function skew(serverVersion, extensionVersion) {
 
 // --- the one-line notice ---------------------------------------------------
 
-const EXTENSION_URL = "https://github.com/abhinav162/poltertab/releases/latest";
+const RELEASES = "https://github.com/abhinav162/poltertab/releases";
+
+// Which extension build to send someone to.
+//
+// It must match the server that drives it: mismatched halves are the exact
+// failure the rest of this module exists to detect, so a link that manufactures
+// one is worse than no link. GitHub's /releases/latest deliberately skips
+// prereleases — so telling a 1.5.0-beta.1 install to "get the latest release"
+// hands it a 1.4.0 extension, and the skew warning then fires on a fresh
+// install that followed the instructions exactly. Worse, that was also the
+// remediation advice printed *for* skew, so the fix re-created the fault.
+//
+// Ask for the release matching the version in hand. Callers pass whichever
+// version is right for what they are saying: the running server for "your
+// halves disagree", the version being upgraded to for "an update is available".
+// /releases/latest survives only as the fallback for a build whose version we
+// cannot parse — a dev checkout — where a tag URL would 404.
+function extensionUrl(version) {
+  const v = String(version || "")
+    .trim()
+    .replace(/^v/, "");
+  return parse(v) ? `${RELEASES}/tag/v${v}` : `${RELEASES}/latest`;
+}
 
 // Surfaced once per server process on a tool response, because it is the only
 // channel the user reliably reads: doctor and the popup both require them to
@@ -207,7 +229,7 @@ function notice({ current, latest, updateAvailable, skew: sk }) {
     parts.push(
       `The Chrome extension (${sk.extension}) is older than this server (${sk.server}) — ` +
         `browser commands may fail in ways that look like missing elements. ` +
-        `Reload it from ${EXTENSION_URL}`,
+        `Reload it from ${extensionUrl(sk.server)}`,
     );
   } else if (sk && sk.kind === "server-behind") {
     parts.push(
@@ -218,7 +240,8 @@ function notice({ current, latest, updateAvailable, skew: sk }) {
   if (updateAvailable && latest) {
     parts.push(
       `PolterTab ${latest} is available (running ${current}). ` +
-        `Update with: npm update -g poltertab && poltertab setup`,
+        `Update with: npm update -g poltertab && poltertab setup, ` +
+        `then reload the extension from ${extensionUrl(latest)}`,
     );
   }
   if (!parts.length) return null;
@@ -236,7 +259,7 @@ module.exports = {
   skew,
   notice,
   disabled,
-  EXTENSION_URL,
+  extensionUrl,
   CACHE_FILE,
   STATE_FILE,
 };

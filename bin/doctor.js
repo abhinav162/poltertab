@@ -119,7 +119,7 @@ async function run(argv = []) {
     todo.push(
       `${c.red("The extension is older than the server.")} Browser commands can fail\n` +
         `    in ways that look like a missing element. Download and reload it:\n` +
-        `    ${c.cyan(updates.EXTENSION_URL)}`,
+        `    ${c.cyan(updates.extensionUrl(sk.server))}`,
     );
   } else if (sk && sk.kind === "server-behind") {
     todo.push(
@@ -131,7 +131,7 @@ async function run(argv = []) {
     todo.push(
       `PolterTab ${c.bold(check.latest)} is available:\n` +
         `    ${c.cyan("npm update -g poltertab")}\n` +
-        `    ${c.dim("then reload the extension from")} ${c.cyan(updates.EXTENSION_URL)}`,
+        `    ${c.dim("then reload the extension from")} ${c.cyan(updates.extensionUrl(check.latest))}`,
     );
   }
   if (!listening) {
@@ -150,7 +150,7 @@ async function run(argv = []) {
     console.log(
       `\n  ${c.yellow("Nothing wrong found, but the extension has never checked in.")}\n` +
         `  ${c.dim("Install it, open a page, and run doctor again to compare versions:")}\n` +
-        `  ${c.cyan(updates.EXTENSION_URL)}`,
+        `  ${c.cyan(updates.extensionUrl(own))}`,
     );
   } else {
     console.log(`\n  ${c.green("Nothing to do — both halves agree and are current.")}`);
