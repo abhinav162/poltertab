@@ -24,7 +24,16 @@ const SNIPPET_SRC = path.join(PKG, "assets", "claude-md-snippet.md");
 
 // Bump to the Chrome Web Store listing once it clears review. The GitHub
 // release stays valid either way, so this is a one-line switch.
-const EXTENSION_URL = "https://github.com/abhinav162/poltertab/releases/latest";
+//
+// Pinned to the release for the version being installed, not "latest". Someone
+// who installed a prerelease (npm i -g poltertab@beta) and followed a /latest
+// link would get the previous stable extension, because GitHub's
+// /releases/latest skips prereleases — a fresh, correctly-followed setup that
+// lands in version skew.
+const updates = require("../mcp-server/update-check.js");
+const EXTENSION_URL = updates.extensionUrl(
+  require("../package.json").version,
+);
 
 // Identifies our section in a CLAUDE.md we do not own. Presence means
 // "already installed" — this is the whole idempotency check for step 2.

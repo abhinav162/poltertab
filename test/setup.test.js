@@ -228,6 +228,55 @@ test("D5  the extension download link is a real https URL", () => {
   );
 });
 
+test("E6  the extension link names this build's own release, not /latest", () => {
+  // GitHub's /releases/latest skips prereleases. A `poltertab@beta` install
+  // told to fetch "the latest release" gets the previous *stable* extension —
+  // so a fresh setup that followed the instructions exactly lands in version
+  // skew, and the skew remediation used to point at the same wrong place.
+  const version = require(path.join(REPO, "package.json")).version;
+  assert.strictEqual(
+    setup.EXTENSION_URL,
+    `https://github.com/abhinav162/poltertab/releases/tag/v${version}`,
+    "setup does not link the release matching the version it installs",
+  );
+});
+
+test("E7  extensionUrl pins a prerelease, and falls back only when unparseable", () => {
+  const up = require(path.join(REPO, "mcp-server", "update-check.js"));
+  const tag = (v) => `https://github.com/abhinav162/poltertab/releases/tag/v${v}`;
+  assert.strictEqual(up.extensionUrl("1.5.0-beta.1"), tag("1.5.0-beta.1"));
+  assert.strictEqual(up.extensionUrl("1.4.0"), tag("1.4.0"));
+  assert.strictEqual(up.extensionUrl("v1.4.0"), tag("1.4.0"), "leading v doubled up");
+  // Only a version we cannot parse may fall back — a dev checkout, where a tag
+  // URL would 404.
+  for (const bad of ["", null, undefined, "garbage"]) {
+    assert.strictEqual(
+      up.extensionUrl(bad),
+      "https://github.com/abhinav162/poltertab/releases/latest",
+      `unparseable ${JSON.stringify(bad)} should fall back`,
+    );
+  }
+});
+
+test("E8  skew advice never points at a build that would re-create the skew", () => {
+  const up = require(path.join(REPO, "mcp-server", "update-check.js"));
+  const msg = up.notice({
+    current: "1.5.0-beta.1",
+    latest: null,
+    updateAvailable: false,
+    skew: up.skew("1.5.0-beta.1", "1.4.0"),
+  });
+  assert.ok(msg, "no notice produced for a real skew");
+  assert.ok(
+    msg.includes("/releases/tag/v1.5.0-beta.1"),
+    `skew advice must name the server's own release: ${msg}`,
+  );
+  assert.ok(
+    !msg.includes("/releases/latest"),
+    "skew advice still sends a prerelease install to the stable extension",
+  );
+});
+
 group("E  runtime state lives outside the package");
 
 // A global npm install puts the server under node_modules/poltertab/. Anything
