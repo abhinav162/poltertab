@@ -29,6 +29,17 @@ const SINK = {
   },
 };
 
+// Self-healing: browser_click/browser_fill return the resolved element's
+// fingerprint. Pass it back on a later call and, if the selector has drifted
+// (a renamed id/class), the element is relocated by structural similarity.
+const FINGERPRINT = {
+  fingerprint: {
+    type: "object",
+    description:
+      "Optional. The `fingerprint` object a previous browser_click/browser_fill returned for this element. When the selector no longer matches, the element is relocated by structural similarity and the result carries healed:true.",
+  },
+};
+
 // Define tools
 const BROWSER_TOOLS = [
   {
@@ -45,11 +56,13 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_click",
-    description: "Click an element on the page",
+    description:
+      "Click an element on the page. Returns the element's `fingerprint` (pass it back later to survive a selector change) and `healed:true` if the selector had drifted and the element was relocated.",
     inputSchema: {
       type: "object",
       properties: {
         selector: { type: "string" },
+        ...FINGERPRINT,
         ...TARGET,
       },
       required: ["selector"],
@@ -57,13 +70,15 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_fill",
-    description: "Fill an input field with text",
+    description:
+      "Fill an input field with text. Returns the field's `fingerprint` (pass it back later to survive a selector change) and `healed:true` if the selector had drifted and the field was relocated.",
     inputSchema: {
       type: "object",
       properties: {
         selector: { type: "string" },
         value: { type: "string" },
         submit: { type: "boolean" },
+        ...FINGERPRINT,
         ...TARGET,
       },
       required: ["selector", "value"],

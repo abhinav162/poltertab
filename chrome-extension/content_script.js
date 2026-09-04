@@ -160,6 +160,101 @@
     return null;
   }
 
+  // ── Self-healing selectors (fingerprint relocation) ─────────────────
+  // A selector tied to an id or class breaks when the site is restyled. If the
+  // caller kept the fingerprint a previous resolve handed back, we can find the
+  // element again by structural similarity — Scrapling's trick, no AI. Captured
+  // cheaply, scored only when the selector misses.
+  const FP_THRESHOLD = 0.6;
+  const FP_ATTRS = ["name", "type", "role", "aria-label", "placeholder", "href", "title", "alt"];
+  let lastHealed = false;
+
+  function fingerprint(el) {
+    const attrs = {};
+    const id = el.id || (el.getAttribute && el.getAttribute("id"));
+    if (id) attrs.id = id;
+    const cls = el.className || (el.getAttribute && el.getAttribute("class"));
+    if (cls) attrs.class = String(cls);
+    for (const name of FP_ATTRS) {
+      const v = el.getAttribute && el.getAttribute(name);
+      if (v) attrs[name] = v;
+    }
+    const parent = el.parentElement;
+    return {
+      tag: el.tagName.toLowerCase(),
+      text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 50),
+      attrs,
+      siblingTags: parent
+        ? [...parent.children].map((c) => c.tagName.toLowerCase())
+        : [],
+      parent: parent
+        ? {
+            tag: parent.tagName.toLowerCase(),
+            id: parent.id || undefined,
+            class: (parent.className && String(parent.className)) || undefined,
+          }
+        : {},
+    };
+  }
+
+  // Dice coefficient over whitespace tokens — order-independent, cheap, and
+  // gives partial credit (a renamed class that keeps most of its words still
+  // scores). Two empty strings are identical; one empty is a miss.
+  function tokenSim(s1, s2) {
+    const t1 = new Set((s1 || "").toLowerCase().split(/\s+/).filter(Boolean));
+    const t2 = new Set((s2 || "").toLowerCase().split(/\s+/).filter(Boolean));
+    if (!t1.size && !t2.size) return 1;
+    if (!t1.size || !t2.size) return 0;
+    let inter = 0;
+    for (const t of t1) if (t2.has(t)) inter++;
+    return (2 * inter) / (t1.size + t2.size);
+  }
+
+  function attrsSim(a = {}, b = {}) {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    if (!keys.size) return 1;
+    let score = 0;
+    for (const k of keys) {
+      const va = a[k] || "";
+      const vb = b[k] || "";
+      if (!va || !vb) continue; // present on one side only → 0 for this key
+      score += k === "class" ? tokenSim(va, vb) : va === vb ? 1 : 0;
+    }
+    return score / keys.size;
+  }
+
+  function similarity(a, b) {
+    const tag = a.tag === b.tag ? 1 : 0;
+    const text = tokenSim(a.text, b.text);
+    const attrs = attrsSim(a.attrs, b.attrs);
+    const sib = tokenSim(
+      (a.siblingTags || []).join(" "),
+      (b.siblingTags || []).join(" "),
+    );
+    const par =
+      a.parent && b.parent && a.parent.tag && a.parent.tag === b.parent.tag
+        ? 1
+        : 0;
+    const structure = (sib + par) / 2;
+    return 0.2 * tag + 0.25 * text + 0.35 * attrs + 0.2 * structure;
+  }
+
+  // Scan every element (piercing shadow roots) and return the best structural
+  // match above the threshold. O(nodes) — only ever called on a selector miss.
+  function relocate(fp) {
+    if (!fp || !fp.tag) return null;
+    let best = null;
+    let bestScore = 0;
+    for (const el of deepQuery("*", true)) {
+      const score = similarity(fp, fingerprint(el));
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return bestScore >= FP_THRESHOLD ? best : null;
+  }
+
   // Modals and portals mount a moment after the click that triggers them, so a
   // miss is usually "too early" rather than "not there". Back off between
   // attempts so a genuinely absent element in a large app does not pay for the
@@ -169,9 +264,25 @@
   // _noWait: true so each frame answers instantly. The retry is reserved for a
   // targeted second pass on the frame most likely to contain a late element
   // (frame 0, where portals mount into document.body).
-  async function waitForElement(selector, noWait = false) {
+  async function waitForElement(selector, noWait = false, fp = null) {
+    lastHealed = false;
     const el = resolveElement(selector);
     if (el) return el;
+
+    // Selector missed. If the caller supplied a fingerprint, they're telling us
+    // the selector may have drifted — try relocating right away rather than
+    // waiting out the full timeout for an element that has been renamed.
+    // ponytail: selector is still tried first every round, so it wins whenever
+    // it matches; relocation only fills a genuine miss. A decoy that outscores a
+    // late-rendering real element at t=0 is the rare wrong match — acceptable
+    // since the caller opted in by passing a fingerprint.
+    if (fp) {
+      const healed = relocate(fp);
+      if (healed) {
+        lastHealed = true;
+        return healed;
+      }
+    }
     if (noWait) throw new Error(`Element not found: ${selector}`);
 
     const deadline = Date.now() + ELEMENT_WAIT_MS;
@@ -180,6 +291,13 @@
       await new Promise((r) => setTimeout(r, delay));
       const found = resolveElement(selector);
       if (found) return found;
+      if (fp) {
+        const healed = relocate(fp);
+        if (healed) {
+          lastHealed = true;
+          return healed;
+        }
+      }
       if (Date.now() >= deadline) {
         throw new Error(`Element not found: ${selector}`);
       }
@@ -594,7 +712,8 @@
   }
 
   async function click(params) {
-    const el = await waitForElement(params.selector, params._noWait);
+    const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
+    const healed = lastHealed;
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     await waitForActionable(el, params.selector, {
@@ -607,11 +726,19 @@
     el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
-    return { clicked: params.selector, tag: el.tagName.toLowerCase() };
+    // Return the fingerprint so the caller can store it and heal a future drift;
+    // healed:true means the selector missed and relocation found the element.
+    return {
+      clicked: params.selector,
+      tag: el.tagName.toLowerCase(),
+      fingerprint: fingerprint(el),
+      healed,
+    };
   }
 
   async function fill(params) {
-    const el = await waitForElement(params.selector, params._noWait);
+    const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
+    const healed = lastHealed;
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     // fill sets the value programmatically, so a covering overlay does not block
@@ -656,7 +783,12 @@
       if (form) form.submit();
     }
 
-    return { filled: params.selector, value: params.value };
+    return {
+      filled: params.selector,
+      value: params.value,
+      fingerprint: fingerprint(el),
+      healed,
+    };
   }
 
   async function scroll(params) {

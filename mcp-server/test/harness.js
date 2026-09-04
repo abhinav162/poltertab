@@ -543,7 +543,8 @@ function fakeField(kind, opts = {}) {
     scrollIntoView() {},
     focus() {},
     closest: () => null,
-    getAttribute: () => null,
+    __attrs: { ...(opts.attrs || {}) },
+    getAttribute: (k) => (k in el.__attrs ? el.__attrs[k] : null),
     matches: () => false,
     dispatchEvent(e) {
       el.events.push(e.type);
