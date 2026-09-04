@@ -87,9 +87,11 @@
     return originalXhrSend.apply(this, body);
   };
 
+  // Deliberately no synthetic "interceptor loaded" record here. One used to be
+  // posted on every injection; it travelled content script → background →
+  // server and landed in networkState as a genuine captured request, so every
+  // browser_get_network_state on a freshly loaded tab returned a fake entry
+  // that also ate one slot of the 500-request cap. Only real traffic goes out
+  // now — the two postMessage calls above are the fetch and XHR paths.
   console.log("[PolterTab] Network interceptor injected into MAIN world.");
-  window.postMessage(
-    { type: "ZC_NETWORK_DATA", url: "TEST_INIT", body: "Interceptor loaded" },
-    "*",
-  );
 })();

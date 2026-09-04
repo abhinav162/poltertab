@@ -110,7 +110,8 @@ test("B5  the shipped skill names no dead tools", (box) => {
   // The skill is the agent's map of the tool surface. A tool named here that
   // the server does not expose sends the agent chasing a call that cannot work.
   const body = fs.readFileSync(setup.installSkill(path.join(box, "s")), "utf8");
-  const server = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  // Tool definitions live in tools.js; index.js only dispatches them.
+  const server = fs.readFileSync(path.join(REPO, "mcp-server", "tools.js"), "utf8");
   const named = [...new Set(body.match(/browser_[a-z_]+/g) || [])];
   assert.ok(named.length > 3, `skill references almost no tools: ${named}`);
   const missing = named.filter((t) => !server.includes(`"${t}"`));
@@ -227,6 +228,55 @@ test("D5  the extension download link is a real https URL", () => {
   );
 });
 
+test("E6  the extension link names this build's own release, not /latest", () => {
+  // GitHub's /releases/latest skips prereleases. A `poltertab@beta` install
+  // told to fetch "the latest release" gets the previous *stable* extension —
+  // so a fresh setup that followed the instructions exactly lands in version
+  // skew, and the skew remediation used to point at the same wrong place.
+  const version = require(path.join(REPO, "package.json")).version;
+  assert.strictEqual(
+    setup.EXTENSION_URL,
+    `https://github.com/abhinav162/poltertab/releases/tag/v${version}`,
+    "setup does not link the release matching the version it installs",
+  );
+});
+
+test("E7  extensionUrl pins a prerelease, and falls back only when unparseable", () => {
+  const up = require(path.join(REPO, "mcp-server", "update-check.js"));
+  const tag = (v) => `https://github.com/abhinav162/poltertab/releases/tag/v${v}`;
+  assert.strictEqual(up.extensionUrl("1.5.0-beta.1"), tag("1.5.0-beta.1"));
+  assert.strictEqual(up.extensionUrl("1.4.0"), tag("1.4.0"));
+  assert.strictEqual(up.extensionUrl("v1.4.0"), tag("1.4.0"), "leading v doubled up");
+  // Only a version we cannot parse may fall back — a dev checkout, where a tag
+  // URL would 404.
+  for (const bad of ["", null, undefined, "garbage"]) {
+    assert.strictEqual(
+      up.extensionUrl(bad),
+      "https://github.com/abhinav162/poltertab/releases/latest",
+      `unparseable ${JSON.stringify(bad)} should fall back`,
+    );
+  }
+});
+
+test("E8  skew advice never points at a build that would re-create the skew", () => {
+  const up = require(path.join(REPO, "mcp-server", "update-check.js"));
+  const msg = up.notice({
+    current: "1.5.0-beta.1",
+    latest: null,
+    updateAvailable: false,
+    skew: up.skew("1.5.0-beta.1", "1.4.0"),
+  });
+  assert.ok(msg, "no notice produced for a real skew");
+  assert.ok(
+    msg.includes("/releases/tag/v1.5.0-beta.1"),
+    `skew advice must name the server's own release: ${msg}`,
+  );
+  assert.ok(
+    !msg.includes("/releases/latest"),
+    "skew advice still sends a prerelease install to the stable extension",
+  );
+});
+
 group("E  runtime state lives outside the package");
 
 // A global npm install puts the server under node_modules/poltertab/. Anything
@@ -236,9 +286,16 @@ const SERVER_SRC = fs.readFileSync(
   path.join(REPO, "mcp-server", "index.js"),
   "utf8",
 );
+const CONFIG_SRC = fs.readFileSync(
+  path.join(REPO, "mcp-server", "config.js"),
+  "utf8",
+);
+// The state paths were hoisted into config.js. E1 still scans both, because a
+// package-relative path is just as wrong wherever it is written.
+const STATE_SRC = SERVER_SRC + "\n" + CONFIG_SRC;
 
 test("E1  neither state directory is built from __dirname", () => {
-  const offenders = SERVER_SRC.split("\n").filter(
+  const offenders = STATE_SRC.split("\n").filter(
     (l) =>
       l.includes("__dirname") &&
       /navigation_memory|downloads/.test(l) &&
@@ -254,12 +311,14 @@ test("E1  neither state directory is built from __dirname", () => {
 
 test("E2  both directories hang off POLTERTAB_HOME", () => {
   assert.ok(
-    /POLTERTAB_HOME\s*=[\s\S]{0,120}homedir\(\)[\s\S]{0,40}\.poltertab/.test(SERVER_SRC),
+    /POLTERTAB_HOME\s*=[\s\S]{0,120}homedir\(\)[\s\S]{0,40}\.poltertab/.test(STATE_SRC),
     "POLTERTAB_HOME does not default to ~/.poltertab",
   );
+  // Written as object properties in config.js's exports, so accept either
+  // `NAME = path.join(POLTERTAB_HOME` or `NAME: path.join(POLTERTAB_HOME`.
   for (const name of ["MEMORY_DIR", "DOWNLOADS_DIR"]) {
     assert.ok(
-      new RegExp(`${name}\\s*=\\s*path\\.join\\(\\s*POLTERTAB_HOME`).test(SERVER_SRC),
+      new RegExp(`${name}\\s*[:=]\\s*path\\.join\\(\\s*POLTERTAB_HOME`).test(STATE_SRC),
       `${name} is not resolved under POLTERTAB_HOME`,
     );
   }
@@ -804,7 +863,8 @@ test("G17  the server reports its real version, not a hardcoded one", () => {
 });
 
 test("G18  the server keeps the extension version it used to discard", () => {
-  const src = fs.readFileSync(path.join(REPO, "mcp-server", "index.js"), "utf8");
+  // The version handshake lives with the socket that carries it, in bridge.js.
+  const src = fs.readFileSync(path.join(REPO, "mcp-server", "bridge.js"), "utf8");
   assert.ok(/recordExtension/.test(src), "extension version is never recorded");
   assert.ok(
     /extensionVersion = msg\.version/.test(src),

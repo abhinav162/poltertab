@@ -17,7 +17,6 @@
     "skills/",
     "assets/",
     "!mcp-server/test/",
-    "!mcp-server/test-client.js",
     "!mcp-server/downloads/",
     "!mcp-server/navigation_memory/"
   ],

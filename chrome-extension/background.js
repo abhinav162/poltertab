@@ -6,7 +6,32 @@
 // whenever the bridge server restarts.
 
 (() => {
-  let WS_PORT = 7822;
+  // Mirrors mcp-server/config.js. It cannot be required from here — this runs
+  // in Chrome, there is no build step, and MV3 forbids remote code — so the two
+  // copies are kept in sync by hand. Read the timeout budget in that file
+  // before changing any of the waits below: each layer's budget must exceed the
+  // sum of what it waits on, or a slow-but-successful load surfaces to the
+  // agent as a timeout it can only answer by guessing whether to retry.
+  const DEFAULT_WS_PORT = 7822;
+
+  // Navigation: the server allows 35s for the whole command, so this plus the
+  // settle below has to leave room for the reply to get back.
+  const NAV_TIMEOUT_MS = 30000;
+  // Let the document's own scripts run before we act on it.
+  const NAV_SETTLE_MS = 500;
+  // One frame's answer. Bounded well under NAV_TIMEOUT_MS because frames are
+  // probed in parallel and one dead frame must not stall the batch.
+  const FRAME_TIMEOUT_MS = 10000;
+  // executeScript can resolve before the content script's listener is live, so
+  // the first message into a fresh frame can lose the race. One short retry.
+  const FRAME_RETRY_MS = 150;
+
+  // MV3 suspends a service worker after ~30s idle. The keepalive fires inside
+  // that window while connected; the reconnect poll runs when it is not.
+  const KEEPALIVE_MINUTES = 0.33; // ~20s
+  const RECONNECT_MINUTES = 0.08; // ~5s
+
+  let WS_PORT = DEFAULT_WS_PORT;
   let WS_URL = `ws://localhost:${WS_PORT}`;
   const RECONNECT_ALARM = "poltertab-reconnect";
   const KEEPALIVE_ALARM = "poltertab-keepalive";
@@ -402,7 +427,9 @@
       // Stop reconnect polling — we're connected
       chrome.alarms.clear(RECONNECT_ALARM);
       // Start keep-alive to prevent service worker suspension while connected
-      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.33 }); // ~20s
+      chrome.alarms.create(KEEPALIVE_ALARM, {
+        periodInMinutes: KEEPALIVE_MINUTES,
+      });
       send({
         type: "extension_ready",
         version: chrome.runtime.getManifest().version,
@@ -489,8 +516,8 @@
       if (!alarm) {
         // Poll every 5s to reconnect
         chrome.alarms.create(RECONNECT_ALARM, {
-          delayInMinutes: 0.08, // first attempt in ~5s
-          periodInMinutes: 0.08, // then every ~5s
+          delayInMinutes: RECONNECT_MINUTES,
+          periodInMinutes: RECONNECT_MINUTES,
         });
       }
     });
@@ -573,58 +600,60 @@
 
   // --- Command routing ---
 
+  // The action word is the contract between four places: the MCP tool name, the
+  // server's dispatch, this table, and content_script's own handler map. Nothing
+  // used to check that they agreed, so a typo here surfaced as
+  // "Unknown action: scrap" on a user's machine, mid-scrape. A table rather than
+  // a switch so the suite can read the routes back and assert against the
+  // server's tool list.
+  const ROUTES = {
+    // Background-handled: these need chrome.* APIs the page cannot reach.
+    navigate,
+    screenshot,
+    get_title: getTitle,
+    get_url: getUrl,
+
+    // Forwarded into the page, across every frame.
+    click: (p) => forwardToContentScript("click", p),
+    fill: (p) => forwardToContentScript("fill", p),
+    snapshot: (p) => forwardToContentScript("snapshot", p),
+    scrape: (p) => forwardToContentScript("scrape", p),
+    extract: (p) => forwardToContentScript("extract", p),
+    scroll: (p) => forwardToContentScript("scroll", p),
+    hover: (p) => forwardToContentScript("hover", p),
+    get_text: (p) => forwardToContentScript("get_text", p),
+    update_patterns: (p) => forwardToContentScript("update_patterns", p),
+
+    // Stored globally so new tabs inherit them, then pushed to every open tab.
+    set_intercept_patterns: async (params) => {
+      await chrome.storage.local.set({
+        zc_intercept_patterns: params.patterns,
+      });
+      const allTabs = await chrome.tabs.query({});
+      allTabs.forEach((t) =>
+        chrome.tabs
+          .sendMessage(t.id, {
+            source: "poltertab",
+            action: "update_patterns",
+            params,
+          })
+          .catch(() => {}),
+      );
+      return { success: true, patterns: params.patterns };
+    },
+
+    // Session management (accepts "name" or "session" as the identifier).
+    session_create: (p) => sessionManager.create(p.name || p.session, p.url),
+    session_switch: (p) => sessionManager.switch(p.name || p.session),
+    session_list: () => sessionManager.list(),
+    session_close: (p) => sessionManager.close(p.name || p.session),
+    session_context: () => sessionManager.context(),
+  };
+
   async function handleCommand(action, params) {
-    switch (action) {
-      case "navigate":
-        return navigate(params);
-      case "screenshot":
-        return screenshot(params);
-      case "get_title":
-        return getTitle(params);
-      case "click":
-      case "fill":
-      case "snapshot":
-      case "scrape":
-      case "extract":
-      case "scroll":
-      case "hover":
-      case "get_text":
-        return forwardToContentScript(action, params);
-      case "update_patterns":
-        return forwardToContentScript(action, params);
-      case "set_intercept_patterns": {
-        await chrome.storage.local.set({
-          zc_intercept_patterns: params.patterns,
-        });
-        const allTabs = await chrome.tabs.query({});
-        allTabs.forEach((t) =>
-          chrome.tabs
-            .sendMessage(t.id, {
-              source: "poltertab",
-              action: "update_patterns",
-              params,
-            })
-            .catch(() => {}),
-        );
-        return { success: true, patterns: params.patterns };
-      }
-      // Background-handled: get_url
-      case "get_url":
-        return getUrl(params);
-      // Session management actions (accept "name" or "session" as the session identifier)
-      case "session_create":
-        return sessionManager.create(params.name || params.session, params.url);
-      case "session_switch":
-        return sessionManager.switch(params.name || params.session);
-      case "session_list":
-        return sessionManager.list();
-      case "session_close":
-        return sessionManager.close(params.name || params.session);
-      case "session_context":
-        return sessionManager.context();
-      default:
-        throw new Error(`Unknown action: ${action}`);
-    }
+    const route = ROUTES[action];
+    if (!route) throw new Error(`Unknown action: ${action}`);
+    return route(params);
   }
 
   // --- Background-handled commands ---
@@ -698,13 +727,13 @@
   // ponytail: tabLoadEpoch is in-memory, so an MV3 service-worker suspension
   // mid-navigation falls back to the timeout. Persist to session storage if
   // that ever shows up in practice.
-  async function waitForTabLoad(tabId, since, timeoutMs = 30000) {
+  async function waitForTabLoad(tabId, since, timeoutMs = NAV_TIMEOUT_MS) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const loadedAt = tabLoadEpoch.get(tabId);
       if (loadedAt !== undefined && loadedAt >= since) {
         // Let the document's own scripts settle before we act on it.
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, NAV_SETTLE_MS));
         return chrome.tabs.get(tabId);
       }
       try {
@@ -822,7 +851,7 @@
     if (!/Receiving end|Could not establish connection/i.test(first?.error || "")) {
       return first;
     }
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, FRAME_RETRY_MS));
     return postToFrame(tabId, frameId, action, params);
   }
 
@@ -830,7 +859,7 @@
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         resolve({ success: false, error: `Content script timeout (frame ${frameId})` });
-      }, 10000);
+      }, FRAME_TIMEOUT_MS);
 
       chrome.tabs.sendMessage(
         tabId,

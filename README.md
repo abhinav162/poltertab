@@ -82,8 +82,6 @@ The wizard targets Claude Code. Any other MCP client works too — register
 Running from a clone instead of npm? Point the client at the file directly:
 `{"command": "node", "args": ["/absolute/path/to/poltertab/mcp-server/index.js"]}`
 
-> **Legacy:** This extension began as a ZeroClaw plugin and still speaks ZeroClaw's built-in REST bridge (`backend = "bridge"` in `~/.zeroclaw/config.toml`). That path is optional and not required for the MCP setup above.
-
 ## Supported MCP Tools
 
 The server exposes 23 tools to the LLM (all prefixed with `browser_`). Every
@@ -211,20 +209,14 @@ next use.
 
 Selectors are resolved in order:
 
-1. **CSS selector** — `#id`, `.class`, `div > span`
-2. **XPath** — `//div[@class="foo"]`
-3. **Text match** — exact text content of an element
+1. **Snapshot ref** — `@e12`, as returned by `browser_snapshot`. Resolves to the
+   exact node the snapshot described, and beats a generated class chain.
+2. **CSS selector** — `#id`, `.class`, `div > span`
+3. **XPath** — `//div[@class="foo"]`
+4. **Text match** — exact text content of an element
 
-## CLI Wrapper (Legacy)
-
-`zc-browser.sh` lets you send commands directly to the legacy ZeroClaw REST bridge for testing (only relevant if you use the optional ZeroClaw bridge path above):
-
-```bash
-./zc-browser.sh navigate url=https://example.com
-./zc-browser.sh scrape selector="h1"
-./zc-browser.sh get_title
-./zc-browser.sh health
-```
+A miss on all four is retried with shadow-root piercing, so a selector that only
+exists inside a web component still resolves.
 
 ## Troubleshooting & Options
 
@@ -288,7 +280,6 @@ poltertab/
 │   ├── popup.html/js          # Connected-agents UI
 │   ├── options.html/js        # Port configuration UI
 │   └── icons/
-├── zc-browser.sh              # CLI wrapper (legacy)
 └── README.md
 ```
 
