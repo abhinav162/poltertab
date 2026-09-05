@@ -82,6 +82,37 @@ async function groupN() {
     assert.strictEqual(near.clicks, 1, "did not pick the closest match");
     assert.strictEqual(far.clicks, 0, "picked a worse match");
   });
+
+  await test("N5 a decoy whose text equals the selector never shadows healing", async () => {
+    // A visible <code>#save-btn</code> hint has textContent exactly "#save-btn".
+    // The text-equality fallback used to return it, so a drifted selector never
+    // reported a miss and healing never ran.
+    const decoy = fakeEl("code", { text: "#save-btn" });
+    const btn = fakeEl("button", { id: "save-btn", text: "Save changes", attrs: { name: "save" } });
+    const s = shadowSandbox({ lightDescendants: [decoy, btn] });
+
+    const first = await s.send("click", { selector: "#save-btn" });
+    assert.strictEqual(first.data.tag, "button", "matched the decoy before any drift");
+
+    btn.id = "save-btn-v2"; // redesigned
+    const second = await s.send("click", {
+      selector: "#save-btn",
+      fingerprint: first.data.fingerprint,
+    });
+    assert.strictEqual(second.data.tag, "button", "healed onto the <code> decoy");
+    assert.strictEqual(second.data.healed, true);
+    assert.strictEqual(btn.clicks, 2);
+    assert.strictEqual(decoy.clicks, 0);
+  });
+
+  await test("N6 a decoy text match does not mask a genuine miss", async () => {
+    const decoy = fakeEl("code", { text: "#gone" });
+    const s = shadowSandbox({ lightDescendants: [decoy] });
+    const res = await s.send("click", { selector: "#gone" }); // no fingerprint
+    assert.strictEqual(res.success, false, "returned the decoy instead of not-found");
+    assert.ok(/not found/i.test(res.error), res.error);
+    assert.strictEqual(decoy.clicks, 0);
+  });
 }
 
 module.exports = groupN;

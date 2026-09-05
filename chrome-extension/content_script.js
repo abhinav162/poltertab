@@ -90,20 +90,32 @@
       // Not valid XPath either
     }
 
+    // A selector starting with #, ., or [ is an id/class/attribute selector, not
+    // human-visible text. The text-equality fallbacks are meant for a literal
+    // label like "Submit"; matching "#save-btn" against a <code> that prints that
+    // string is always wrong — and it stops resolveElement ever returning null,
+    // which is exactly what a drifted selector needs so fingerprint healing can
+    // take over. So a CSS-shaped selector skips both text tiers.
+    const textFallbackOk = !/^[#.\[]/.test(selector.trim());
+
     // Try text content match — find element containing exact text
-    const walk = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_ELEMENT,
-    );
-    let node;
-    while ((node = walk.nextNode())) {
-      if (node.textContent.trim() === selector.trim()) return node;
+    if (textFallbackOk) {
+      const walk = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_ELEMENT,
+      );
+      let node;
+      while ((node = walk.nextNode())) {
+        if (node.textContent.trim() === selector.trim()) return node;
+      }
     }
 
     // Same lookups again, this time piercing shadow roots. Deliberately last:
-    // a page that resolves in the light DOM takes the exact path it always
-    // did, and only a miss pays for the walk.
-    return deepQuery(selector) || deepTextMatch(selector);
+    // a page that resolves in the light DOM takes the exact path it always did,
+    // and only a miss pays for the walk. deepTextMatch is a text-equality
+    // fallback too, so it is gated the same way; deepQuery (a real CSS query)
+    // always runs.
+    return deepQuery(selector) || (textFallbackOk ? deepTextMatch(selector) : null);
   }
 
   // chrome.dom.openOrClosedShadowRoot is an extension-only API that reaches
