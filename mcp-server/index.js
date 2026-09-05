@@ -13,7 +13,13 @@ const { SMART_SCROLL_SETTLE_MS, POLTERTAB_HOME } = require("./config.js");
 const updates = require("./update-check.js");
 const { BROWSER_TOOLS } = require("./tools.js");
 const { writeOutput, summarizeOutput, rowsOf } = require("./output.js");
-const { readMemory, saveMemory } = require("./memory.js");
+const {
+  readMemory,
+  saveMemory,
+  getSelector,
+  recordSelector,
+  noteSelectorFail,
+} = require("./memory.js");
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
 const OWN_VERSION = require("./../package.json").version;
@@ -52,6 +58,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: BROWSER_TOOLS,
   };
 });
+
+// Which host a tab is on, learned from the URL any navigate/get_url/action
+// result reveals. Self-heal keys its selector store by host, and clicks happen
+// on the page we last saw a URL for — no extra round-trip to ask.
+const hostByTab = new Map();
+let lastHost = null;
+
+function hostname(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function rememberHost(tabId, url) {
+  const host = hostname(url);
+  if (!host) return;
+  if (tabId != null) hostByTab.set(tabId, host);
+  lastHost = host;
+}
+
+function hostForTab(tabId) {
+  return (tabId != null && hostByTab.get(tabId)) || lastHost || null;
+}
 
 const handleToolCall = async (request) => {
   const { name, arguments: args } = request.params;
@@ -142,9 +173,11 @@ const handleToolCall = async (request) => {
     if (action === "get_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
+      // The agent only wants its own notes; the selectors map is internal
+      // plumbing for self-healing and would just be noise here.
       return {
         content: [
-          { type: "text", text: JSON.stringify(readMemory(host), null, 2) },
+          { type: "text", text: JSON.stringify(readMemory(host).notes, null, 2) },
         ],
       };
     }
@@ -184,8 +217,35 @@ const handleToolCall = async (request) => {
       };
     }
 
-    const result = await bridge.sendCommand(action, args || {});
+    // Self-healing: for click/fill, supply a remembered fingerprint when the
+    // selector has no explicit one, and remember the fingerprint that worked so
+    // a later drift can be relocated. Host is the page this tab last revealed.
+    const healable = action === "click" || action === "fill";
+    const selector = args && args.selector;
+    const host = healable && selector ? hostForTab(args && args.tabId) : null;
+    if (host && !args.fingerprint) {
+      const stored = getSelector(host, selector);
+      if (stored) args.fingerprint = stored.fingerprint;
+    }
+
+    let result;
+    try {
+      result = await bridge.sendCommand(action, args || {});
+    } catch (err) {
+      // A selector that missed even with its stored fingerprint is drifting;
+      // enough misses and memory.js stops trusting it.
+      if (host && /not found/i.test(err.message)) noteSelectorFail(host, selector);
+      throw err;
+    }
     bridge.noteActiveTab((result && result.tabId) || (args && args.tabId));
+
+    // Learn the host for later, and store the fingerprint of what resolved.
+    if (result && result.url) {
+      rememberHost(result.tabId ?? (args && args.tabId), result.url);
+    }
+    if (host && result && result.fingerprint) {
+      recordSelector(host, selector, result.fingerprint);
+    }
 
     // Any read tool can send its payload to disk. Placed after tab tracking so
     // taking the file path does not cost the session its tab bookkeeping.
