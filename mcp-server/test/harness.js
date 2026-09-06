@@ -444,16 +444,47 @@ function giveGeometry(el, opts) {
     opacity: "1",
   };
   const k = ++rectSeq;
+  const onscreen = {
+    left: k * 50, top: 0, right: k * 50 + 20, bottom: 20, width: 20, height: 20,
+  };
   el.__rect = opts.hidden
     ? { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
-    : { left: k * 50, top: 0, right: k * 50 + 20, bottom: 20, width: 20, height: 20 };
+    : opts.offscreen
+      ? { left: k * 50, top: 5000, right: k * 50 + 20, bottom: 5020, width: 20, height: 20 }
+      : onscreen;
+  // Real scrollIntoView with behavior:"smooth" is ASYNC — the element has not
+  // moved when the caller's next synchronous statement runs, so a hit-test
+  // straight after it reads stale coordinates. Model that, or a gate that
+  // hit-tests before the scroll lands looks fine here and fails on real pages.
+  if (opts.offscreen) {
+    el.scrollIntoView = (o = {}) => {
+      const land = () => {
+        el.__rect = onscreen;
+        hitRegistry.set(`${onscreen.left + 10},10`, el);
+      };
+      if (o.behavior === "smooth") setTimeout(land, 30);
+      else land();
+    };
+  }
   el.getBoundingClientRect = () => el.__rect;
   el.contains = (n) => n === el;
   if (!opts.hidden) hitRegistry.set(`${el.__rect.left + 10},10`, el);
   return el;
 }
 
+// Real document.elementFromPoint RETARGETS: an element inside a shadow tree is
+// reported as its outermost shadow host, and Node.contains does not cross the
+// boundary. Without modelling that, a hit-test bug against shadow DOM is
+// invisible to this suite — which is exactly how one shipped.
 function elementFromPoint(x, y) {
+  const el = hitRegistry.get(`${x},${y}`);
+  if (!el) return null;
+  const hit = el.__coveredBy || el;
+  return hit.__hitHost || hit;
+}
+
+// A shadow root resolves within its own tree — no retargeting past itself.
+function shadowElementFromPoint(x, y) {
   const el = hitRegistry.get(`${x},${y}`);
   if (!el) return null;
   return el.__coveredBy || el;
@@ -486,16 +517,28 @@ function fakeEl(tag, opts = {}) {
       el.__attrs[k] = String(v);
     },
     matches: () => false,
+    getRootNode: () => el.__root || null,
     dispatchEvent(e) {
       if (e.type === "click") el.clicks++;
       return true;
     },
   };
   giveGeometry(el, opts);
-  if (opts.shadow) el.shadowRoot = opts.shadow;
+  const attachShadow = (root) => {
+    root.elementFromPoint = shadowElementFromPoint;
+    for (const d of root.__descendants || []) {
+      if (!d.__hitHost) d.__hitHost = el;
+      if (!d.__root) d.__root = root;
+    }
+  };
+  if (opts.shadow) {
+    el.shadowRoot = opts.shadow;
+    attachShadow(opts.shadow);
+  }
   if (opts.closedShadow) {
     el.shadowRoot = null; // what page script sees for a closed root
     el.__closedRoot = opts.closedShadow;
+    attachShadow(opts.closedShadow);
   }
   return el;
 }
@@ -546,6 +589,7 @@ function fakeField(kind, opts = {}) {
     __attrs: { ...(opts.attrs || {}) },
     getAttribute: (k) => (k in el.__attrs ? el.__attrs[k] : null),
     matches: () => false,
+    getRootNode: () => el.__root || null,
     dispatchEvent(e) {
       el.events.push(e.type);
       return true;
@@ -782,8 +826,20 @@ function frameSearchSandbox(cfg = {}) {
             return;
           }
 
-          // element-targeting actions
-          if (sel && frame.elements[sel]) {
+          // element-targeting actions.
+          // `gated`: the element is present but the actionability gate fails on
+          // the instant probe and passes once polled — a cookie banner clearing.
+          if (sel && frame.gated && frame.gated[sel]) {
+            if (params._noWait) {
+              cb({
+                success: false,
+                error:
+                  "Element not actionable (covered by another element): " + sel,
+              });
+            } else {
+              cb({ success: true, data: frame.gated[sel] });
+            }
+          } else if (sel && frame.elements[sel]) {
             cb({ success: true, data: frame.elements[sel] });
           } else if (sel && params._noWait) {
             // Fast probe — instant miss

@@ -353,8 +353,21 @@
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    const doc = el.ownerDocument || document;
-    const hit = doc.elementFromPoint(cx, cy);
+    // document.elementFromPoint RETARGETS: for an element inside a shadow tree
+    // it reports the outermost host, and Node.contains does not cross shadow
+    // boundaries — so the document's answer can never equal our element and
+    // every shadow-DOM click was rejected as "covered". Ask the element's own
+    // root (ShadowRoot implements elementFromPoint), which resolves inside that
+    // tree.
+    // ponytail: centre point, one root deep. A target covered only at its
+    // centre, or nested hosts that retarget again, are the remaining misses —
+    // widen to a multi-point or composedPath() probe if a real page needs it.
+    const root = typeof el.getRootNode === "function" ? el.getRootNode() : null;
+    const from =
+      root && typeof root.elementFromPoint === "function"
+        ? root
+        : el.ownerDocument || document;
+    const hit = from.elementFromPoint(cx, cy);
     if (!hit) return false;
     return hit === el || el.contains(hit) || hit.contains(el);
   }
@@ -727,7 +740,11 @@
     const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
     const healed = lastHealed;
 
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // "instant", not "smooth": a smooth scroll is asynchronous, so the element
+    // has not moved when waitForActionable runs its first check a statement
+    // later — the hit-test then reads stale off-viewport coordinates and calls
+    // an ordinary below-the-fold button "covered".
+    el.scrollIntoView({ behavior: "instant", block: "center" });
     await waitForActionable(el, params.selector, {
       timeout: params._noWait ? 0 : ELEMENT_WAIT_MS,
     });
@@ -752,7 +769,7 @@
     const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
     const healed = lastHealed;
 
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.scrollIntoView({ behavior: "instant", block: "center" });
     // fill sets the value programmatically, so a covering overlay does not block
     // it the way it blocks a click — visible + enabled is the meaningful gate,
     // no hit-test.
