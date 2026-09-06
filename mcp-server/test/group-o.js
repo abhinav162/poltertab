@@ -100,6 +100,32 @@ async function groupO() {
       ext.ws.close();
     });
   });
+  await test("O8 a corrupt memory file reads as empty instead of throwing", () => {
+    fs.writeFileSync(path.join(MEM_DIR, "o8.example.json"), '{"notes":[{"obst');
+    const m = memory.readMemory("o8.example");
+    assert.deepStrictEqual(m.notes, []);
+    assert.deepStrictEqual(m.selectors, {});
+  });
+
+  await test("O9 a corrupt file cannot brick getSelector on the click path", () => {
+    fs.writeFileSync(path.join(MEM_DIR, "o9.example.json"), "{not json");
+    assert.strictEqual(memory.getSelector("o9.example", "#save"), null);
+  });
+
+  await test("O10 an unwritable store never throws at a caller mid-click", () => {
+    memory.recordSelector("o10.example", "#save", { tag: "button" });
+    // Writes go temp-file-then-rename, so only an unwritable *directory* blocks
+    // them — a read-only file still renames fine.
+    fs.chmodSync(MEM_DIR, 0o500);
+    try {
+      // A completed click must not be reported as a failure because the
+      // bookkeeping write failed afterwards.
+      memory.recordSelector("o10.example", "#other", { tag: "a" });
+      memory.noteSelectorFail("o10.example", "#save");
+    } finally {
+      fs.chmodSync(MEM_DIR, 0o700);
+    }
+  });
 }
 
 module.exports = groupO;
