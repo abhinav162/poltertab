@@ -452,13 +452,43 @@ async function groupP() {
     });
   });
 
-  await test("P20 deriveName is deterministic and caps at three fields", () => {
+  await test("P20 deriveName is deterministic, and two specs never share a name", () => {
     const fields = { Name: 1, "Job Title": 1, salary: 1, url: 1 };
-    assert.strictEqual(recipes.deriveName(fields), "name-job-title-salary");
-    assert.strictEqual(recipes.deriveName(fields), recipes.deriveName(fields));
-    assert.strictEqual(recipes.deriveName({ name: 1, title: 1, salary: 1 }), "name-title-salary");
-    assert.strictEqual(recipes.deriveName({}), "default");
-    assert.strictEqual(recipes.deriveName(undefined), "default");
+    const name = recipes.deriveName(fields, ".card");
+    assert.ok(/^name-job-title-salary-[0-9a-f]{4}$/.test(name), name);
+    assert.strictEqual(recipes.deriveName(fields, ".card"), name, "not deterministic");
+    assert.ok(
+      /^name-title-salary-[0-9a-f]{4}$/.test(
+        recipes.deriveName({ name: 1, title: 1, salary: 1 }, ".card"),
+      ),
+      recipes.deriveName({ name: 1, title: 1, salary: 1 }, ".card"),
+    );
+    assert.ok(/^default-[0-9a-f]{4}$/.test(recipes.deriveName({})), recipes.deriveName({}));
+    assert.ok(/^default-[0-9a-f]{4}$/.test(recipes.deriveName(undefined)));
+
+    // The readable stem still stops at three fields, so {title, company, link,
+    // salary} and {title, company, link} share it. The digest is what stops the
+    // three-field spec from being written over the four-field recipe's
+    // `extract` — which lost `salary` from the stored spec and its baseline
+    // with nothing said.
+    const four = { title: 1, company: 1, link: 1, salary: 1 };
+    const three = { title: 1, company: 1, link: 1 };
+    assert.notStrictEqual(
+      recipes.deriveName(four, ".card"),
+      recipes.deriveName(three, ".card"),
+      "two different specs derived one name",
+    );
+    // The record selector is part of a spec's identity too.
+    assert.notStrictEqual(
+      recipes.deriveName(three, ".card"),
+      recipes.deriveName(three, ".row"),
+    );
+    // And the same spec IS the same task: that collision is the intended one,
+    // or two runs accumulate near-duplicate recipes.
+    assert.strictEqual(
+      recipes.deriveName({ title: 1, company: 1, link: 1 }, ".card"),
+      recipes.deriveName(three, ".card"),
+    );
   });
 
   await test("P21 redactValue drops a value that looks like a secret", () => {
@@ -609,6 +639,9 @@ async function groupP() {
         };
       } else {
         data = { ok: true, tabId: TAB };
+        // The real extension echoes back the value it typed, which is what
+        // P56 checks the server strips for a redacted fill.
+        if (m.value !== undefined) data.value = m.value;
         const fp = (cfg.fingerprints || {})[m.selector];
         if (fp) data.fingerprint = fp;
       }
@@ -649,6 +682,21 @@ async function groupP() {
       url: { sel: "a.name", get: "href" },
     },
   };
+
+  const ROW_SPEC = {
+    record: ".row",
+    fields: {
+      title: { sel: "h3", get: "text" },
+      pay: { sel: ".pay", get: "text" },
+    },
+  };
+
+  // The names the server derives for those two specs. Pinning the literal
+  // digest here would assert the hash rather than the rule; what the rule
+  // promises is that one spec always lands on one name and two specs never
+  // land on the same one, which P20 and P51 assert directly.
+  const LIVE_NAME = recipes.deriveName(LIVE_SPEC.fields, LIVE_SPEC.record);
+  const ROW_NAME = recipes.deriveName(ROW_SPEC.fields, ROW_SPEC.record);
 
   // A seeded recipe, as the server would have written it: the two-field spec
   // above plus one variant carrying the baseline a replay is judged against.
@@ -709,7 +757,7 @@ async function groupP() {
       assert.strictEqual(first.rows.length, 12, JSON.stringify(first).slice(0, 300));
       assert.strictEqual(
         first.learned_recipe,
-        "name-url/default",
+        `${LIVE_NAME}/default`,
         `nothing was learned: ${JSON.stringify(first).slice(0, 300)}`,
       );
 
@@ -725,7 +773,7 @@ async function groupP() {
       assert.deepStrictEqual(Object.keys(last.fields).sort(), ["name", "url"]);
       assert.deepStrictEqual(
         Object.keys(store().recipes["/search"]),
-        ["name-url"],
+        [LIVE_NAME],
         JSON.stringify(store().recipes),
       );
     });
@@ -738,7 +786,11 @@ async function groupP() {
       const out = jsonOf(await call(srv, "browser_extract", {}));
       // Without this the model cannot tell a replayed spec from its own, and a
       // stale recipe's rows read as a fresh extraction.
-      assert.strictEqual(out.used_recipe, "name-url/default", JSON.stringify(out).slice(0, 300));
+      assert.strictEqual(
+        out.used_recipe,
+        `${LIVE_NAME}/default`,
+        JSON.stringify(out).slice(0, 300),
+      );
       assert.strictEqual(out.stale, undefined, "a clean replay reported stale");
     });
   });
@@ -767,24 +819,21 @@ async function groupP() {
     await withRecipeServer({}, async ({ srv, ext }) => {
       await call(srv, "browser_navigate", { url: "http://t/search" });
       await call(srv, "browser_extract", { ...LIVE_SPEC });
-      await call(srv, "browser_extract", {
-        record: ".row",
-        fields: { title: { sel: "h3", get: "text" }, pay: { sel: ".pay", get: "text" } },
-      });
+      await call(srv, "browser_extract", { ...ROW_SPEC });
       const before = ext.extracts.length;
 
       const reply = await call(srv, "browser_extract", {});
       assert.ok(reply.result.isError, "the server guessed between two recipes");
       const text = textOf(reply);
-      assert.ok(/name-url/.test(text), text);
-      assert.ok(/title-pay/.test(text), text);
+      assert.ok(text.includes(LIVE_NAME), text);
+      assert.ok(text.includes(ROW_NAME), text);
       assert.strictEqual(ext.extracts.length, before, "extracted anyway");
 
       // Naming one resolves it.
       const picked = jsonOf(
-        await call(srv, "browser_extract", { recipe: "title-pay" }),
+        await call(srv, "browser_extract", { recipe: ROW_NAME }),
       );
-      assert.strictEqual(picked.used_recipe, "title-pay/default");
+      assert.strictEqual(picked.used_recipe, `${ROW_NAME}/default`);
       assert.strictEqual(
         ext.extracts[ext.extracts.length - 1].record,
         ".row",
@@ -821,14 +870,18 @@ async function groupP() {
       const bucket = store().recipes["/search"];
       assert.deepStrictEqual(
         Object.keys(bucket),
-        ["name-url"],
+        [LIVE_NAME],
         `the same task was learned twice: ${Object.keys(bucket)}`,
       );
       assert.deepStrictEqual(
-        Object.keys(bucket["name-url"].variants).sort(),
+        Object.keys(bucket[LIVE_NAME].variants).sort(),
         ["default", "mobile"],
       );
-      assert.strictEqual(out.learned_recipe, "name-url/mobile", JSON.stringify(out).slice(0, 300));
+      assert.strictEqual(
+        out.learned_recipe,
+        `${LIVE_NAME}/mobile`,
+        JSON.stringify(out).slice(0, 300),
+      );
     });
   });
 
@@ -872,7 +925,15 @@ async function groupP() {
       await call(srv, "browser_navigate", { url: "http://t/search" });
       await call(srv, "browser_click", { selector: "#facet-eng" });
       await call(srv, "browser_extract", { ...LIVE_SPEC });
-      const steps = store().recipes["/search"]["name-url"].variants.default.steps;
+      // And the slice is filed under the preamble that produced it, not under
+      // "default" — see P48 for what sharing "default" cost.
+      const variants = store().recipes["/search"][LIVE_NAME].variants;
+      assert.deepStrictEqual(
+        Object.keys(variants),
+        ["click.facet-eng"],
+        JSON.stringify(Object.keys(variants)),
+      );
+      const steps = variants["click.facet-eng"].steps;
       assert.deepStrictEqual(
         steps.map((s) => s.selector),
         ["#facet-eng"],
@@ -889,7 +950,7 @@ async function groupP() {
       await call(srv, "browser_navigate", { url: "http://t/search", session: "s2" });
       await call(srv, "browser_extract", { ...LIVE_SPEC, session: "s2" });
 
-      const steps = store().recipes["/search"]["name-url"].variants.default.steps;
+      const steps = store().recipes["/search"][LIVE_NAME].variants.default.steps;
       assert.deepStrictEqual(
         steps,
         [],
@@ -916,7 +977,13 @@ async function groupP() {
         await call(srv, "browser_fill", { selector: "#q", value: "remote" });
         await call(srv, "browser_extract", { ...LIVE_SPEC });
 
-        const steps = store().recipes["/search"]["name-url"].variants.default.steps;
+        const variants = store().recipes["/search"][LIVE_NAME].variants;
+        assert.deepStrictEqual(
+          Object.keys(variants),
+          ["fill.login-pw+fill.otp-code+fill.q"],
+          JSON.stringify(Object.keys(variants)),
+        );
+        const steps = Object.values(variants)[0].steps;
         const bySel = Object.fromEntries(steps.map((s) => [s.selector, s]));
         for (const sel of ["#login-pw", "#otp-code"]) {
           assert.strictEqual(bySel[sel].redacted, true, `${sel} not marked redacted`);
@@ -939,7 +1006,7 @@ async function groupP() {
       await call(srv, "browser_navigate", { url: "http://t/search" });
       await call(srv, "browser_extract", { ...LIVE_SPEC });
 
-      const steps = store().recipes["/search"]["name-url"].variants.default.steps;
+      const steps = store().recipes["/search"][LIVE_NAME].variants.default.steps;
       assert.deepStrictEqual(
         steps,
         [],
@@ -981,7 +1048,7 @@ async function groupP() {
     );
   });
 
-  await test("P40 zero records on a replay reports the record selector as gone", async () => {
+  await test("P40 zero records on a replay reports stale and names the causes", async () => {
     await withRecipeServer(
       { seed: seededStore(), ext: { rows: () => [], records_found: 0 } },
       async ({ srv }) => {
@@ -1047,8 +1114,12 @@ async function groupP() {
         }),
       );
       assert.strictEqual(first.count, 12, JSON.stringify(first).slice(0, 300));
-      assert.strictEqual(first.learned_recipe, "name-url/default", JSON.stringify(first).slice(0, 300));
-      const stored = store().recipes["/agents"]["name-url"];
+      assert.strictEqual(
+        first.learned_recipe,
+        `${LIVE_NAME}/default`,
+        JSON.stringify(first).slice(0, 300),
+      );
+      const stored = store().recipes["/agents"][LIVE_NAME];
       assert.strictEqual(stored.extract.url_template, template, JSON.stringify(stored.extract));
 
       const before = ext.extracts.length;
@@ -1059,7 +1130,11 @@ async function groupP() {
           limit: 12,
         }),
       );
-      assert.strictEqual(second.used_recipe, "name-url/default", JSON.stringify(second).slice(0, 300));
+      assert.strictEqual(
+        second.used_recipe,
+        `${LIVE_NAME}/default`,
+        JSON.stringify(second).slice(0, 300),
+      );
       assert.strictEqual(second.count, 12, JSON.stringify(second).slice(0, 300));
       assert.strictEqual(
         ext.extracts[before].record,
@@ -1080,8 +1155,411 @@ async function groupP() {
       assert.strictEqual(out.rows, 12, JSON.stringify(out).slice(0, 300));
       // The run that wrote to disk is exactly the run where the model cannot
       // see the rows for itself, so dropping used_recipe here hides a replay.
-      assert.strictEqual(out.used_recipe, "name-url/default", JSON.stringify(out).slice(0, 300));
+      assert.strictEqual(
+        out.used_recipe,
+        `${LIVE_NAME}/default`,
+        JSON.stringify(out).slice(0, 300),
+      );
     });
+  });
+
+  console.log("\nP. variant identity, name collisions, and what a replay says");
+
+  await test("P45 deriveVariant keys a slice on its preamble, in seq order", () => {
+    const eng = [
+      { seq: 0, action: "click", selector: "#facet-eng" },
+      { seq: 1, action: "click", selector: "#facet-remote" },
+    ];
+    assert.strictEqual(
+      recipes.deriveVariant(eng),
+      "click.facet-eng+click.facet-remote",
+      recipes.deriveVariant(eng),
+    );
+    assert.strictEqual(recipes.deriveVariant(eng), recipes.deriveVariant(eng), "not deterministic");
+
+    // A task with no preamble genuinely has one slice.
+    assert.strictEqual(recipes.deriveVariant([]), "default");
+    assert.strictEqual(recipes.deriveVariant(undefined), "default");
+
+    // Read in seq order, never in arrival order, or one slice mints a second
+    // variant depending on how its steps happened to be buffered.
+    assert.strictEqual(
+      recipes.deriveVariant([{ ...eng[1] }, { ...eng[0] }]),
+      recipes.deriveVariant(eng),
+    );
+
+    // Two preambles are two slices.
+    assert.notStrictEqual(
+      recipes.deriveVariant(eng),
+      recipes.deriveVariant([{ seq: 0, action: "click", selector: "#facet-design" }]),
+    );
+    // Same selector, different action: a fill on #q and a click on #q leave
+    // the page in different states, so they are not one slice.
+    assert.notStrictEqual(
+      recipes.deriveVariant([{ seq: 0, action: "fill", selector: "#q" }]),
+      recipes.deriveVariant([{ seq: 0, action: "click", selector: "#q" }]),
+    );
+  });
+
+  await test("P46 deriveVariant ignores fill values and scroll counts", () => {
+    const term = (value) => [{ seq: 0, action: "fill", selector: "#q", value }];
+    // Keying on the value would make variants unbounded: every search term
+    // typed into one box would mint a slice and churn the cap.
+    assert.strictEqual(
+      recipes.deriveVariant(term("remote")),
+      recipes.deriveVariant(term("onsite")),
+      "every search term minted its own variant",
+    );
+    // And a redacted fill has no value to key on in the first place.
+    assert.strictEqual(
+      recipes.deriveVariant([{ seq: 0, action: "fill", selector: "#q", redacted: true }]),
+      recipes.deriveVariant(term("remote")),
+    );
+
+    const scroll = (count) => [{ seq: 0, action: "smart_scroll", selector: null, count }];
+    assert.strictEqual(
+      recipes.deriveVariant(scroll(5)),
+      recipes.deriveVariant(scroll(40)),
+      "scrolling further was treated as a different slice of the task",
+    );
+  });
+
+  await test("P47 a preamble past the label cap is truncated but stays distinct", () => {
+    const long = (tail) =>
+      Array.from({ length: 12 }, (_, i) => ({
+        seq: i,
+        action: "click",
+        selector: `#facet-number-${i}${i === 11 ? tail : ""}`,
+      }));
+    const a = recipes.deriveVariant(long("a"));
+    const b = recipes.deriveVariant(long("b"));
+    assert.ok(a.length <= recipes.VARIANT_LABEL_CAP + 8, `${a.length}: ${a}`);
+    assert.strictEqual(a, recipes.deriveVariant(long("a")), "not deterministic past the cap");
+    assert.notStrictEqual(
+      a,
+      b,
+      "two long preambles sharing a prefix collapsed into one variant",
+    );
+  });
+
+  await test("P48 two preambles over one spec are two variants with two baselines", () => {
+    const host = "p48.example";
+    const ctx = { host, pattern: "/search", hydrated: false };
+    const spec = {
+      record: ".card",
+      fields: {
+        title: { sel: "h3", get: "text" },
+        salary: { sel: ".pay", get: "text" },
+      },
+    };
+    const seen = (fill_rates) => result({ fill_rates });
+
+    // Slice one: the eng+remote facets, where salary is filled on 11 of 12.
+    recipes.noteStep("p48", { action: "click", selector: "#facet-eng", path: "/search" });
+    recipes.noteStep("p48", { action: "click", selector: "#facet-remote", path: "/search" });
+    const eng = recipes.observe({
+      action: "extract",
+      args: { ...spec },
+      result: seen({ title: 12, salary: 11 }),
+      ctx,
+      targetKey: "p48",
+    });
+
+    // Slice two: an IDENTICAL spec behind different facets, where salary is
+    // barely populated at all.
+    recipes.noteStep("p48", { action: "click", selector: "#facet-design", path: "/search" });
+    recipes.noteStep("p48", { action: "click", selector: "#facet-onsite", path: "/search" });
+    const design = recipes.observe({
+      action: "extract",
+      args: { ...spec },
+      result: seen({ title: 12, salary: 1 }),
+      ctx,
+      targetKey: "p48",
+    });
+
+    assert.notStrictEqual(
+      eng.learned_recipe,
+      design.learned_recipe,
+      "the second slice was written over the first",
+    );
+    const bucket = memory.getRecipes(host, "/search");
+    const names = Object.keys(bucket);
+    assert.strictEqual(names.length, 1, `one spec became ${names.length} recipes: ${names}`);
+    const variants = bucket[names[0]].variants;
+    assert.strictEqual(
+      Object.keys(variants).length,
+      2,
+      `two slices shared one variant: ${JSON.stringify(Object.keys(variants))}`,
+    );
+    assert.deepStrictEqual(
+      Object.values(variants)
+        .map((v) => v.baseline.salary)
+        .sort(),
+      [1 / 12, 11 / 12],
+      "one slice's baseline overwrote the other's",
+    );
+
+    // The point of keeping them apart: judged against its OWN bar, the eng
+    // slice can still report salary collapsing. Under a shared "default" the
+    // 8% baseline won, and collapsed() skips any baseline below 0.5 — so
+    // salary on this recipe could never be reported stale again.
+    const engEntry = variants[eng.learned_recipe.split("/")[1]];
+    assert.deepStrictEqual(
+      recipes.collapsed(engEntry.baseline, { title: 1, salary: 0.08 }, 0.5),
+      ["salary"],
+      JSON.stringify(engEntry.baseline),
+    );
+  });
+
+  await test("P49 a replay drains the step buffer instead of lending it forward", () => {
+    memory.putRecipe("p49.example", "/search", "titles", recipe("click.facet-eng", 10));
+    recipes.noteStep("p49", { action: "click", selector: "#facet-eng", path: "/search" });
+    const patch = recipes.observe({
+      action: "extract",
+      args: {},
+      result: result(),
+      ctx: {
+        host: "p49.example",
+        pattern: "/search",
+        name: "titles",
+        variant: "click.facet-eng",
+        baseline: { name: 1 },
+        hydrated: true,
+      },
+      targetKey: "p49",
+    });
+    assert.strictEqual(patch.used_recipe, "titles/click.facet-eng");
+    assert.deepStrictEqual(
+      recipes.takeSteps("p49"),
+      [],
+      "a replay's steps survived to be merged into the next slice's preamble",
+    );
+  });
+
+  await test("P50 a replay's preamble does not follow the next slice into the store", async () => {
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+
+      // A replay in between, with a click of its own. Both have already served
+      // their purpose by the time it returns.
+      await call(srv, "browser_click", { selector: "#page-size-100" });
+      const replay = jsonOf(await call(srv, "browser_extract", {}));
+      assert.strictEqual(
+        replay.used_recipe,
+        `${LIVE_NAME}/click.facet-eng`,
+        JSON.stringify(replay).slice(0, 300),
+      );
+
+      await call(srv, "browser_click", { selector: "#facet-design" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+
+      const variants = store().recipes["/search"][LIVE_NAME].variants;
+      assert.deepStrictEqual(
+        Object.keys(variants).sort(),
+        ["click.facet-design", "click.facet-eng"],
+        JSON.stringify(Object.keys(variants)),
+      );
+      assert.deepStrictEqual(
+        variants["click.facet-design"].steps.map((s) => s.selector),
+        ["#facet-design"],
+        `a replay's preamble was attributed to the next slice: ${JSON.stringify(
+          variants["click.facet-design"].steps,
+        )}`,
+      );
+    });
+  });
+
+  await test("P51 a spec and its three-field prefix are two recipes, not one", async () => {
+    const three = {
+      record: ".card",
+      fields: {
+        title: { sel: "h3", get: "text" },
+        company: { sel: ".co", get: "text" },
+        link: { sel: "a", get: "href" },
+      },
+    };
+    const four = {
+      record: ".card",
+      fields: { ...three.fields, salary: { sel: ".pay", get: "text" } },
+    };
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_extract", { ...four });
+      await call(srv, "browser_extract", { ...three });
+
+      const bucket = store().recipes["/search"];
+      const names = Object.keys(bucket);
+      assert.strictEqual(names.length, 2, `two specs collapsed onto one name: ${names}`);
+      const stored = names.map((n) => Object.keys(bucket[n].extract.fields).sort().join(","));
+      // The three-field spec used to be written straight over the four-field
+      // recipe's `extract`, and `salary` was gone from the spec and from the
+      // baseline with nothing said about it.
+      assert.ok(
+        stored.includes("company,link,salary,title"),
+        `the four-field spec lost a field: ${JSON.stringify(stored)}`,
+      );
+      assert.ok(stored.includes("company,link,title"), JSON.stringify(stored));
+    });
+  });
+
+  await test("P52 an explicit remember name cannot destroy the recipe under it", () => {
+    const host = "p52.example";
+    const ctx = { host, pattern: "/search", hydrated: false };
+    const fields = {
+      title: { sel: "h3", get: "text" },
+      company: { sel: ".co", get: "text" },
+      link: { sel: "a", get: "href" },
+    };
+    const four = { record: ".card", fields: { ...fields, salary: { sel: ".pay", get: "text" } } };
+    const three = { record: ".card", fields };
+
+    const first = recipes.observe({
+      action: "extract",
+      args: { ...four, remember: "jobs" },
+      result: result(),
+      ctx,
+      targetKey: "p52",
+    });
+    assert.strictEqual(first.learned_recipe, "jobs/default", JSON.stringify(first));
+
+    const second = recipes.observe({
+      action: "extract",
+      args: { ...three, remember: "jobs" },
+      result: result(),
+      ctx,
+      targetKey: "p52",
+    });
+    const bucket = memory.getRecipes(host, "/search");
+    assert.deepStrictEqual(
+      Object.keys(bucket.jobs.extract.fields).sort(),
+      ["company", "link", "salary", "title"],
+      "an explicit name overwrote another spec's recipe",
+    );
+
+    // Stored beside it, and the model told where to find it — a name it cannot
+    // have is more useful said out loud than silently honoured.
+    assert.ok(second.learned_recipe.startsWith("jobs-"), second.learned_recipe);
+    const alt = second.learned_recipe.split("/")[0];
+    assert.ok(bucket[alt], `${alt} was not stored: ${Object.keys(bucket)}`);
+    assert.deepStrictEqual(
+      Object.keys(bucket[alt].extract.fields).sort(),
+      ["company", "link", "title"],
+    );
+    assert.ok(
+      (second.warnings || []).some((w) => /already describes a different extract spec/.test(w)),
+      JSON.stringify(second.warnings),
+    );
+    assert.ok(
+      (second.warnings || []).some((w) => w.includes(alt)),
+      "the warning never names what to replay instead",
+    );
+  });
+
+  await test("P53 variants are capped per recipe, evicting the stalest slice", () => {
+    // lastOk ascending, so v0 is the stalest slice and v11 the freshest.
+    for (let i = 0; i < 12; i++)
+      memory.putRecipe("p53.example", "/jobs", "titles", recipe("v" + i, 1000 + i));
+    const keys = Object.keys(
+      memory.getRecipe("p53.example", "/jobs", "titles").variants,
+    );
+    assert.strictEqual(memory.VARIANTS_CAP, 8);
+    // evictRecipes counts recipes, not variants: without this cap one site
+    // with many facet combinations grows one recipe without bound.
+    assert.strictEqual(keys.length, memory.VARIANTS_CAP, `cap not enforced: ${keys}`);
+    assert.ok(!keys.includes("v3"), `a stale slice survived eviction: ${keys}`);
+    assert.ok(keys.includes("v4"), `evicted one too many: ${keys}`);
+    assert.ok(keys.includes("v11"), "the freshest slice was evicted");
+  });
+
+  await test("P54 noteRecipeFail reports what it deleted", () => {
+    const fail = () => memory.noteRecipeFail("p54.example", "/jobs", "titles", "remote");
+    memory.putRecipe("p54.example", "/jobs", "titles", recipe("remote", 10));
+    memory.putRecipe("p54.example", "/jobs", "titles", recipe("onsite", 20));
+    assert.deepStrictEqual(fail(), { variant: false, recipe: false, fails: 1 });
+    fail();
+    // The slice goes; the recipe survives on its other one.
+    assert.deepStrictEqual(fail(), { variant: true, recipe: false, fails: 3 });
+
+    const onsite = () => memory.noteRecipeFail("p54.example", "/jobs", "titles", "onsite");
+    onsite();
+    onsite();
+    assert.deepStrictEqual(onsite(), { variant: true, recipe: true, fails: 3 });
+    // A miss against something that was never learned reports nothing gone,
+    // rather than throwing on the extract path.
+    assert.deepStrictEqual(onsite(), { variant: false, recipe: false, fails: 0 });
+  });
+
+  await test("P55 a recipe forgotten after three stale replays says so", async () => {
+    await withRecipeServer(
+      { seed: seededStore(), ext: { rows: salaryGone } },
+      async ({ srv, store }) => {
+        await call(srv, "browser_navigate", { url: "http://t/search" });
+        const outs = [];
+        for (let i = 0; i < 3; i++) outs.push(jsonOf(await call(srv, "browser_extract", {})));
+
+        const early = (outs[0].warnings || []).join(" ");
+        assert.ok(!/forgotten/.test(early), `announced before it happened: ${early}`);
+
+        // Unsaid, the model expects a recipe to be there next time and gets an
+        // error instead of reaching for a snapshot.
+        const last = (outs[2].warnings || []).join(" ");
+        assert.ok(/forgotten/.test(last), last);
+        assert.ok(/name-salary/.test(last), last);
+        assert.ok(/snapshot/.test(last), last);
+        assert.deepStrictEqual(store().recipes, {}, "the recipe outlived the warning");
+      },
+    );
+  });
+
+  await test("P56 a redacted fill's echoed value is stripped, a plain one's is not", async () => {
+    await withRecipeServer(
+      {
+        ext: {
+          fingerprints: {
+            "#login-pw": { tag: "input", attrs: { type: "password" } },
+            "#q": { tag: "input", attrs: { type: "text", name: "q" } },
+          },
+        },
+      },
+      async ({ srv }) => {
+        await call(srv, "browser_navigate", { url: "http://t/search" });
+        // Keeping the password out of the store is no use if the echo puts it
+        // in the model's context and from there into the transcript.
+        const secret = jsonOf(
+          await call(srv, "browser_fill", { selector: "#login-pw", value: "hunter2x" }),
+        );
+        assert.ok(
+          !JSON.stringify(secret).includes("hunter2x"),
+          `the value was echoed back: ${JSON.stringify(secret)}`,
+        );
+
+        // A plain fill echoing its value is worth reading, so only a redacted
+        // one loses it.
+        const plain = jsonOf(
+          await call(srv, "browser_fill", { selector: "#q", value: "remote" }),
+        );
+        assert.strictEqual(plain.value, "remote", JSON.stringify(plain));
+      },
+    );
+  });
+
+  await test("P57 a zero-record replay names the preamble, not just the selector", async () => {
+    await withRecipeServer(
+      { seed: seededStore(), ext: { rows: () => [], records_found: 0 } },
+      async ({ srv }) => {
+        await call(srv, "browser_navigate", { url: "http://t/search" });
+        const out = jsonOf(await call(srv, "browser_extract", {}));
+        const warn = (out.warnings || []).join(" ");
+        // The likelier cause is a page that was never put back into the state
+        // the recipe was learned in, and the spec is perfectly correct. Naming
+        // only the selector sent the model off rewriting a spec that was fine.
+        assert.ok(/preamble/.test(warn), warn);
+        assert.ok(/get_site_memory/.test(warn), warn);
+        assert.ok(/record selector/.test(warn), warn);
+      },
+    );
   });
 }
 

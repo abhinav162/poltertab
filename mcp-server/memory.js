@@ -74,6 +74,11 @@ const SELECTORS_CAP = 200;
 // tighter, and count across path patterns because the file size is what the
 // cap actually protects.
 const RECIPES_CAP = 20;
+// And per recipe: a site with many facet combinations learns one variant per
+// combination under a single name, and evictRecipes counts recipes rather than
+// variants, so without this one recipe on one path pattern grows without
+// bound. Eight is enough slices of one task to be worth keeping.
+const VARIANTS_CAP = 8;
 // A selector that keeps missing even with its fingerprint has drifted past
 // recognition — stop trusting it rather than relocating against a dead signature.
 const MAX_FAILS = 3;
@@ -138,9 +143,13 @@ function writeMemory(rawHost, data) {
 // The selector store is bookkeeping for an action that already happened, so a
 // failed write must never surface as a failed click — the agent would retry and
 // double-submit. saveMemory stays strict: it IS the user's action.
+//
+// Whatever fn returned comes back out, so noteRecipeFail can report what it
+// deleted. A throw reads as undefined, which is the right answer either way: a
+// write that failed deleted nothing.
 function bestEffort(fn) {
   try {
-    fn();
+    return fn();
   } catch (_) {
     // Read-only or full home: keep the healing we cannot persist to ourselves.
   }
@@ -291,28 +300,54 @@ function putRecipe(rawHost, pattern, name, recipe) {
         ...(recipe.variants || {}),
       },
     };
+    evictVariants(bucket[name].variants);
     evictRecipes(data.recipes);
     writeMemory(rawHost, data);
   });
 }
 
+// What was deleted, so the caller can say so: a recipe that vanished under the
+// agent is a recipe it will expect to be there next time. Undefined when the
+// write failed — see bestEffort.
 function noteRecipeFail(rawHost, pattern, name, variant) {
-  bestEffort(() => {
+  return bestEffort(() => {
     const data = readMemory(rawHost);
     const bucket = data.recipes[pattern];
     const recipe = bucket && bucket[name];
     const entry = recipe && recipe.variants && recipe.variants[variant];
-    if (!entry) return;
+    if (!entry) return { variant: false, recipe: false, fails: 0 };
     entry.failCount = (entry.failCount || 0) + 1;
+    const dropped = { variant: false, recipe: false, fails: entry.failCount };
     if (entry.failCount >= MAX_FAILS) {
       delete recipe.variants[variant];
+      dropped.variant = true;
       // Unwind the empty levels above it, or the file accumulates husks that
       // every later read has to page in and every hint has to filter out.
-      if (!Object.keys(recipe.variants).length) delete bucket[name];
+      if (!Object.keys(recipe.variants).length) {
+        delete bucket[name];
+        dropped.recipe = true;
+      }
       if (!Object.keys(bucket).length) delete data.recipes[pattern];
     }
     writeMemory(rawHost, data);
+    return dropped;
   });
+}
+
+// Oldest slice of one task first, by the same rule as evictSelectors. Keyed on
+// lastOk rather than on insertion order because the variant nothing has
+// replayed in weeks is the one worth losing.
+function evictVariants(variants) {
+  const keys = Object.keys(variants || {});
+  if (keys.length <= VARIANTS_CAP) return;
+  keys
+    .sort(
+      (a, b) =>
+        ((variants[a] && variants[a].lastOk) || 0) -
+        ((variants[b] && variants[b].lastOk) || 0),
+    )
+    .slice(0, keys.length - VARIANTS_CAP)
+    .forEach((k) => delete variants[k]);
 }
 
 // Bound the store the way evictSelectors does, but across path patterns: a
@@ -366,6 +401,7 @@ module.exports = {
   recordSelector,
   noteSelectorFail,
   RECIPES_CAP,
+  VARIANTS_CAP,
   pathPattern,
   getRecipes,
   getRecipe,

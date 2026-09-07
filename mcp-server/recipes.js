@@ -7,6 +7,10 @@
 // which matters because these are the rules that decide whether a wrong spec
 // gets written down as truth and replayed for weeks.
 
+// A built-in, so the 2-dependency footprint is unchanged. Used only to keep
+// derived names and derived variants distinct — never for secrecy.
+const { createHash } = require("crypto");
+
 // --- Fill-rate staleness ---
 //
 // The one implementation of the rule. It used to live inline in the pagination
@@ -128,18 +132,6 @@ function qualityOk(result, spec) {
 }
 
 // --- Naming ---
-//
-// Derived from the fields alone: no clock, no counter, no hash. Two runs of the
-// same task must land on the same recipe rather than accumulating
-// "agents-2", "agents-3" until the store is a pile of near-duplicates. The
-// collision is the point — the same field set *is* the same task.
-function deriveName(fields) {
-  const parts = Object.keys(fields || {})
-    .slice(0, 3)
-    .map((k) => k.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
-    .filter(Boolean);
-  return parts.length ? parts.join("-") : "default";
-}
 
 // Recursive key sort, so two specs that differ only in the order their fields
 // were declared serialise identically.
@@ -153,6 +145,95 @@ function canonical(value) {
   return value;
 }
 
+// The one definition of spec identity. deriveName's digest and sameSpec both
+// read it, so a derived name can never disagree with the merge check that
+// decides whether two runs are describing the same task — and it is that
+// disagreement, not the truncation on its own, that lost a field.
+function specShape(spec) {
+  return JSON.stringify(
+    canonical({
+      record: spec && spec.record,
+      fields: (spec && spec.fields) || {},
+    }),
+  );
+}
+
+function specDigest(spec, chars) {
+  return createHash("sha1").update(specShape(spec)).digest("hex").slice(0, chars);
+}
+
+// Lowercase, punctuation collapsed to single hyphens. Emits nothing outside
+// [a-z0-9-], which is what lets deriveVariant use "." and "+" as separators no
+// slug can forge.
+function slugify(value) {
+  return String(value == null ? "" : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// Derived from the spec alone: no clock, no counter. Two runs of the same task
+// must land on the same recipe rather than accumulating "agents-2", "agents-3"
+// until the store is a pile of near-duplicates. That collision is the intended
+// one — the same spec *is* the same task.
+//
+// The field names alone were not enough. Truncating to three of them made
+// {title, company, link, salary} and {title, company, link} both
+// "title-company-link"; sameSpec then correctly reported two different tasks,
+// so no variant merge happened, and putRecipe overwrote the stored `extract`
+// under that name — the four-field recipe lost `salary` from both its spec and
+// its baseline, silently. The digest is taken over the same {record, fields}
+// sameSpec compares, so two different specs cannot land on one name. Four hex
+// chars is short enough to read and the collision guard in observe() covers
+// the remainder.
+function deriveName(fields, record) {
+  const parts = Object.keys(fields || {}).slice(0, 3).map(slugify).filter(Boolean);
+  const stem = parts.length ? parts.join("-") : "default";
+  return `${stem}-${specDigest({ record, fields }, 4)}`;
+}
+
+// A variant IS the preamble that produced it. Without that, two slices of one
+// task — the same spec run after two different facet clicks — both wrote to
+// "default", and the second overwrote the first's baseline. The replay then
+// read clean against the wrong bar, and because collapsed() skips any field
+// whose baseline is below 0.5, a field that had collapsed to 8% could never be
+// reported stale on that recipe again.
+//
+// Keyed on action + selector per step, in seq order, and on nothing else:
+//
+//   - Fill VALUES are excluded. Keying on them would make variants unbounded —
+//     every search term typed into one box would mint a slice and churn the
+//     cap — and a redacted fill has no value to key on in the first place. The
+//     accepted consequence is that two different search terms through the same
+//     box share a variant, which is fine: the same fields are present either
+//     way, so one baseline is the right bar for both.
+//   - A scroll's `count` is excluded. Scrolling 5 times or 10 to load the same
+//     list is not a different slice of the task.
+//
+// The action stays in the label rather than being dropped for readability: a
+// fill on #q and a click on #q leave the page in different states, and letting
+// them share a variant would be the same overwrite one level down.
+const VARIANT_LABEL_CAP = 64;
+
+function deriveVariant(steps) {
+  const ordered = (steps || [])
+    .filter((s) => s && s.action)
+    .slice()
+    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  // A task with no preamble genuinely has one slice.
+  if (!ordered.length) return "default";
+
+  const label = ordered.map((s) => `${s.action}.${slugify(s.selector)}`).join("+");
+  if (label.length <= VARIANT_LABEL_CAP) return label;
+  // Past the cap the label has stopped being readable anyway: keep a head for
+  // a human and let the digest carry the distinctness, so two long preambles
+  // sharing a prefix do not share a variant. The digest suffix is longer than
+  // the separators trimmed off the head, so a truncated label always outruns
+  // the cap and can never collide with an untruncated one.
+  const digest = createHash("sha1").update(label).digest("hex").slice(0, 6);
+  return `${label.slice(0, VARIANT_LABEL_CAP).replace(/[-.+]+$/, "")}-${digest}`;
+}
+
 // Decides "same task, new page variant" against "a second recipe". Only the
 // extraction contract counts: anchor, url_template, max_text and targeting are
 // per-run choices, not identity. Nothing looser than exact equality of
@@ -160,9 +241,7 @@ function canonical(value) {
 // recipe, and the resulting rows look like data.
 function sameSpec(a, b) {
   if (!a || !b) return false;
-  const shape = (s) =>
-    JSON.stringify(canonical({ record: s.record, fields: s.fields || {} }));
-  return shape(a) === shape(b);
+  return specShape(a) === specShape(b);
 }
 
 // --- Redaction ---
@@ -455,19 +534,28 @@ function observed({ action, args, result, ctx, targetKey }) {
   const warnings = [...(result.warnings || [])];
   const patch = {};
 
+  // Drained on EVERY extract that reaches here, replay or learn. A replay's
+  // buffered steps have already served their purpose, and leaving them behind
+  // attributed one slice's preamble to the next: two independent two-click
+  // slices came back out of the store as one four-click preamble.
+  const steps = takeSteps(targetKey);
+
   if (ctx.hydrated) {
     patch.used_recipe = `${ctx.name}/${ctx.variant}`;
     const ratios = ratiosOf(view);
-    // Zero records is not a degraded page, it is the record selector being
-    // gone: there is nothing left to measure a fill rate against.
+    // Zero records leaves nothing to measure a fill rate against, so it is
+    // judged on its own rather than as a collapsed column.
     const dead = view.records_found === 0;
     const gone = dead ? [] : collapsed(ctx.baseline, ratios, a.fill_tolerance);
     if (dead || gone.length) {
-      noteRecipeFail(ctx.host, ctx.pattern, ctx.name, ctx.variant);
       patch.stale = true;
       warnings.push(
+        // Two causes, and the likelier one is not a broken spec: the page is
+        // simply not in the state the recipe was learned in because its
+        // preamble was never reissued. Naming only the selector sent the model
+        // off rewriting a spec that was correct.
         dead
-          ? `recipe ${patch.used_recipe} is stale: the record selector "${a.record}" matched nothing — re-derive the spec from a browser_snapshot rather than replaying this recipe.`
+          ? `recipe ${patch.used_recipe} matched no records. Either this page is not in the state the recipe was learned in — its preamble was not reissued; read the steps recorded for it with browser_get_site_memory for ${ctx.host} and reissue the ones that still make sense — or the record selector "${a.record}" is gone from the page and the spec needs re-deriving from a browser_snapshot. Check the preamble first: the spec is often correct.`
           : `recipe ${patch.used_recipe} is stale: ${gone
               .map(
                 (n) =>
@@ -477,6 +565,22 @@ function observed({ action, args, result, ctx, targetKey }) {
                 ", ",
               )} — re-derive those fields from a browser_snapshot. The rows below are what the stale spec produced.`,
       );
+      // Enough misses and memory.js forgets the variant, and the last variant
+      // takes the recipe with it. Unsaid, the model expects a recipe to be
+      // there next time and gets an error instead of reaching for a snapshot.
+      // A failed write reports undefined, which reads here as nothing having
+      // been deleted — which is exactly right, because nothing was.
+      const dropped =
+        noteRecipeFail(ctx.host, ctx.pattern, ctx.name, ctx.variant) || {};
+      if (dropped.recipe) {
+        warnings.push(
+          `recipe ${ctx.name} on ${ctx.host}${ctx.pattern} has been forgotten after ${dropped.fails} stale replays: derive a fresh spec from a browser_snapshot, because there is nothing left here to replay.`,
+        );
+      } else if (dropped.variant) {
+        warnings.push(
+          `variant ${ctx.variant} of recipe ${ctx.name} on ${ctx.host}${ctx.pattern} has been forgotten after ${dropped.fails} stale replays: derive a fresh spec from a browser_snapshot rather than replaying another slice of it.`,
+        );
+      }
     } else {
       touchVariant(ctx);
     }
@@ -503,18 +607,49 @@ function observed({ action, args, result, ctx, targetKey }) {
     return null;
   }
 
+  // An explicit `remember` still wins on both halves: the caller is naming its
+  // own task and its own slice.
   const asked = String(a.remember || "");
   const cut = asked.indexOf("/");
-  let name = (cut === -1 ? asked : asked.slice(0, cut)) || deriveName(a.fields);
-  const variant = (cut === -1 ? "" : asked.slice(cut + 1)) || "default";
+  let name =
+    (cut === -1 ? asked : asked.slice(0, cut)) || deriveName(a.fields, a.record);
+  const variant = (cut === -1 ? "" : asked.slice(cut + 1)) || deriveVariant(steps);
+  const where = `${ctx.host}${ctx.pattern}`;
 
   // The same {record, fields} IS the same task, so this is another slice of a
   // recipe that already exists rather than a second recipe describing it.
   const bucket = getRecipes(ctx.host, ctx.pattern);
+  let merged = false;
   for (const existing of Object.keys(bucket)) {
     if (sameSpec(bucket[existing] && bucket[existing].extract, spec)) {
       name = existing;
+      merged = true;
       break;
+    }
+  }
+
+  // A name already held by a DIFFERENT spec must not be written through.
+  // putRecipe replaces `extract` wholesale, so the recipe stored there would
+  // lose whatever fields this spec does not have — spec and baseline both,
+  // with nothing said. Reachable two ways, an explicit `remember` name and a
+  // digest collision, and neither is allowed to destroy a stored recipe.
+  if (!merged) {
+    const held = bucket[name];
+    if (held && held.extract && !sameSpec(held.extract, spec)) {
+      const alt = `${name}-${specDigest(spec, 8)}`;
+      // Only a third spec can be sitting on `alt`: this spec would have been
+      // found by the merge scan above.
+      if (bucket[alt]) {
+        warnings.push(
+          `not learned as a recipe: "${name}" and "${alt}" on ${where} both already describe other extract specs — pass \`remember\` with an unused name.`,
+        );
+        patch.warnings = warnings;
+        return patch;
+      }
+      warnings.push(
+        `recipe "${name}" on ${where} already describes a different extract spec, so this one was learned as "${alt}" instead — replay it with \`recipe: "${alt}"\`.`,
+      );
+      name = alt;
     }
   }
 
@@ -529,7 +664,7 @@ function observed({ action, args, result, ctx, targetKey }) {
     extract,
     variants: {
       [variant]: {
-        steps: takeSteps(targetKey),
+        steps,
         baseline: ratiosOf(view),
         lastOk: Date.now(),
         failCount: 0,
@@ -537,6 +672,7 @@ function observed({ action, args, result, ctx, targetKey }) {
     },
   });
   patch.learned_recipe = `${name}/${variant}`;
+  if (warnings.length !== had) patch.warnings = warnings;
   return patch;
 }
 
@@ -624,8 +760,10 @@ module.exports = {
   MAX_SPEC_BYTES,
   STEP_CAP,
   STEP_TTL_MS,
+  VARIANT_LABEL_CAP,
   qualityOk,
   deriveName,
+  deriveVariant,
   ratiosOf,
   collapsed,
   sameSpec,

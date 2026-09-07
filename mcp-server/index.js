@@ -398,6 +398,24 @@ const handleToolCall = async (request) => {
       noteStepFor(action, args, targetKey, page, result);
     }
 
+    // browser_fill echoes back the value it typed. Keeping a password out of
+    // the store is no use if the echo puts it in the model's context and from
+    // there into the transcript, which is the exposure the redaction denylist
+    // exists to close. Only a fill redactValue calls sensitive is touched — a
+    // plain fill echoing its value is worth reading. The extension still sends
+    // the value over the local WebSocket, so this narrows where a secret lands
+    // rather than making the fill secret end to end.
+    if (action === "fill" && result && typeof result === "object") {
+      try {
+        const { redacted } = redactValue(action, args, result.fingerprint);
+        if (redacted && "value" in result) {
+          result = { ...result, value: "(value withheld)" };
+        }
+      } catch (_) {
+        // Same contract as noteStepFor: the fill has already happened.
+      }
+    }
+
     if (action === "navigate") result = onNavigate(args, targetKey, result);
 
     // Patched before the output_file branch below: a run that writes to disk

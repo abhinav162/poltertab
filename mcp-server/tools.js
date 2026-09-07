@@ -45,12 +45,12 @@ const RECIPE = {
   variant: {
     type: "string",
     description:
-      "Which slice of the recipe to replay (a filter combination it was learned under). Only needed when the recipe has more than one.",
+      "Which slice of the recipe to replay (a filter combination it was learned under). Only needed when the recipe has more than one. Variant names are derived from the steps that preceded the extract, so browser_get_site_memory shows which slice each one is.",
   },
   remember: {
     type: "string",
     description:
-      "Name this extraction so it can be replayed later, as 'name' or 'name/variant'. Optional: a spec that produced clean rows is remembered under a name derived from its fields anyway. Nothing is stored from a result that fails the quality bar.",
+      "Name this extraction so it can be replayed later, as 'name' or 'name/variant'. Optional: a spec that produced clean rows is remembered anyway, under a name derived from its fields and a variant derived from the clicks, fills and scrolls that preceded it. Nothing is stored from a result that fails the quality bar.",
   },
 };
 
