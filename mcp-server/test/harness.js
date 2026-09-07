@@ -85,6 +85,14 @@ function contentScriptSandbox() {
 
   const el = {
     tagName: "BUTTON",
+    disabled: false,
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({
+      left: 0, top: 0, right: 20, bottom: 20, width: 20, height: 20,
+    }),
+    contains(n) {
+      return n === el;
+    },
     scrollIntoView() {},
     dispatchEvent(e) {
       if (e.type === "click") clicks++;
@@ -99,6 +107,8 @@ function contentScriptSandbox() {
     head: { appendChild: (n) => appended.push(n) },
     querySelector: (sel) => (sel === "#inc" ? el : null),
     querySelectorAll: () => [],
+    // the actionability gate hit-tests before it clicks
+    elementFromPoint: () => el,
     body: { innerText: "" },
   };
 
@@ -107,6 +117,7 @@ function contentScriptSandbox() {
     setTimeout,
     clearTimeout,
     document,
+    getComputedStyle: computedStyleOf,
     location: { href: "http://t/" },
     MouseEvent: class {
       constructor(type) {
@@ -415,6 +426,42 @@ function textOf(reply) {
 
 // ───────── E. shadow DOM piercing + late-element retry ─────────
 
+// content_script's actionability gate asks three things before it acts — is the
+// element visible, enabled, and the real target a click would land on. The fake
+// DOM has to answer them or the gate is untestable. Each element gets a unique
+// on-screen box; elementFromPoint maps a box's centre back to its element, or to
+// whatever a test declared is covering it. Faithful enough to drive the gate
+// without a layout engine.
+let rectSeq = 0;
+const hitRegistry = new Map(); // "cx,cy" -> element
+
+function giveGeometry(el, opts) {
+  el.disabled = !!opts.disabled;
+  el.__coveredBy = opts.coveredBy || null;
+  el.__style = {
+    display: opts.hidden ? "none" : "block",
+    visibility: "visible",
+    opacity: "1",
+  };
+  const k = ++rectSeq;
+  el.__rect = opts.hidden
+    ? { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
+    : { left: k * 50, top: 0, right: k * 50 + 20, bottom: 20, width: 20, height: 20 };
+  el.getBoundingClientRect = () => el.__rect;
+  el.contains = (n) => n === el;
+  if (!opts.hidden) hitRegistry.set(`${el.__rect.left + 10},10`, el);
+  return el;
+}
+
+function elementFromPoint(x, y) {
+  const el = hitRegistry.get(`${x},${y}`);
+  if (!el) return null;
+  return el.__coveredBy || el;
+}
+
+const computedStyleOf = (el) =>
+  el.__style || { display: "block", visibility: "visible", opacity: "1" };
+
 // Minimal DOM good enough for content_script's real code paths. Each "root"
 // answers querySelector/querySelectorAll over a flat descendant list, so a
 // shadow root is just another root — which is exactly how the traversal must
@@ -444,6 +491,7 @@ function fakeEl(tag, opts = {}) {
       return true;
     },
   };
+  giveGeometry(el, opts);
   if (opts.shadow) el.shadowRoot = opts.shadow;
   if (opts.closedShadow) {
     el.shadowRoot = null; // what page script sees for a closed root
@@ -503,6 +551,7 @@ function fakeField(kind, opts = {}) {
     },
   });
   if (kind !== "div") el.__brand = kind;
+  giveGeometry(el, opts);
   return el;
 }
 
@@ -545,6 +594,8 @@ function shadowSandbox({ chromeDom = true, lightDescendants = [], roots = {} } =
     // real content_script consults these before the piercing tier
     evaluate: () => ({ singleNodeValue: null }),
     createTreeWalker: () => ({ nextNode: () => null }),
+    // the actionability gate hit-tests the element it is about to act on
+    elementFromPoint,
   };
 
   const chrome = {
@@ -572,6 +623,7 @@ function shadowSandbox({ chromeDom = true, lightDescendants = [], roots = {} } =
     document,
     chrome,
     location: { href: "http://t/" },
+    getComputedStyle: computedStyleOf,
     NodeFilter: { SHOW_ELEMENT: 1 },
     XPathResult: { FIRST_ORDERED_NODE_TYPE: 9 },
     HTMLElement: FakeHTMLElement,

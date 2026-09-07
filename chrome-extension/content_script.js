@@ -187,6 +187,83 @@
     }
   }
 
+  // ── Actionability gate ──────────────────────────────────────────────
+  // Resolving a selector is not enough — Playwright's insight. An element can be
+  // present but hidden, disabled, or sitting under an overlay (a cookie banner,
+  // a modal backdrop) that swallows the click. el.dispatchEvent fires on the
+  // node regardless and "succeeds" on the wrong target, silently. So before we
+  // act we gate on the same checks Playwright does — visible, enabled, and (for
+  // clicks) the real hit-test target — polling until they hold, because they
+  // settle a beat after a dialog animates in.
+
+  function isElementVisible(el) {
+    const style = window.getComputedStyle(el);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      Number(style.opacity || 1) === 0
+    )
+      return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isElementEnabled(el) {
+    return !el.disabled && el.getAttribute("aria-disabled") !== "true";
+  }
+
+  // Does a click at the element's centre actually reach it? elementFromPoint
+  // returns the topmost node painted at those coordinates; if that is neither
+  // our element nor kin to it, something is on top and would eat the click.
+  // ponytail: centre-point only, in the element's own document. A point inside a
+  // nested shadow tree resolves to the shadow host, which contains() in either
+  // direction still accepts; a target covered only at its centre is the rare
+  // miss. Upgrade to a multi-point probe if a real page needs it.
+  function receivesPointerEvents(el) {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const doc = el.ownerDocument || document;
+    const hit = doc.elementFromPoint(cx, cy);
+    if (!hit) return false;
+    return hit === el || el.contains(hit) || hit.contains(el);
+  }
+
+  // Poll a predicate until it holds or the deadline passes. Same backoff shape
+  // as waitForElement, so a condition that settles on the next frame is caught
+  // quickly and a stuck one gives up instead of hanging. timeout=0 checks once
+  // (the fast cross-frame probe path). Shared with any future post-action state
+  // check — the reusable half of the gate.
+  async function pollUntil(predicate, timeout = ELEMENT_WAIT_MS) {
+    const deadline = Date.now() + timeout;
+    let delay = 50;
+    for (;;) {
+      if (predicate()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 400);
+    }
+  }
+
+  // Gate an action on the element being ready, reporting which check failed so
+  // the agent hears "covered by another element" or "disabled" rather than a
+  // bare failure it cannot reason about.
+  async function waitForActionable(
+    el,
+    selector,
+    { hitTest = true, timeout = ELEMENT_WAIT_MS } = {},
+  ) {
+    let reason = "not visible";
+    const ok = await pollUntil(() => {
+      if (!isElementVisible(el)) return (reason = "not visible"), false;
+      if (!isElementEnabled(el)) return (reason = "disabled"), false;
+      if (hitTest && !receivesPointerEvents(el))
+        return (reason = "covered by another element"), false;
+      return true;
+    }, timeout);
+    if (!ok) throw new Error(`Element not actionable (${reason}): ${selector}`);
+  }
+
   function snapshot(params) {
     const {
       interactive_only = false,
@@ -520,6 +597,9 @@
     const el = await waitForElement(params.selector, params._noWait);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
+    await waitForActionable(el, params.selector, {
+      timeout: params._noWait ? 0 : ELEMENT_WAIT_MS,
+    });
 
     // Dispatch full click sequence
     el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
@@ -534,6 +614,13 @@
     const el = await waitForElement(params.selector, params._noWait);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // fill sets the value programmatically, so a covering overlay does not block
+    // it the way it blocks a click — visible + enabled is the meaningful gate,
+    // no hit-test.
+    await waitForActionable(el, params.selector, {
+      hitTest: false,
+      timeout: params._noWait ? 0 : ELEMENT_WAIT_MS,
+    });
     el.focus();
 
     // The DOM's value setters are branded to their own interface: reading the
