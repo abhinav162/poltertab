@@ -178,6 +178,8 @@
   // element again by structural similarity — Scrapling's trick, no AI. Captured
   // cheaply, scored only when the selector misses.
   const FP_THRESHOLD = 0.6;
+  // How far the best match must beat the runner-up to be considered unambiguous.
+  const FP_MARGIN = 0.05;
   const FP_ATTRS = ["name", "type", "role", "aria-label", "placeholder", "href", "title", "alt"];
   let lastHealed = false;
 
@@ -185,8 +187,13 @@
     const attrs = {};
     const id = el.id || (el.getAttribute && el.getAttribute("id"));
     if (id) attrs.id = id;
-    const cls = el.className || (el.getAttribute && el.getAttribute("class"));
-    if (cls) attrs.class = String(cls);
+    // getAttribute FIRST: el.className on an SVG is an SVGAnimatedString, which
+    // is truthy even with no class set, so trusting it stringified every icon to
+    // the same "[object SVGAnimatedString]" and made unrelated icons match.
+    const cls =
+      (el.getAttribute && el.getAttribute("class")) ||
+      (typeof el.className === "string" ? el.className : "");
+    if (cls) attrs.class = cls;
     for (const name of FP_ATTRS) {
       const v = el.getAttribute && el.getAttribute(name);
       if (v) attrs[name] = v;
@@ -255,16 +262,26 @@
   // match above the threshold. O(nodes) — only ever called on a selector miss.
   function relocate(fp) {
     if (!fp || !fp.tag) return null;
-    let best = null;
-    let bestScore = 0;
+    const scored = [];
     for (const el of deepQuery("*", true)) {
       const score = similarity(fp, fingerprint(el));
-      if (score > bestScore) {
-        bestScore = score;
-        best = el;
-      }
+      if (score >= FP_THRESHOLD) scored.push({ el, score });
     }
-    return bestScore >= FP_THRESHOLD ? best : null;
+    if (!scored.length) return null;
+    scored.sort((a, b) => b.score - a.score);
+
+    // Visibility is checked only on the shortlist, not on every node: a
+    // display:none twin (the mobile copy of a responsive layout) fingerprints
+    // identically to the real control but cannot be acted on, and picking it
+    // means dying in the actionability gate three seconds later.
+    const pool = scored.filter((c) => isElementVisible(c.el));
+    if (!pool.length) return null;
+
+    // Ambiguity is a refusal, not a tie-break. Ten identical row buttons all
+    // score the same after a class rename, and "highest wins" silently becomes
+    // "first in document order" — a coin flip on which row gets deleted.
+    if (pool.length > 1 && pool[0].score - pool[1].score < FP_MARGIN) return null;
+    return pool[0].el;
   }
 
   // Modals and portals mount a moment after the click that triggers them, so a
@@ -281,13 +298,18 @@
     const el = resolveElement(selector);
     if (el) return el;
 
-    // Selector missed. If the caller supplied a fingerprint, they're telling us
-    // the selector may have drifted — try relocating right away rather than
-    // waiting out the full timeout for an element that has been renamed.
-    // ponytail: selector is still tried first every round, so it wins whenever
-    // it matches; relocation only fills a genuine miss. A decoy that outscores a
-    // late-rendering real element at t=0 is the rare wrong match — acceptable
-    // since the caller opted in by passing a fingerprint.
+    // Selector missed. Healing is deliberately NOT attempted on the fast probe:
+    // background.js fires _noWait at frame 0 and then at every child frame in
+    // parallel, and the content script *performs* the action wherever it
+    // resolves. A fingerprint matches in far more places than a selector, so
+    // healing here could click "Send" in three frames at once. The waited pass
+    // below runs on one frame, which is where relocation belongs.
+    if (noWait) throw new Error(`Element not found: ${selector}`);
+
+    // ponytail: the selector is retried first every round, so it wins whenever
+    // it matches; relocation only fills a genuine miss. The cost is that an
+    // element living in a child frame heals only if the top frame does not
+    // claim it first — widen this if drifted selectors inside iframes matter.
     if (fp) {
       const healed = relocate(fp);
       if (healed) {
@@ -295,7 +317,6 @@
         return healed;
       }
     }
-    if (noWait) throw new Error(`Element not found: ${selector}`);
 
     const deadline = Date.now() + ELEMENT_WAIT_MS;
     let delay = 100;
@@ -739,6 +760,10 @@
   async function click(params) {
     const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
     const healed = lastHealed;
+    // Capture BEFORE acting: a Follow button reads "Following" the instant it is
+    // clicked, and storing that is storing a fingerprint that will not match
+    // this element on the next run.
+    const fp = fingerprint(el);
 
     // "instant", not "smooth": a smooth scroll is asynchronous, so the element
     // has not moved when waitForActionable runs its first check a statement
@@ -760,7 +785,7 @@
     return {
       clicked: params.selector,
       tag: el.tagName.toLowerCase(),
-      fingerprint: fingerprint(el),
+      fingerprint: fp,
       healed,
     };
   }
@@ -768,6 +793,8 @@
   async function fill(params) {
     const el = await waitForElement(params.selector, params._noWait, params.fingerprint);
     const healed = lastHealed;
+    // Before the value lands and before any submit navigates the page away.
+    const fp = fingerprint(el);
 
     el.scrollIntoView({ behavior: "instant", block: "center" });
     // fill sets the value programmatically, so a covering overlay does not block
@@ -815,7 +842,7 @@
     return {
       filled: params.selector,
       value: params.value,
-      fingerprint: fingerprint(el),
+      fingerprint: fp,
       healed,
     };
   }
