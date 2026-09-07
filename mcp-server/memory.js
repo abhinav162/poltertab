@@ -147,6 +147,15 @@ function saveMemory(rawHost, obstacle, solution) {
   return data.notes.length;
 }
 
+// Selector entries are keyed by action + page path + selector, not by selector
+// alone. Host-only keying meant a fingerprint learned for "#submit" on
+// /checkout was injected into a click on "#submit" on /settings, and one
+// recorded by fill was injected into a click — different elements, and on
+// destructive controls that is a wrong click, then persisted as the new truth.
+function selectorKey(action, path, selector) {
+  return `${action}|${path || "/"}|${selector}`;
+}
+
 function getSelector(rawHost, selector) {
   return readMemory(rawHost).selectors[selector] || null;
 }
@@ -189,6 +198,7 @@ function evictSelectors(selectors) {
 
 module.exports = {
   memoryFile,
+  selectorKey,
   readMemory,
   saveMemory,
   getSelector,
