@@ -203,8 +203,11 @@
       tag: el.tagName.toLowerCase(),
       text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 50),
       attrs,
+      // Capped: a 1000-row <tbody> would otherwise store ~7 KB of sibling tags
+      // per fingerprint, in a file re-read and rewritten on every click. Twenty
+      // is plenty of structural signal.
       siblingTags: parent
-        ? [...parent.children].map((c) => c.tagName.toLowerCase())
+        ? [...parent.children].slice(0, 20).map((c) => c.tagName.toLowerCase())
         : [],
       parent: parent
         ? {
@@ -360,7 +363,26 @@
   }
 
   function isElementEnabled(el) {
-    return !el.disabled && el.getAttribute("aria-disabled") !== "true";
+    if (el.disabled) return false;
+    // :disabled also matches a control inside <fieldset disabled>, which
+    // reports disabled === false on the element itself — so fill used to report
+    // success on a field the user could not type into.
+    try {
+      if (el.matches && el.matches(":disabled")) return false;
+    } catch (_) {
+      // Engine without :disabled support for this node — fall through.
+    }
+    // aria-disabled on a wrapper disables the control for a user just as much.
+    if (el.closest && el.closest('[aria-disabled="true"]')) return false;
+    return el.getAttribute("aria-disabled") !== "true";
+  }
+
+  // pointer-events:none means clicks pass straight through: elementFromPoint
+  // reports the wrapper, which the hit-test's ancestor branch would accept, so
+  // the gate passed and a synthetic click fired on something no user could
+  // click. Common as a temporary busy/loading state, so polling clears it.
+  function acceptsPointerEvents(el) {
+    return window.getComputedStyle(el).pointerEvents !== "none";
   }
 
   // Does a click at the element's centre actually reach it? elementFromPoint
@@ -421,6 +443,8 @@
     const ok = await pollUntil(() => {
       if (!isElementVisible(el)) return (reason = "not visible"), false;
       if (!isElementEnabled(el)) return (reason = "disabled"), false;
+      if (hitTest && !acceptsPointerEvents(el))
+        return (reason = "pointer-events: none"), false;
       if (hitTest && !receivesPointerEvents(el))
         return (reason = "covered by another element"), false;
       return true;

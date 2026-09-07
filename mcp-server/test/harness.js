@@ -442,6 +442,7 @@ function giveGeometry(el, opts) {
     display: opts.hidden ? "none" : "block",
     visibility: "visible",
     opacity: "1",
+    pointerEvents: opts.pointerEventsNone ? "none" : "auto",
   };
   const k = ++rectSeq;
   const onscreen = {

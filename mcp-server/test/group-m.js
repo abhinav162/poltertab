@@ -103,6 +103,31 @@ async function groupM() {
     assert.ok(/disabled/i.test(res.error), res.error);
     assert.strictEqual(inp.value, "");
   });
+  await test("M10 a pointer-events:none button is not clicked", async () => {
+    // The busy/loading pattern. elementFromPoint returns the WRAPPER for such an
+    // element, and the gate's `hit.contains(el)` branch accepted any ancestor as
+    // the hit target — so the gate passed and a synthetic click fired on
+    // something no user could have clicked.
+    const btn = fakeEl("button", { id: "busy", pointerEventsNone: true });
+    const s = shadowSandbox({ lightDescendants: [btn] });
+    const res = await s.send("click", { selector: "#busy" });
+    assert.strictEqual(res.success, false);
+    assert.ok(/pointer-events/i.test(res.error), res.error);
+    assert.strictEqual(btn.clicks, 0);
+  });
+
+  await test("M11 an input inside a disabled fieldset is not filled", async () => {
+    // el.disabled is false on the input itself; only :disabled reflects the
+    // ancestor <fieldset disabled>.
+    const inp = fakeField("input", { id: "in-fieldset" });
+    inp.matches = (sel) => sel === ":disabled";
+    const s = shadowSandbox({ lightDescendants: [inp] });
+    const res = await s.send("fill", { selector: "#in-fieldset", value: "nope" });
+    assert.strictEqual(res.success, false);
+    assert.ok(/disabled/i.test(res.error), res.error);
+    assert.strictEqual(inp.value, "");
+  });
+
 }
 
 module.exports = groupM;
