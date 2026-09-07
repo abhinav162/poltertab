@@ -65,17 +65,88 @@ function memoryFile(rawHost) {
   return path.join(MEMORY_DIR, `${bare}.json`);
 }
 
+// Free-text notes are capped so a chatty agent can't grow one file without
+// bound; selectors likewise, evicting the least-recently-used first.
+const NOTES_CAP = 100;
+const SELECTORS_CAP = 200;
+// A selector that keeps missing even with its fingerprint has drifted past
+// recognition — stop trusting it rather than relocating against a dead signature.
+const MAX_FAILS = 3;
+
+// Normalize any on-disk shape — including the original bare array — to the
+// current { notes, selectors } form. Old files upgrade in place on the next
+// write, so there is no migration step.
+function normalize(raw) {
+  if (Array.isArray(raw)) return { notes: raw, selectors: {} };
+  return {
+    notes: raw && Array.isArray(raw.notes) ? raw.notes : [],
+    selectors: raw && raw.selectors && typeof raw.selectors === "object"
+      ? raw.selectors
+      : {},
+  };
+}
+
 function readMemory(rawHost) {
   const file = memoryFile(rawHost);
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  const raw = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+  return normalize(raw);
+}
+
+function writeMemory(rawHost, data) {
+  fs.writeFileSync(memoryFile(rawHost), JSON.stringify(data, null, 2));
 }
 
 function saveMemory(rawHost, obstacle, solution) {
-  const file = memoryFile(rawHost);
   const data = readMemory(rawHost);
-  data.push({ obstacle, solution, timestamp: Date.now() });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-  return data.length;
+  // Re-saving an identical note is a no-op, not another copy of the same line.
+  const dup = data.notes.some(
+    (n) => n.obstacle === obstacle && n.solution === solution,
+  );
+  if (!dup) {
+    data.notes.push({ obstacle, solution, timestamp: Date.now() });
+    if (data.notes.length > NOTES_CAP) data.notes = data.notes.slice(-NOTES_CAP);
+  }
+  writeMemory(rawHost, data);
+  return data.notes.length;
 }
 
-module.exports = { memoryFile, readMemory, saveMemory };
+function getSelector(rawHost, selector) {
+  return readMemory(rawHost).selectors[selector] || null;
+}
+
+function recordSelector(rawHost, selector, fingerprint) {
+  if (!fingerprint) return; // nothing worth remembering
+  const data = readMemory(rawHost);
+  data.selectors[selector] = { fingerprint, lastOk: Date.now(), failCount: 0 };
+  evictSelectors(data.selectors);
+  writeMemory(rawHost, data);
+}
+
+function noteSelectorFail(rawHost, selector) {
+  const data = readMemory(rawHost);
+  const entry = data.selectors[selector];
+  if (!entry) return;
+  entry.failCount = (entry.failCount || 0) + 1;
+  if (entry.failCount >= MAX_FAILS) delete data.selectors[selector];
+  writeMemory(rawHost, data);
+}
+
+// Bound the store: when a host accrues too many selectors, drop the ones whose
+// last success is oldest.
+function evictSelectors(selectors) {
+  const keys = Object.keys(selectors);
+  if (keys.length <= SELECTORS_CAP) return;
+  keys
+    .sort((a, b) => (selectors[a].lastOk || 0) - (selectors[b].lastOk || 0))
+    .slice(0, keys.length - SELECTORS_CAP)
+    .forEach((k) => delete selectors[k]);
+}
+
+module.exports = {
+  memoryFile,
+  readMemory,
+  saveMemory,
+  getSelector,
+  recordSelector,
+  noteSelectorFail,
+};
