@@ -6,6 +6,7 @@
 // Primary node — and so the suite can drive it with a scripted transport.
 
 const { isBlank } = require("./output.js");
+const { collapsed, ratiosOf } = require("./recipes.js");
 
 // --- The pagination loop ---
 //
@@ -89,22 +90,19 @@ async function extractAll(sendCommand, args) {
     // Fill rates against the first page. A spec learned on page 1 degrades
     // quietly later: variant card layouts, a column that stops being populated.
     // Halting beats emitting rows that are 40% empty.
-    const ratios = {};
-    for (const [name, n] of Object.entries(res.fill_rates || {})) {
-      ratios[name] = n / pageRows.length;
-    }
+    //
+    // The staleness rule itself lives in recipes.js, because a stored recipe's
+    // baseline has to be judged by exactly the same threshold as a paginated
+    // run's.
+    const ratios = ratiosOf(res);
     if (!baseline) {
       baseline = ratios;
-    } else if (fill_tolerance > 0) {
-      const collapsed = Object.keys(baseline).filter(
-        (name) =>
-          baseline[name] >= 0.5 &&
-          ratios[name] < baseline[name] * fill_tolerance,
-      );
-      if (collapsed.length) {
+    } else {
+      const stale = collapsed(baseline, ratios, fill_tolerance);
+      if (stale.length) {
         stopped_because = "fill_rate_deviation";
         warnings.push(
-          `page ${page}: ${collapsed
+          `page ${page}: ${stale
             .map(
               (n) =>
                 `${n} ${(ratios[n] * 100).toFixed(0)}% vs baseline ${(baseline[n] * 100).toFixed(0)}%`,

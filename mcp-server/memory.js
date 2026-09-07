@@ -69,20 +69,34 @@ function memoryFile(rawHost) {
 // bound; selectors likewise, evicting the least-recently-used first.
 const NOTES_CAP = 100;
 const SELECTORS_CAP = 200;
+// A learned recipe carries a whole extract spec plus replay steps per variant,
+// so it is orders of magnitude larger than a selector entry — cap it far
+// tighter, and count across path patterns because the file size is what the
+// cap actually protects.
+const RECIPES_CAP = 20;
 // A selector that keeps missing even with its fingerprint has drifted past
 // recognition — stop trusting it rather than relocating against a dead signature.
 const MAX_FAILS = 3;
 
 // Normalize any on-disk shape — including the original bare array — to the
-// current { notes, selectors } form. Old files upgrade in place on the next
-// write, so there is no migration step.
+// current { notes, selectors, recipes } form. Old files upgrade in place on the
+// next write, so there is no migration step.
 function normalize(raw) {
-  if (Array.isArray(raw)) return { notes: raw, selectors: {} };
+  if (Array.isArray(raw)) return { notes: raw, selectors: {}, recipes: {} };
   return {
     notes: raw && Array.isArray(raw.notes) ? raw.notes : [],
     selectors:
       raw && raw.selectors && typeof raw.selectors === "object"
         ? raw.selectors
+        : {},
+    // An array here would survive the typeof check and then hand out numeric
+    // recipe names from Object.keys, so reject anything but a plain object.
+    recipes:
+      raw &&
+      raw.recipes &&
+      typeof raw.recipes === "object" &&
+      !Array.isArray(raw.recipes)
+        ? raw.recipes
         : {},
   };
 }
@@ -196,6 +210,153 @@ function evictSelectors(selectors) {
     .forEach((k) => delete selectors[k]);
 }
 
+// ── Learned extraction recipes ──────────────────────────────────────────────
+//
+// A recipe is what the agent worked out about a listing page: the record
+// selector and field map that produced clean rows, and — per variant, a slice
+// of the same task with its own filters — the steps that got there and the
+// fill rate to expect next time. Keyed by path pattern → recipe name →
+// variant, so /jobs/12345 and /jobs/99 share what was learned once.
+
+const UUID_SEGMENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Volatile path segments have to collapse or every record page teaches a recipe
+// that nothing ever reads back: /jobs/12345 is the same page shape as /jobs/99,
+// and a recipe learned on one is what makes the other free.
+function pathPattern(rawPath) {
+  let p = rawPath == null ? "" : String(rawPath);
+
+  // Callers pass a pathname, but what the page reported is often the full URL.
+  if (p.includes("://")) {
+    try {
+      p = new URL(p).pathname;
+    } catch {
+      // Not parseable as a URL; the query/hash strip below still applies.
+    }
+  }
+  p = p.split("#")[0].split("?")[0];
+
+  const segments = p
+    .split("/")
+    .filter(Boolean)
+    .map((seg) => {
+      if (/^\d+$/.test(seg)) return ":n";
+      if (UUID_SEGMENT.test(seg)) return ":id";
+      // A long run of letters and digits with no separator is an opaque id.
+      // Slugs are excluded by the separator rule on purpose: "senior-engineer-2024"
+      // names a page shape, and collapsing it would merge unrelated pages into
+      // one recipe.
+      if (seg.length >= 12 && /\d/.test(seg) && /^[a-z0-9]+$/i.test(seg))
+        return ":id";
+      return seg;
+    });
+
+  return segments.length ? `/${segments.join("/")}` : "/";
+}
+
+// A recipe is as fresh as its freshest variant: one dead filter combination
+// must not make the whole learned spec look stale to eviction.
+function recipeLastOk(recipe) {
+  const variants = recipe && recipe.variants ? recipe.variants : {};
+  return Object.keys(variants).reduce(
+    (max, k) => Math.max(max, (variants[k] && variants[k].lastOk) || 0),
+    0,
+  );
+}
+
+function getRecipes(rawHost, pattern) {
+  return readMemory(rawHost).recipes[pattern] || {};
+}
+
+function getRecipe(rawHost, pattern, name) {
+  return getRecipes(rawHost, pattern)[name] || null;
+}
+
+// Same contract as recordSelector: the extract that taught us this already
+// returned its rows, so a failed write must not surface as a failed extract —
+// the agent would re-run the whole crawl.
+function putRecipe(rawHost, pattern, name, recipe) {
+  if (!recipe) return;
+  bestEffort(() => {
+    const data = readMemory(rawHost);
+    const bucket = data.recipes[pattern] || (data.recipes[pattern] = {});
+    const existing = bucket[name];
+    bucket[name] = {
+      extract: recipe.extract || (existing && existing.extract),
+      // Merge: variants of one task are learned one run at a time, so writing
+      // the second must not forget the first.
+      variants: {
+        ...(existing && existing.variants),
+        ...(recipe.variants || {}),
+      },
+    };
+    evictRecipes(data.recipes);
+    writeMemory(rawHost, data);
+  });
+}
+
+function noteRecipeFail(rawHost, pattern, name, variant) {
+  bestEffort(() => {
+    const data = readMemory(rawHost);
+    const bucket = data.recipes[pattern];
+    const recipe = bucket && bucket[name];
+    const entry = recipe && recipe.variants && recipe.variants[variant];
+    if (!entry) return;
+    entry.failCount = (entry.failCount || 0) + 1;
+    if (entry.failCount >= MAX_FAILS) {
+      delete recipe.variants[variant];
+      // Unwind the empty levels above it, or the file accumulates husks that
+      // every later read has to page in and every hint has to filter out.
+      if (!Object.keys(recipe.variants).length) delete bucket[name];
+      if (!Object.keys(bucket).length) delete data.recipes[pattern];
+    }
+    writeMemory(rawHost, data);
+  });
+}
+
+// Bound the store the way evictSelectors does, but across path patterns: a
+// crawler that walks a thousand listing URLs would otherwise learn a recipe per
+// pattern and grow one host's file without limit.
+function evictRecipes(recipes) {
+  const entries = [];
+  for (const pattern of Object.keys(recipes))
+    for (const name of Object.keys(recipes[pattern]))
+      entries.push({
+        pattern,
+        name,
+        lastOk: recipeLastOk(recipes[pattern][name]),
+      });
+  if (entries.length <= RECIPES_CAP) return;
+  entries
+    .sort((a, b) => a.lastOk - b.lastOk)
+    .slice(0, entries.length - RECIPES_CAP)
+    .forEach(({ pattern, name }) => {
+      delete recipes[pattern][name];
+      if (!Object.keys(recipes[pattern]).length) delete recipes[pattern];
+    });
+}
+
+// What a recipe offers, without what it costs: the hint that tells an agent a
+// recipe exists is worth nothing if quoting it costs as much context as the
+// extract it saves, so the field map and the replay steps stay on disk.
+function listRecipeSummaries(rawHost, pattern) {
+  const bucket = getRecipes(rawHost, pattern);
+  return Object.keys(bucket).map((name) => {
+    const recipe = bucket[name];
+    const fields = recipe && recipe.extract && recipe.extract.fields;
+    return {
+      name,
+      fields:
+        fields && typeof fields === "object" && !Array.isArray(fields)
+          ? Object.keys(fields)
+          : [],
+      variants: recipe && recipe.variants ? Object.keys(recipe.variants) : [],
+      lastOk: recipeLastOk(recipe),
+    };
+  });
+}
+
 module.exports = {
   memoryFile,
   selectorKey,
@@ -204,4 +365,11 @@ module.exports = {
   getSelector,
   recordSelector,
   noteSelectorFail,
+  RECIPES_CAP,
+  pathPattern,
+  getRecipes,
+  getRecipe,
+  putRecipe,
+  noteRecipeFail,
+  listRecipeSummaries,
 };

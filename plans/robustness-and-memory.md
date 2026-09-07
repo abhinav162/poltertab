@@ -21,13 +21,14 @@ what to adopt by **robustness gained per KB spent**. Sources cited inline.
 | §6 `@e` ref | **no work needed** — see the correction below |
 | Memory **Layer A** (self-healing selector store) | #13, hardened in #14: page/action-keyed, LRU + fail eviction, atomic writes, notes dedup/cap |
 
+**Implemented on `feat/learned-extraction-recipes`, not yet browser-verified:**
+
+| Item | Where |
+|---|---|
+| Memory **Layer B** (learned extraction recipes + step preambles) | `memory.js` store, new `recipes.js` policy, `index.js` hydrate/observe, `tools.js` schema. Suite 178/178. **LB1-LB5 in `poltertab-testing-environment` have NOT been run** — until they have, cross-session recall and the on-disk shape are unproven. |
+
 **Remaining** (verified absent in the code as of `v1.6.0-beta.1`):
 
-- **Layer B — learned extraction recipes.** `memory.js` has only
-  `saveMemory`/`getSelector`/`recordSelector`. `extract`'s record/fields/
-  pagination spec and `extract_all`'s `fill_rate_deviation` staleness signal are
-  still not persisted or reused across runs. **Recommended next** — the store it
-  plugs into just shipped, and both halves already exist.
 - **§7 real `smart_scroll`.** Still the stub: `scroll` + a fixed 2 s sleep +
   "use browser_get_network_state to read".
 - **CAPTCHA detect + handoff.** Zero references anywhere in the codebase.
@@ -192,7 +193,7 @@ host-only keying let a fingerprint learned by `fill` on `/checkout` fire on a
 `click` on `/settings`. The `anchor` sub-object was not implemented (see §5
 remainder); role/aria-label live inside the fingerprint instead.
 
-### Layer B — Learned extraction recipes (priority #2) — NOT DONE
+### Layer B — Learned extraction recipes (priority #2) — IMPLEMENTED, see corrections
 Skyvern's **code-caching** is the model: record the successful action/extract
 sequence on the first run, replay deterministically after, fall back to the agent
 and regenerate the cache on breakage — automatically.
@@ -216,6 +217,45 @@ The staleness signal is **free and already computed**: `extract_all`'s
 `fill_rate_deviation` halt is the "recipe went stale" trigger — when a replay's
 fill rate drops below tolerance against `baseline_fill_rates`, mark it stale and
 re-derive. No new machinery, just persist + compare what exists.
+
+**What shipped differs from that sketch in four ways, each for a reason found
+while building it:**
+
+1. **Keying is three levels, not one flow name:** path pattern → recipe (the
+   task, identified by its `{record, fields}`) → variant (a slice of it). One
+   flat name cannot express "multiple tasks on one site, each with variations",
+   which is the normal case, not the exception.
+2. **`baseline` is per *variant*, not per recipe.** This is the load-bearing
+   one. Two slices of the same task legitimately differ in fill rate — an
+   "engineering remote" listing always shows salary, "design onsite" rarely
+   does. A shared baseline reads the sparse slice as permanently stale and
+   evicts it after three runs.
+3. **`steps` are recorded and shown back, never replayed by the server.**
+   Skyvern's code-caching replays actions; here that would fire real side
+   effects on the user's live logged-in profile, and Layer A's fingerprint
+   healing makes it worse — healing relocates a stale `#send` onto whatever now
+   scores highest. Steps come back as dated observations; the model reissues
+   them itself. Deterministic replay stays a separate PR behind a confirm gate.
+4. **Recording is gated and the store never learns from a bad run.** A quality
+   bar (>= 3 rows, no boundary/no-match warnings, anchor drop < 50%, one field
+   at >= 50% fill, spec under 4 KB / 50 fields) decides what is worth keeping,
+   and steps flush only when the terminating extract clears it. That is *why* a
+   side-effecting flow like "apply to job" can never enter the store: it does
+   not end in an extraction. The safety property is a consequence of the shape
+   rather than a check anyone has to remember.
+
+**Two traps worth keeping written down:**
+
+- **The ratchet.** A hydrated replay must never write `baseline`. Allowed to,
+  a site that decays slightly each week walks its own bar down, every replay
+  looks fine against the last one, and staleness never fires again. The
+  signature is a replay that reports stale once and clean afterwards, which is
+  why LB4 re-runs the same degraded page a second time.
+- **Fail-open staleness.** `collapsed()` first read an omitted tolerance as
+  "check disabled". Invisible in `extract-all.js`, which always passes a
+  destructured default — but the recipe path is a new caller, and a rotted
+  recipe would have reported clean forever. It now defaults and disables only
+  on an explicit `<= 0`.
 
 ### Layer C — Semantic/embedding recall (priority #3) — the weight decision
 **Finding:** LaVague runs embedding-RAG over page structure to retrieve the
@@ -287,8 +327,8 @@ vision loop — too heavy to copy. Lite path:
 1. **Actionability gate + `pollUntil`** (§1, §2) — ✅ #11/#14
 2. **Wire up or delete `@e` ref** (§6) — ✅ no-op, claim was wrong
 3. **Memory Layer A: fingerprint self-healing** (§3, §4, §5) + dedup/cap/flags — ✅ #12/#13/#14
-4. **Memory Layer B: learned recipes** — ⬜ next
-5. **`smart_scroll` real primitive** (§7) + **CAPTCHA detect + handoff** — ⬜
+4. **Memory Layer B: learned recipes** — 🟡 code done (178/178), LB1-LB5 pending
+5. **`smart_scroll` real primitive** (§7) + **CAPTCHA detect + handoff** — ⬜ next
 6. **Form filling extensions** — ⬜
 7. **Semantic recall C0**; revisit C1 only on measured need — ⬜
 
