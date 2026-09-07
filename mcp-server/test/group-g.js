@@ -171,6 +171,27 @@ async function groupG() {
       "snapshot did not aggregate across frames: " + reply.data.nodes.length,
     );
   });
+  await test("G11 a not-yet-actionable element falls through to the waited retry", async () => {
+    // The frame-0 probe runs with _noWait, so the gate gets timeout 0 and fails
+    // instantly with "not actionable". isElementMiss only matched /not found/,
+    // so that threw straight out and step 3's waited retry — the whole point of
+    // polling for a clearing overlay — never ran.
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, elements: {}, gated: { "#late-btn": { clicked: "#late-btn" } } },
+      ],
+    });
+    const reply = await bg.command({ id: "g11", action: "click", selector: "#late-btn" });
+    assert.strictEqual(reply.success, true, reply.error || "gave up before polling");
+    assert.strictEqual(reply.data.clicked, "#late-btn");
+  });
+
+  await test("G12 a permanently covered element still reports why", async () => {
+    const bg = frameSearchSandbox({ frames: [{ frameId: 0, elements: {} }] });
+    const reply = await bg.command({ id: "g12", action: "click", selector: "#buried" });
+    assert.strictEqual(reply.success, false);
+  });
+
 }
 
 module.exports = groupG;

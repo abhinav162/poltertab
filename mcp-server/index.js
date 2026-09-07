@@ -19,6 +19,7 @@ const {
   getSelector,
   recordSelector,
   noteSelectorFail,
+  selectorKey,
 } = require("./memory.js");
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
@@ -59,29 +60,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Which host a tab is on, learned from the URL any navigate/get_url/action
-// result reveals. Self-heal keys its selector store by host, and clicks happen
-// on the page we last saw a URL for — no extra round-trip to ask.
-const hostByTab = new Map();
-let lastHost = null;
+// Which page a tab (or a named session) is on, learned from the URL any
+// navigate/get_url/action result reveals — no extra round-trip to ask. The
+// selector store is keyed by this, so it has to be the page the click actually
+// lands on.
+const pageByTab = new Map();
+const pageBySession = new Map();
+let lastPage = null;
 
-function hostname(url) {
+function pageOf(url) {
   try {
-    return new URL(url).hostname;
+    const u = new URL(url);
+    return u.hostname ? { host: u.hostname, path: u.pathname } : null;
   } catch {
     return null;
   }
 }
 
-function rememberHost(tabId, url) {
-  const host = hostname(url);
-  if (!host) return;
-  if (tabId != null) hostByTab.set(tabId, host);
-  lastHost = host;
+function rememberPage(args, result) {
+  const page = pageOf(result && result.url);
+  if (!page) return;
+  const tabId = (result && result.tabId) ?? (args && args.tabId);
+  if (tabId != null) pageByTab.set(tabId, page);
+  if (args && args.session) pageBySession.set(args.session, page);
+  lastPage = page;
 }
 
-function hostForTab(tabId) {
-  return (tabId != null && hostByTab.get(tabId)) || lastHost || null;
+// An explicitly targeted tab or session resolves to ITS OWN page or to nothing.
+// Falling back to a process-global here is how a click in session s1 ended up
+// keyed to whatever host s2 had navigated to most recently — and `session` is
+// the documented multi-tab mechanism, so that path is normal usage, not a
+// corner case. No page means no healing, which is the safe direction.
+function pageFor(args) {
+  const a = args || {};
+  if (a.session) return pageBySession.get(a.session) || null;
+  if (a.tabId != null) return pageByTab.get(a.tabId) || null;
+  return lastPage;
 }
 
 const handleToolCall = async (request) => {
@@ -219,13 +233,20 @@ const handleToolCall = async (request) => {
 
     // Self-healing: for click/fill, supply a remembered fingerprint when the
     // selector has no explicit one, and remember the fingerprint that worked so
-    // a later drift can be relocated. Host is the page this tab last revealed.
+    // a later drift can be relocated. Keyed by the page the action lands on and
+    // by the action itself — see memory.selectorKey.
     const healable = action === "click" || action === "fill";
     const selector = args && args.selector;
-    const host = healable && selector ? hostForTab(args && args.tabId) : null;
-    if (host && !args.fingerprint) {
-      const stored = getSelector(host, selector);
-      if (stored) args.fingerprint = stored.fingerprint;
+    const page = healable && selector ? pageFor(args) : null;
+    const key = page ? selectorKey(action, page.path, selector) : null;
+    if (key && !args.fingerprint) {
+      // Reading the store must never stop a click that would otherwise work.
+      try {
+        const stored = getSelector(page.host, key);
+        if (stored) args.fingerprint = stored.fingerprint;
+      } catch (_) {
+        // Unreadable store: proceed on the caller's own selector.
+      }
     }
 
     let result;
@@ -233,18 +254,29 @@ const handleToolCall = async (request) => {
       result = await bridge.sendCommand(action, args || {});
     } catch (err) {
       // A selector that missed even with its stored fingerprint is drifting;
-      // enough misses and memory.js stops trusting it.
-      if (host && /not found/i.test(err.message)) noteSelectorFail(host, selector);
+      // enough misses and memory.js stops trusting it. Bookkeeping only — it
+      // must not replace the error the caller needs to see.
+      if (key && /not found/i.test(err.message)) {
+        try {
+          noteSelectorFail(page.host, key);
+        } catch (_) {
+          // Best effort.
+        }
+      }
       throw err;
     }
     bridge.noteActiveTab((result && result.tabId) || (args && args.tabId));
 
-    // Learn the host for later, and store the fingerprint of what resolved.
-    if (result && result.url) {
-      rememberHost(result.tabId ?? (args && args.tabId), result.url);
-    }
-    if (host && result && result.fingerprint) {
-      recordSelector(host, selector, result.fingerprint);
+    // Learn the page for later, and store the fingerprint of what resolved.
+    // Wrapped because the browser has ALREADY acted: a failure here would be
+    // reported as a failed click, and the agent would retry and double-submit.
+    try {
+      rememberPage(args, result);
+      if (key && result && result.fingerprint) {
+        recordSelector(page.host, key, result.fingerprint);
+      }
+    } catch (_) {
+      // The action succeeded; losing the bookkeeping is the lesser evil.
     }
 
     // Any read tool can send its payload to disk. Placed after tab tracking so

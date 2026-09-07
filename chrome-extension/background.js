@@ -812,7 +812,15 @@
       const err = response.error || "";
       // "not found" = element absent; "Receiving end" = no content script in
       // that frame (loaded before extension, or opaque-origin sandbox).
-      if (/not found|Receiving end|No response/i.test(err)) return true;
+      // "not actionable" = the element IS here but is hidden/disabled/covered.
+      // That must count as a miss too: frame 0 is probed with _noWait, so the
+      // gate gets a zero timeout and fails on the first check. Treating it as a
+      // hard error threw before step 3's waited retry could run, which is the
+      // pass that exists to let a clearing overlay settle — the gate's polling
+      // was unreachable in production. A frame that is genuinely covered still
+      // ends up reporting this same message once every pass has missed.
+      if (/not found|not actionable|Receiving end|No response/i.test(err))
+        return true;
     }
     // scrape with a selector returns [] when the element doesn't exist in that
     // frame — the content script considers it a success (no throw), but for
