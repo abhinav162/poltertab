@@ -21,11 +21,37 @@ what to adopt by **robustness gained per KB spent**. Sources cited inline.
 | §6 `@e` ref | **no work needed** — see the correction below |
 | Memory **Layer A** (self-healing selector store) | #13, hardened in #14: page/action-keyed, LRU + fail eviction, atomic writes, notes dedup/cap |
 
-**Implemented on `feat/learned-extraction-recipes`, not yet browser-verified:**
+**Implemented on `feat/learned-extraction-recipes`, browser-verified through
+pass 4:**
 
 | Item | Where |
 |---|---|
-| Memory **Layer B** (learned extraction recipes + step preambles) | `memory.js` store, new `recipes.js` policy, `index.js` hydrate/observe, `tools.js` schema. Suite 178/178. **LB1-LB5 in `poltertab-testing-environment` have NOT been run** — until they have, cross-session recall and the on-disk shape are unproven. |
+| Memory **Layer B** (learned extraction recipes + step preambles) | `memory.js` store, new `recipes.js` policy, `index.js` hydrate/observe, `tools.js` schema. Suite 213/213. |
+
+Four browser passes in `poltertab-testing-environment` found **twelve** defects
+between them; all are fixed. Pass 4 passed every case in its grid **and still
+found a real bug outside it**, which is the pattern worth remembering: the grid
+confirms what was already thought through, the free-form look is what finds the
+next thing.
+
+Cross-session persistence is proven rather than assumed — captures and replays
+ran under different MCP server PIDs, so the file was read by a process that
+never wrote it.
+
+**Still unverified in a browser:** LB9 (a slice switch caught half-finished),
+added after pass 4 and covering the fix in `b7ea6ac`. Unit-covered by P75-P79.
+
+**The matcher took four rounds to get right**, which is worth recording because
+each wrong rule looked reasonable. A variant's key is its preamble; the question
+is how to match it against the steps a caller just issued.
+`prefix-of-buffer` returned the slice a completed switch had *left*.
+`latest-run-end-anywhere` still did, whenever only one variant occurred in the
+buffer at all. Only `suffix-of-buffer` is right — the last actions are what put
+the page in the state it is in — and it only became viable once scrolls were
+excluded from the key, since otherwise a scroll before extracting broke every
+match. Each failure returned another slice's records under the wrong label,
+called a healthy page stale against the wrong baseline, and charged `failCount`
+to a variant that never ran.
 
 **Remaining** (verified absent in the code as of `v1.6.0-beta.1`):
 
