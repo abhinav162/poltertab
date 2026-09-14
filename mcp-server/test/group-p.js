@@ -1561,6 +1561,224 @@ async function groupP() {
       },
     );
   });
+
+  // One spec, several slices of it — the shape the store is in once two facet
+  // combinations have been learned under one recipe.
+  function seedVariants(host, names) {
+    for (const name of names)
+      memory.putRecipe(host, "/search", "titles", {
+        extract: { record: ".card", fields: { name: { sel: "h3", get: "text" } } },
+        variants: {
+          [name]: { steps: [], baseline: { name: 1 }, lastOk: Date.now(), failCount: 0 },
+        },
+      });
+  }
+
+  // The clicks a caller issued on this target, as index.js would have recorded
+  // them before calling hydrate.
+  function clicked(targetKey, host, selectors) {
+    recipes.clearSteps(targetKey);
+    for (const selector of selectors)
+      recipes.noteStep(targetKey, { action: "click", selector, path: "/search", host });
+  }
+
+  const hydrateOn = (host, targetKey, args = {}) =>
+    recipes.hydrate("extract", args, { host, path: "/search" }, targetKey);
+
+  await test("P58 the steps just issued pick the slice, with no `variant` argument", () => {
+    const host = "p58.example";
+    seedVariants(host, ["click.facet-eng+click.facet-remote", "click.facet-design"]);
+    clicked("p58", host, ["#facet-eng", "#facet-remote"]);
+
+    // The server was holding these two clicks itself. Demanding the caller type
+    // back a string it had just produced by acting is why "extract with no spec
+    // at all" stopped working the moment a second slice existed.
+    const ctx = hydrateOn(host, "p58");
+    assert.strictEqual(ctx.variant, "click.facet-eng+click.facet-remote", ctx.variant);
+
+    // observe owns draining. A read here that consumed the buffer would leave
+    // the next extract in this page state with no preamble at all.
+    assert.strictEqual(
+      recipes.takeSteps("p58").length,
+      2,
+      "hydrate drained the buffer observe still needs",
+    );
+  });
+
+  await test("P59 an exact match wins over a slice that is only a prefix", () => {
+    const host = "p59.example";
+    seedVariants(host, ["click.facet-eng", "click.facet-eng+click.facet-remote"]);
+    clicked("p59", host, ["#facet-eng", "#facet-remote"]);
+    assert.strictEqual(
+      hydrateOn(host, "p59").variant,
+      "click.facet-eng+click.facet-remote",
+    );
+
+    // A prefix still counts when nothing matches outright and only one slice
+    // is one: the caller may have done the recorded preamble and then some.
+    const other = "p59b.example";
+    seedVariants(other, ["click.facet-eng+click.facet-remote", "click.facet-design"]);
+    clicked("p59b", other, ["#facet-eng", "#facet-remote", "#facet-senior"]);
+    assert.strictEqual(
+      hydrateOn(other, "p59b").variant,
+      "click.facet-eng+click.facet-remote",
+    );
+  });
+
+  await test("P60 two slices matching the buffer errors rather than guessing", () => {
+    const host = "p60.example";
+    seedVariants(host, ["click.facet-eng", "click.facet-eng+click.facet-remote"]);
+    clicked("p60", host, ["#facet-eng", "#facet-remote", "#facet-senior"]);
+    // Both are prefixes of what was issued. Picking either returns the other
+    // slice's records as if they were the ones asked for.
+    assert.throws(() => hydrateOn(host, "p60"), /2 variants: /);
+  });
+
+  await test("P61 a buffer matching no slice errors, listing the slices", () => {
+    const host = "p61.example";
+    seedVariants(host, ["click.facet-eng", "click.facet-remote"]);
+    clicked("p61", host, ["#facet-design"]);
+    assert.throws(() => hydrateOn(host, "p61"), /click\.facet-eng, click\.facet-remote/);
+
+    // And an explicit `variant` still overrules whatever is buffered.
+    assert.strictEqual(
+      hydrateOn(host, "p61", { variant: "click.facet-remote" }).variant,
+      "click.facet-remote",
+    );
+  });
+
+  await test("P62 a slice is not matched across a segment boundary", () => {
+    const host = "p62.example";
+    seedVariants(host, ["click.facet-eng", "click.facet-design"]);
+    clicked("p62", host, ["#facet-english", "#facet-remote"]);
+    // "click.facet-eng" IS a string prefix of "click.facet-english+...", and
+    // matching it would replay the wrong slice's baseline. Segments, not bytes.
+    assert.throws(() => hydrateOn(host, "p62"), /2 variants: /);
+  });
+
+  await test("P63 a replay follows the clicks the caller just made, and says so", async () => {
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+
+      await call(srv, "browser_click", { selector: "#facet-design" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+      assert.deepStrictEqual(
+        Object.keys(store().recipes["/search"][LIVE_NAME].variants).sort(),
+        ["click.facet-design", "click.facet-eng"],
+      );
+
+      // Two slices now exist, and this is the call that used to be refused.
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      const out = jsonOf(await call(srv, "browser_extract", {}));
+      assert.strictEqual(out.used_recipe, `${LIVE_NAME}/click.facet-eng`, JSON.stringify(out).slice(0, 300));
+      // Which slice it got, and why, or the choice is invisible to the caller.
+      const chosen = out.variant_chosen_from_steps || "";
+      assert.ok(/click\.facet-eng/.test(chosen), chosen);
+      assert.ok(/steps recorded/.test(chosen), chosen);
+    });
+  });
+
+  await test("P64 two extracts in one page state share the preamble that produced them", async () => {
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      await call(srv, "browser_click", { selector: "#facet-remote" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+      // Nothing between the two: the second recipe needs exactly the same two
+      // clicks to reproduce, and used to be learned with steps: [] — which
+      // then sent a stale replay to read a preamble that was not there.
+      await call(srv, "browser_extract", { ...ROW_SPEC });
+
+      const key = "click.facet-eng+click.facet-remote";
+      const bucket = store().recipes["/search"];
+      assert.deepStrictEqual(Object.keys(bucket[LIVE_NAME].variants), [key]);
+      assert.deepStrictEqual(Object.keys(bucket[ROW_NAME].variants), [key]);
+      assert.deepStrictEqual(
+        bucket[ROW_NAME].variants[key].steps.map((s) => s.selector),
+        ["#facet-eng", "#facet-remote"],
+        JSON.stringify(bucket[ROW_NAME].variants[key].steps),
+      );
+    });
+  });
+
+  await test("P65 a click between two extracts discards the retained preamble", async () => {
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+
+      await call(srv, "browser_click", { selector: "#facet-design" });
+      await call(srv, "browser_extract", { ...ROW_SPEC });
+
+      // The moment a new step arrives the page is no longer in the state the
+      // first extract was taken in, so the second slice gets its own steps and
+      // nothing else — the four-click merge P50 exists to stop.
+      const variants = store().recipes["/search"][ROW_NAME].variants;
+      assert.deepStrictEqual(Object.keys(variants), ["click.facet-design"]);
+      assert.deepStrictEqual(
+        variants["click.facet-design"].steps.map((s) => s.selector),
+        ["#facet-design"],
+        JSON.stringify(variants["click.facet-design"].steps),
+      );
+    });
+  });
+
+  await test("P66 a cross-host navigate drops the retained preamble too", async () => {
+    await withRecipeServer({}, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_click", { selector: "#facet-eng" });
+      await call(srv, "browser_extract", { ...LIVE_SPEC });
+
+      await call(srv, "browser_navigate", { url: "http://elsewhere/x" });
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      await call(srv, "browser_extract", { ...ROW_SPEC });
+
+      // Retention obeys the same invalidation the buffer does: a flow that
+      // crossed sites is not one preamble, drained or not.
+      assert.deepStrictEqual(
+        Object.keys(store().recipes["/search"][ROW_NAME].variants),
+        ["default"],
+      );
+    });
+  });
+
+  await test("P67 a retained preamble older than the TTL is not reused", () => {
+    recipes.clearSteps("p67");
+    recipes.noteStep("p67", { action: "click", selector: "#facet-eng", path: "/search" });
+    assert.strictEqual(recipes.drainSteps("p67").length, 1);
+    // Still the same page state a moment later.
+    assert.strictEqual(recipes.drainSteps("p67").length, 1, "the drained preamble was not retained");
+    // Ten minutes on it belongs to work the user has moved on from, exactly as
+    // an open buffer of the same age does.
+    assert.deepStrictEqual(
+      recipes.drainSteps("p67", Date.now() + recipes.STEP_TTL_MS + 1),
+      [],
+      "a retained preamble outlived the buffer TTL",
+    );
+    assert.deepStrictEqual(recipes.drainSteps("p67"), [], "the expired copy was not dropped");
+  });
+
+  await test("P68 a zero-record replay of a recipe with no preamble says so", async () => {
+    await withRecipeServer(
+      {
+        seed: seededStore({ variant: { steps: [] } }),
+        ext: { rows: () => [], records_found: 0 },
+      },
+      async ({ srv }) => {
+        await call(srv, "browser_navigate", { url: "http://t/search" });
+        const out = jsonOf(await call(srv, "browser_extract", {}));
+        const warn = (out.warnings || []).join(" ");
+        // Sending the model to browser_get_site_memory for a preamble that was
+        // never recorded lands it on an empty list, which trains it to ignore
+        // the warning entirely.
+        assert.ok(!/get_site_memory/.test(warn), warn);
+        assert.ok(/no preamble/.test(warn), warn);
+        assert.ok(/record selector/.test(warn), warn);
+      },
+    );
+  });
 }
 
 module.exports = groupP;

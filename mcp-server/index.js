@@ -301,7 +301,7 @@ const handleToolCall = async (request) => {
       // inner sendCommand("extract", spec) calls always carry an explicit spec
       // and so are never hydrated.
       const page = pageOf(String(opts.url_template || "").replace("{page}", "1"));
-      const ctx = hydrate("extract_all", opts, page);
+      const ctx = hydrate("extract_all", opts, page, targetKey);
 
       const payload = await extractAll(bridge.sendCommand, opts);
       const patch = ctx
@@ -360,7 +360,9 @@ const handleToolCall = async (request) => {
     // is deliberate too — an extract with no record selector is not a cheap
     // mistake, it returns the page's whole text as one row.
     const targetKey = targetKeyFor(args);
-    const ctx = hydrate(action, args, page);
+    // targetKey, not just the page: hydrate matches a missing `variant`
+    // against the steps this server watched the caller issue on this target.
+    const ctx = hydrate(action, args, page, targetKey);
 
     let result;
     try {

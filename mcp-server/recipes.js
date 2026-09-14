@@ -297,7 +297,24 @@ const SCROLLS = new Set(["scroll", "smart_scroll"]);
 // borrow each other's preamble.
 const buffers = new Map();
 
+// The preamble that produced the LAST extract on this target, kept after the
+// buffer was drained. Draining on every extract is what stopped two
+// independent slices merging into one four-click preamble; without retention
+// the cost was the other way round — two extracts run back to back in one page
+// state, and the second was learned with `steps: []` even though it needs
+// exactly the same clicks to reproduce, which then sent a stale replay to read
+// a preamble that was not there.
+//
+// Reused only while NOTHING has been recorded since: the first new step means
+// the page has moved on and this copy no longer describes it. index.js never
+// reaches in here — the same contract the buffer has.
+const retained = new Map();
+
 function noteStep(targetKey, step, now = Date.now()) {
+  // Before anything else, including the scroll-coalescing return below: any
+  // new step at all is the page leaving the state the last extract saw.
+  retained.delete(targetKey);
+
   let buf = buffers.get(targetKey);
   if (!buf) {
     // The host is tracked beside the buffer, not parsed out of targetKey —
@@ -344,7 +361,11 @@ function takeSteps(targetKey, now = Date.now()) {
 }
 
 function clearSteps(targetKey, reason) {
-  if (!buffers.delete(targetKey)) return;
+  // Both, always: a retained preamble is as replayable as a buffered one, so
+  // every invalidation that drops the buffer has to drop it too.
+  const hadBuffer = buffers.delete(targetKey);
+  const hadRetained = retained.delete(targetKey);
+  if (!hadBuffer && !hadRetained) return;
   // stderr is the only channel that is not the MCP protocol stream, and a
   // dropped preamble is otherwise invisible when a replay later comes up short.
   if (reason) {
@@ -357,11 +378,61 @@ function clearSteps(targetKey, reason) {
 // replaying them would send the recipe somewhere it was never proven.
 function noteNavigation(targetKey, host) {
   const buf = buffers.get(targetKey);
-  if (!buf || !buf.host || !host || buf.host === host) return;
+  const held = retained.get(targetKey);
+  // Read from whichever holds the flow: after an extract there is no buffer
+  // left, and a cross-host jump would otherwise leave the retained copy behind
+  // to be attributed to an extract on another site.
+  const from = (buf && buf.host) || (held && held.host);
+  if (!from || !host || from === host) return;
   clearSteps(
     targetKey,
-    `navigated from ${buf.host} to ${host} — a flow that crossed sites is not one preamble`,
+    `navigated from ${from} to ${host} — a flow that crossed sites is not one preamble`,
   );
+}
+
+function liveBuffer(targetKey, now) {
+  const buf = buffers.get(targetKey);
+  if (!buf || now - buf.startedAt > STEP_TTL_MS) return null;
+  return buf;
+}
+
+// The retained copy's clock runs from the extract that produced it, not from
+// the click that started the flow: what it claims is "the page is still in the
+// state that extract saw", and that claim ages from the extract.
+function liveRetained(targetKey, now) {
+  const held = retained.get(targetKey);
+  if (!held || now - held.at > STEP_TTL_MS) return null;
+  return held;
+}
+
+// What put the page in front of the caller into its current state, without
+// consuming anything. hydrate reads this to match a variant; observe must
+// still find the buffer intact afterwards, or the extract that follows the
+// read is filed with no preamble at all.
+function currentSteps(targetKey, now = Date.now()) {
+  const buf = liveBuffer(targetKey, now);
+  if (buf && buf.steps.length) return buf.steps;
+  const held = liveRetained(targetKey, now);
+  return held ? held.steps : [];
+}
+
+// The same thing, for the one caller allowed to consume it: observe, once per
+// extract. Anything buffered is drained and retained; with nothing buffered,
+// the retained copy stands, because no step has arrived to say the page moved.
+function drainSteps(targetKey, now = Date.now()) {
+  const buf = liveBuffer(targetKey, now);
+  const fresh = buf ? buf.steps : [];
+  // Unconditional, so an over-TTL buffer is forgotten rather than left to be
+  // picked up by the next extract as if it were live.
+  takeSteps(targetKey, now);
+  if (fresh.length) {
+    retained.set(targetKey, { steps: fresh, at: now, host: buf.host });
+    return fresh;
+  }
+  const held = liveRetained(targetKey, now);
+  if (held) return held.steps;
+  retained.delete(targetKey);
+  return [];
 }
 
 // ── The integration seam ────────────────────────────────────────────────────
@@ -382,11 +453,48 @@ const {
 
 const HYDRATABLE = new Set(["extract", "extract_all"]);
 
+// Segment-wise, never String.startsWith: variant "click.facet-eng" is a byte
+// prefix of the key "click.facet-english+click.facet-remote" and has nothing to
+// do with it, and matching the two would replay the wrong slice's baseline over
+// the wrong rows.
+function isPrefix(variantKey, issued) {
+  const want = String(variantKey).split("+");
+  if (want.length > issued.length) return false;
+  return want.every((segment, i) => segment === issued[i]);
+}
+
+// Which slice the caller is standing in, read off the steps this server watched
+// it issue. Without this, a caller that had just clicked two facets was refused
+// with a demand to type back the very key those clicks produce.
+//
+// Returns null rather than a best guess whenever the evidence is not decisive:
+// picking wrong returns another slice's records as if they were the ones asked
+// for, which is the whole reason the error below exists.
+function variantFromSteps(targetKey, variantNames, now = Date.now()) {
+  const steps = currentSteps(targetKey, now);
+  // No recorded steps is no evidence, not evidence of a preamble-free slice:
+  // the buffer is equally empty after a restart, a TTL expiry and a cross-host
+  // navigate, and the page may be sitting in any slice's state.
+  if (!steps.length) return null;
+
+  const issuedKey = deriveVariant(steps);
+  if (variantNames.includes(issuedKey)) return { variant: issuedKey, issuedKey };
+
+  // A variant may be a prefix of what was issued — the caller did the recorded
+  // preamble plus a scroll of its own. The reverse is not a match: steps the
+  // variant needs that the caller never issued mean a page in another state.
+  const issued = issuedKey.split("+");
+  const candidates = variantNames.filter((name) => isPrefix(name, issued));
+  return candidates.length === 1
+    ? { variant: candidates[0], issuedKey }
+    : null;
+}
+
 // Fills a missing extract spec from what was learned on this page. Every
 // ambiguity is an error rather than a guess: a recipe belonging to another task
 // returns that task's records, and rows that came from the wrong spec look
 // exactly like rows that came from the right one.
-function hydrate(action, args, page) {
+function hydrate(action, args, page, targetKey) {
   if (!HYDRATABLE.has(action)) return null;
   const a = args || {};
 
@@ -438,6 +546,7 @@ function hydrate(action, args, page) {
   const variantNames = Object.keys(variants);
 
   let variant = a.variant;
+  let chosenFrom = null;
   if (variant) {
     if (!variants[variant]) {
       throw new Error(
@@ -452,9 +561,14 @@ function hydrate(action, args, page) {
     // there is nothing to be ambiguous about.
     variant = "default";
   } else {
-    throw new Error(
-      `Recipe "${picked.name}" on ${where} has ${variantNames.length} variants: ${variantNames.join(", ")}. Pass \`variant\` to say which one.`,
-    );
+    const matched = variantFromSteps(targetKey, variantNames);
+    if (!matched) {
+      throw new Error(
+        `Recipe "${picked.name}" on ${where} has ${variantNames.length} variants: ${variantNames.join(", ")}. Pass \`variant\` to say which one.`,
+      );
+    }
+    variant = matched.variant;
+    chosenFrom = matched.issuedKey;
   }
 
   // Only what the caller left open. A half-supplied spec is the model
@@ -478,6 +592,10 @@ function hydrate(action, args, page) {
     name: picked.name,
     variant,
     baseline: entry.baseline || {},
+    // Read only to word the zero-record warning: a recipe with no recorded
+    // preamble must not be told to go and read one.
+    steps: entry.steps || [],
+    chosenFrom,
     hydrated: true,
   };
 }
@@ -537,11 +655,19 @@ function observed({ action, args, result, ctx, targetKey }) {
   // Drained on EVERY extract that reaches here, replay or learn. A replay's
   // buffered steps have already served their purpose, and leaving them behind
   // attributed one slice's preamble to the next: two independent two-click
-  // slices came back out of the store as one four-click preamble.
-  const steps = takeSteps(targetKey);
+  // slices came back out of the store as one four-click preamble. What is
+  // drained is retained for the next extract in the same page state — see the
+  // `retained` map.
+  const steps = drainSteps(targetKey);
 
   if (ctx.hydrated) {
     patch.used_recipe = `${ctx.name}/${ctx.variant}`;
+    // A slice chosen from what the caller did rather than from what it typed
+    // is otherwise invisible, and the caller has no way to tell which of
+    // several slices it just got back.
+    if (ctx.chosenFrom) {
+      patch.variant_chosen_from_steps = `${ctx.variant} — matched against the steps recorded before this extract (${ctx.chosenFrom})`;
+    }
     const ratios = ratiosOf(view);
     // Zero records leaves nothing to measure a fill rate against, so it is
     // judged on its own rather than as a collapsed column.
@@ -554,8 +680,15 @@ function observed({ action, args, result, ctx, targetKey }) {
         // simply not in the state the recipe was learned in because its
         // preamble was never reissued. Naming only the selector sent the model
         // off rewriting a spec that was correct.
+        //
+        // Split on whether there IS a preamble to read. Pointing at
+        // browser_get_site_memory for a recipe stored with `steps: []` lands
+        // the model on an empty list, and a warning that sends someone
+        // nowhere trains them to ignore warnings.
         dead
-          ? `recipe ${patch.used_recipe} matched no records. Either this page is not in the state the recipe was learned in — its preamble was not reissued; read the steps recorded for it with browser_get_site_memory for ${ctx.host} and reissue the ones that still make sense — or the record selector "${a.record}" is gone from the page and the spec needs re-deriving from a browser_snapshot. Check the preamble first: the spec is often correct.`
+          ? (ctx.steps || []).length
+            ? `recipe ${patch.used_recipe} matched no records. Either this page is not in the state the recipe was learned in — its preamble was not reissued; read the steps recorded for it with browser_get_site_memory for ${ctx.host} and reissue the ones that still make sense — or the record selector "${a.record}" is gone from the page and the spec needs re-deriving from a browser_snapshot. Check the preamble first: the spec is often correct.`
+            : `recipe ${patch.used_recipe} matched no records, and no preamble was recorded for it, so there is nothing to reissue. Either this page is not in the state the recipe was learned in and you have to put it there yourself — the facet, the filter, the scroll that loaded the list — or the record selector "${a.record}" is gone from the page and the spec needs re-deriving from a browser_snapshot.`
           : `recipe ${patch.used_recipe} is stale: ${gone
               .map(
                 (n) =>
@@ -770,6 +903,7 @@ module.exports = {
   redactValue,
   noteStep,
   takeSteps,
+  drainSteps,
   clearSteps,
   noteNavigation,
   hydrate,
