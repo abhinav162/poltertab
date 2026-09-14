@@ -253,9 +253,10 @@ function deriveVariant(steps) {
   // preambles sharing a prefix do not share a variant.
   //
   // Whole segments are dropped, never bytes. A byte cut left "#facet-onsite"
-  // as "face" — this label is echoed back as `variant_chosen_from_steps`, so a
-  // reader checking the matcher's reasoning got a string broken inside the
-  // step that decided the outcome.
+  // as "face" — this name is what `used_recipe` reports and what a caller
+  // types back as `variant`, so a string broken inside the step that decided
+  // the outcome is unreadable and unusable both. (What the MATCHER echoes is
+  // echoSteps, which never carries a digest at all.)
   //
   // The kept segments are the LAST ones, for the same reason variantFromSteps
   // matches on the latest run: the most recent actions are the ones that put
@@ -491,22 +492,59 @@ const {
 
 const HYDRATABLE = new Set(["extract", "extract_all"]);
 
-// Segment-wise, never String.startsWith: variant "click.facet-eng" is a byte
-// prefix of the key "click.facet-english+click.facet-remote" and has nothing to
-// do with it, and matching the two would replay the wrong slice's baseline over
-// the wrong rows.
-// Where the variant's segments last occur as a contiguous run in what the
-// caller issued, or -1 if they never do. Compared segment-wise, never
-// byte-wise: "click.facet-eng" is a string prefix of "click.facet-english" and
-// matching it replays a different slice's baseline.
-function lastRunEnd(variantKey, issued) {
+// Does the variant's preamble run all the way to the END of what the caller
+// issued? A variant key describes how the page got into the state it is in
+// NOW, so only a suffix proves the page is in that state — the same run
+// sitting anywhere earlier in the buffer proves the page HAS BEEN there and
+// left. Returns the number of segments matched, or 0.
+//
+// Compared segment-wise, never byte-wise: "click.facet-eng" is a string suffix
+// of "click.facet-english" and matching it replays a different slice's
+// baseline over the wrong rows.
+function suffixLength(variantKey, issued) {
   const want = String(variantKey).split("+");
-  for (let start = issued.length - want.length; start >= 0; start--) {
-    if (want.every((segment, i) => segment === issued[start + i])) {
-      return start + want.length - 1;
-    }
+  const start = issued.length - want.length;
+  if (start < 0) return 0;
+  return want.every((segment, i) => segment === issued[start + i]) ? want.length : 0;
+}
+
+// How much of the projection the echo below may spend. Bigger than
+// VARIANT_LABEL_CAP on purpose: this string is read by a human checking the
+// matcher, and nothing keys off it, so legibility beats brevity.
+const VARIANT_ECHO_CAP = 200;
+
+// The steps the matcher matched against, worded for a person. Never the stored
+// key: past VARIANT_LABEL_CAP that carries a "N-more-<sha1>" marker, and a
+// digest of steps the reader cannot see is exactly what they need when asking
+// why a match went the way it did. The digest keeps two long preambles
+// distinct in the STORE; an echo has no distinctness to keep, so it names the
+// elided steps instead.
+function echoSteps(steps) {
+  const segments = variantSegments(steps);
+  if (!segments.length) return "no steps that select anything";
+  const full = segments.join("+");
+  if (full.length <= VARIANT_ECHO_CAP) return full;
+
+  // The tail is kept whole and unabbreviated: it is the part the suffix match
+  // turns on. Half the budget, so the named head always has room for a step or
+  // two however long the tail runs.
+  let kept = [];
+  for (let i = segments.length - 1; i > 0; i--) {
+    const next = [segments[i], ...kept];
+    if (kept.length && next.join("+").length > VARIANT_ECHO_CAP / 2) break;
+    kept = next;
   }
-  return -1;
+  const head = segments.slice(0, segments.length - kept.length);
+  const render = (names) =>
+    `${head.length} earlier steps (${(names.length < head.length ? ["...", ...names] : names).join(", ")}) then ${kept.join("+")}`;
+
+  let named = [];
+  for (let i = head.length - 1; i >= 0; i--) {
+    const next = [head[i], ...named];
+    if (named.length && render(next).length > VARIANT_ECHO_CAP) break;
+    named = next;
+  }
+  return render(named);
 }
 
 // Which slice the caller is standing in, read off the steps this server watched
@@ -523,24 +561,34 @@ function variantFromSteps(targetKey, variantNames, now = Date.now()) {
   // navigate, and the page may be sitting in any slice's state.
   if (!steps.length) return null;
 
+  const seen = echoSteps(steps);
   const issuedKey = deriveVariant(steps);
-  if (variantNames.includes(issuedKey)) return { variant: issuedKey, issuedKey };
+  if (variantNames.includes(issuedKey)) return { variant: issuedKey, seen };
 
   // Nothing matched the whole preamble, so the caller issued more than one
-  // slice's worth of steps. The most recent actions are what put the page in
-  // the state it is in NOW: the variant whose run of steps ends LAST wins.
+  // slice's worth of steps. A variant then has to be a SUFFIX of what was
+  // issued: its steps are the last ones taken, so the page is standing in that
+  // slice now.
   //
-  // Matching the earliest occurrence instead — "the variant key is a prefix of
-  // what was issued" — broke every run that opened one slice and switched to
-  // another without extracting in between. The page showed design-onsite and
-  // the matcher picked eng-remote because it matched the buffer's head: every
-  // row came back labelled as the wrong slice, a healthy page read stale
-  // against the wrong baseline, the warning sent the caller off re-deriving a
-  // correct spec, and the untouched eng-remote variant was charged a failure.
-  // Three of those evict a slice that never failed.
+  // Anything looser reads the page's history as its present. "The key is a
+  // prefix of what was issued" returned the slice a completed switch had LEFT.
+  // "The key's run ends latest, wherever it sits" still did, whenever only one
+  // variant occurred in the buffer at all: mid-switch at [eng, remote, design]
+  // the eng-remote run ended at step 1 and won unopposed, so a page rendering
+  // zero design cards came back labelled eng-remote, read stale against the
+  // wrong baseline, sent the caller off re-deriving a correct spec, and
+  // charged eng-remote a failure it never earned. Three of those evict a slice
+  // that never ran.
   //
-  // Scrolls are already out of the key (see deriveVariant), so a trailing
-  // scroll is an exact match above rather than something handled here.
+  // No suffix is not a reason to try something looser — it is positive
+  // evidence that the page is in a state no variant describes, so it refuses
+  // exactly as an undecidable match does. That refuses a trailing
+  // "#sort-by-date" click too, and deliberately: this server cannot know
+  // whether that click changed the slice, and the caller can say so with
+  // `variant`. Do not relax it back into a "trailing noise is fine" rule.
+  //
+  // Scrolls are already out of the projection (see deriveVariant), so a
+  // trailing scroll leaves an exact suffix rather than breaking the match.
   //
   // Read off the steps, not off issuedKey: past the label cap that string has
   // segments folded into a "N-more" marker, and a variant whose clicks live in
@@ -548,20 +596,19 @@ function variantFromSteps(targetKey, variantNames, now = Date.now()) {
   // still be a capped one, and then only the exact match above can find it —
   // an error listing the variants, which is the safe direction.
   const issued = variantSegments(steps);
-  let latest = -1;
-  let winners = [];
+  let winner = null;
+  let longest = 0;
   for (const name of variantNames) {
-    const end = lastRunEnd(name, issued);
-    if (end < 0) continue;
-    if (end > latest) {
-      latest = end;
-      winners = [name];
-    } else if (end === latest) {
-      winners.push(name);
+    // Two different keys cannot be suffixes of the same length, so the longest
+    // is unique. Where one is a suffix of the other it is also the more
+    // specific account of how the page got here.
+    const len = suffixLength(name, issued);
+    if (len > longest) {
+      longest = len;
+      winner = name;
     }
   }
-  // Two slices ending on the same step is no more decisive than none at all.
-  return winners.length === 1 ? { variant: winners[0], issuedKey } : null;
+  return winner ? { variant: winner, seen } : { variant: null, seen };
 }
 
 // Fills a missing extract spec from what was learned on this page. Every
@@ -636,13 +683,19 @@ function hydrate(action, args, page, targetKey) {
     variant = "default";
   } else {
     const matched = variantFromSteps(targetKey, variantNames);
-    if (!matched) {
+    if (!matched || !matched.variant) {
+      // Name what was SEEN, not only what exists. Listing the variants alone
+      // left a caller mid-switch unable to tell that the steps it had just
+      // issued were the thing that matched nothing.
       throw new Error(
-        `Recipe "${picked.name}" on ${where} has ${variantNames.length} variants: ${variantNames.join(", ")}. Pass \`variant\` to say which one.`,
+        `Recipe "${picked.name}" on ${where} has ${variantNames.length} variants: ${variantNames.join(", ")}. ` +
+          (matched
+            ? `No variant matches the steps you just issued (${matched.seen}) — pass \`variant\` to say which one.`
+            : "Pass \`variant\` to say which one."),
       );
     }
     variant = matched.variant;
-    chosenFrom = matched.issuedKey;
+    chosenFrom = matched.seen;
   }
 
   // Only what the caller left open. A half-supplied spec is the model
@@ -968,6 +1021,7 @@ module.exports = {
   STEP_CAP,
   STEP_TTL_MS,
   VARIANT_LABEL_CAP,
+  VARIANT_ECHO_CAP,
   qualityOk,
   deriveName,
   deriveVariant,

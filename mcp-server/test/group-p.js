@@ -1614,29 +1614,41 @@ async function groupP() {
       "click.facet-eng+click.facet-remote",
     );
 
-    // A slice still counts when nothing matches the whole buffer and only one
-    // occurs in it: the caller may have done the recorded preamble and then
-    // some.
+    // A slice still counts when nothing matches the whole buffer, as long as
+    // its steps are the LAST ones taken: an earlier unrelated click cannot
+    // have undone them.
     const other = "p59b.example";
     seedVariants(other, ["click.facet-eng+click.facet-remote", "click.facet-design"]);
-    clicked("p59b", other, ["#facet-eng", "#facet-remote", "#facet-senior"]);
+    clicked("p59b", other, ["#search-toggle", "#facet-eng", "#facet-remote"]);
     assert.strictEqual(
       hydrateOn(other, "p59b").variant,
       "click.facet-eng+click.facet-remote",
     );
+    // This case used to end with a #facet-senior click instead, and matched
+    // eng-remote all the same. It no longer does: a trailing click that is not
+    // a scroll may have changed the slice, and guessing that it did not is how
+    // a half-finished switch matched the slice it had left. See P75 and P77.
   });
 
-  await test("P60 two slices matching the buffer errors rather than guessing", () => {
+  await test("P60 where one slice ends inside another, the longer one wins", () => {
     const host = "p60.example";
     seedVariants(host, [
       "click.facet-remote+click.facet-senior",
       "click.facet-senior",
     ]);
     clicked("p60", host, ["#facet-eng", "#facet-remote", "#facet-senior"]);
-    // Both runs end on the same click, so neither is the more recent one.
-    // Picking either returns the other slice's records as if they were the
-    // ones asked for.
-    assert.throws(() => hydrateOn(host, "p60"), /2 variants: /);
+    // Both keys end the buffer, so both describe the state the page is in. The
+    // longer one accounts for one more of the clicks that produced it, which
+    // makes it the more specific of the two — and two different keys can never
+    // be suffixes of the same LENGTH, so there is no tie to be had here.
+    //
+    // This used to refuse, on the grounds that two runs ending on the same
+    // click meant neither was the more recent. Refusing here also refused the
+    // ordinary nested pair `click.b` / `click.a+click.b`.
+    assert.strictEqual(
+      hydrateOn(host, "p60").variant,
+      "click.facet-remote+click.facet-senior",
+    );
   });
 
   await test("P61 a buffer matching no slice errors, listing the slices", () => {
@@ -1811,7 +1823,9 @@ async function groupP() {
     // click the page is no longer in the one-click slice.
     const nested = "p69b.example";
     seedVariants(nested, ["click.facet-eng", "click.facet-eng+click.facet-remote"]);
-    clicked("p69b", nested, ["#facet-eng", "#facet-remote", "#facet-senior"]);
+    // No trailing #facet-senior click here any more: that click is not part of
+    // either slice, and a variant has to be a suffix of what was issued (P77).
+    clicked("p69b", nested, ["#facet-eng", "#facet-remote"]);
     assert.strictEqual(
       hydrateOn(nested, "p69b").variant,
       "click.facet-eng+click.facet-remote",
@@ -1889,9 +1903,10 @@ async function groupP() {
       }));
     const a = recipes.deriveVariant(long("a"));
     assert.ok(a.length <= recipes.VARIANT_LABEL_CAP, `${a.length}: ${a}`);
-    // This string is what the matcher echoes back for a reader to check its
-    // reasoning against. Cutting mid-token left "#facet-onsite" as "face" —
-    // broken inside the very step that decided the outcome.
+    // This string is the variant NAME: `used_recipe` reports it and a caller
+    // types it back as `variant`. Cutting mid-token left "#facet-onsite" as
+    // "face" — unreadable, and unusable as an argument. (The matcher's echo is
+    // a separate string that never carries a digest — P79.)
     for (const segment of a.split("+")) {
       assert.ok(
         /^click\.facet-number-\d+[ab]?$/.test(segment) || /^\d+-more-[0-9a-f]{6}$/.test(segment),
@@ -1972,6 +1987,191 @@ async function groupP() {
       );
     });
   });
+  await test("P75 a switch caught half-finished matches nothing", () => {
+    const host = "p75.example";
+    seedVariants(host, [
+      "click.facet-eng+click.facet-remote",
+      "click.facet-design+click.facet-onsite",
+    ]);
+    // Mid-switch: the first slice has been left and the second not yet
+    // reached. Only one variant occurs in the buffer at all, so matching "the
+    // run that ends latest" left a stale head match winning unopposed — the
+    // page rendered zero cards, every record came back labelled eng-remote,
+    // and the eng-remote variant was charged a failure it never earned.
+    clicked("p75", host, ["#facet-eng", "#facet-remote", "#facet-design"]);
+    assert.throws(
+      () => hydrateOn(host, "p75"),
+      (err) => {
+        // What was SEEN, not just what exists: the caller has to be able to
+        // tell that its own steps are what matched nothing.
+        assert.ok(
+          /click\.facet-eng\+click\.facet-remote\+click\.facet-design/.test(err.message),
+          `it does not say what it matched against: ${err.message}`,
+        );
+        assert.ok(/click\.facet-design\+click\.facet-onsite/.test(err.message), err.message);
+        return true;
+      },
+    );
+  });
+
+  await test("P76 the slice on screen is the one the LAST steps spell out", () => {
+    const ENG = "click.facet-eng+click.facet-remote";
+    const DESIGN = "click.facet-design+click.facet-onsite";
+    let n = 0;
+    // A variant key describes how the page got into the state it is in NOW, so
+    // it has to be a SUFFIX of what was issued — present somewhere in the
+    // buffer is not enough (P75).
+    const issued = (selectors, names = [ENG, DESIGN]) => {
+      const key = `p76-${++n}`;
+      const host = `${key}.example`;
+      seedVariants(host, names);
+      clicked(key, host, selectors);
+      return { host, key };
+    };
+    const variantFor = (spot) => hydrateOn(spot.host, spot.key).variant;
+
+    assert.strictEqual(variantFor(issued(["#facet-eng", "#facet-remote"])), ENG);
+
+    // A scroll loads more of the slice already on screen. deriveVariant drops
+    // it from the projection, so this is still an exact suffix.
+    const scrolled = issued(["#facet-eng", "#facet-remote"]);
+    recipes.noteStep(scrolled.key, {
+      action: "smart_scroll",
+      selector: null,
+      path: "/search",
+      host: scrolled.host,
+    });
+    assert.strictEqual(variantFor(scrolled), ENG, "a trailing scroll broke an exact match");
+
+    assert.strictEqual(
+      variantFor(issued(["#facet-eng", "#facet-remote", "#facet-design", "#facet-onsite"])),
+      DESIGN,
+      "a completed switch returned the slice the run had left",
+    );
+
+    // An unrelated leading click is fine: only where the run ENDS decides.
+    assert.strictEqual(
+      variantFor(issued(["#search-toggle", "#facet-eng", "#facet-remote"])),
+      ENG,
+    );
+
+    // Half a preamble is not a slice.
+    const half = issued(["#facet-eng"]);
+    assert.throws(() => hydrateOn(half.host, half.key), /2 variants: /);
+
+    // No steps is no evidence — the buffer is equally empty after a restart.
+    const empty = issued(["#facet-eng"]);
+    recipes.clearSteps(empty.key);
+    assert.throws(() => hydrateOn(empty.host, empty.key), /2 variants: /);
+
+    // Two keys can both be suffixes only when one is a suffix of the other,
+    // and then the longer one is the more specific description of how the page
+    // got here.
+    const nested = issued(
+      ["#facet-eng", "#facet-remote"],
+      ["click.facet-remote", "click.facet-eng+click.facet-remote"],
+    );
+    assert.strictEqual(variantFor(nested), "click.facet-eng+click.facet-remote");
+  });
+
+  await test("P77 a trailing click that is not a scroll refuses rather than guesses", () => {
+    const host = "p77.example";
+    seedVariants(host, [
+      "click.facet-eng+click.facet-remote",
+      "click.facet-design+click.facet-onsite",
+    ]);
+    // #sort-by-date may or may not have changed the slice, and this server
+    // cannot know which. Refusing costs the caller one `variant` argument;
+    // guessing costs it another slice's records labelled as this one.
+    clicked("p77", host, ["#facet-eng", "#facet-remote", "#sort-by-date"]);
+    assert.throws(() => hydrateOn(host, "p77"), /click\.sort-by-date/);
+  });
+
+  await test("P78 a refused match charges no variant a failure", async () => {
+    const variant = (selectors, baseline) => ({
+      steps: selectors.map((selector, seq) => ({
+        seq,
+        action: "click",
+        selector,
+        path: "/search",
+      })),
+      baseline,
+      lastOk: Date.now(),
+      failCount: 0,
+    });
+    const ENG = "click.facet-eng+click.facet-remote";
+    const DESIGN = "click.facet-design+click.facet-onsite";
+    const seed = {
+      "t.json": {
+        notes: [],
+        selectors: {},
+        recipes: {
+          "/search": {
+            [LIVE_NAME]: {
+              extract: { record: LIVE_SPEC.record, fields: LIVE_SPEC.fields },
+              variants: {
+                [ENG]: variant(["#facet-eng", "#facet-remote"], { name: 1, url: 0.92 }),
+                [DESIGN]: variant(["#facet-design", "#facet-onsite"], { name: 1, url: 1 }),
+              },
+            },
+          },
+        },
+      },
+    };
+
+    // The half-switched page renders nothing at all.
+    await withRecipeServer(
+      { seed, ext: { rows: () => [], records_found: 0 } },
+      async ({ srv, store }) => {
+        await call(srv, "browser_navigate", { url: "http://t/search" });
+        for (const selector of ["#facet-eng", "#facet-remote", "#facet-design"])
+          await call(srv, "browser_click", { selector });
+
+        const reply = await call(srv, "browser_extract", {});
+        assert.ok(reply.result.isError, `it guessed a slice: ${textOf(reply)}`);
+
+        // The refusal is not a replay, so it proves nothing about either
+        // slice. Three charged failures evict a variant that never ran.
+        const variants = store().recipes["/search"][LIVE_NAME].variants;
+        assert.strictEqual(variants[ENG].failCount, 0, "the slice the page had LEFT was charged");
+        assert.strictEqual(variants[DESIGN].failCount, 0, "a slice never replayed was charged");
+      },
+    );
+  });
+
+  await test("P79 the echoed steps name what was elided instead of hashing it", () => {
+    const host = "p79.example";
+    const selectors = Array.from({ length: 12 }, (_, i) => `#facet-number-${`${i}`.padStart(2, "0")}`);
+    const segments = selectors.map((s) => `click.${s.slice(1)}`);
+    const key = segments.slice(-2).join("+");
+    seedVariants(host, [key, "click.facet-design+click.facet-onsite"]);
+    clicked("p79", host, selectors);
+
+    const ctx = hydrateOn(host, "p79");
+    assert.strictEqual(ctx.variant, key);
+    const echo = ctx.chosenFrom;
+    // This string exists for a human checking the matcher's reasoning, and
+    // finding out why a match went the way it did means reading the EARLIER
+    // steps. A count paired with a digest of them ("2-more-f6ccdd") answers
+    // nothing. The digest belongs to the stored key, which needs two long
+    // preambles to stay distinct; an echo has no such job.
+    assert.ok(!/-more-|[0-9a-f]{6}/.test(echo), `the echo still hashes: ${echo}`);
+    assert.ok(/\d+ earlier steps \(/.test(echo), echo);
+    assert.ok(echo.includes(segments[segments.length - 3]), `it names none of them: ${echo}`);
+    // The tail is what the suffix match turned on, so it survives whole.
+    assert.ok(echo.endsWith(key), echo);
+    assert.ok(echo.length <= recipes.VARIANT_ECHO_CAP, `${echo.length}: ${echo}`);
+
+    // Short of the cap it is simply the projection, unabbreviated.
+    const plain = "p79b.example";
+    seedVariants(plain, ["click.facet-eng+click.facet-remote", "click.facet-design"]);
+    clicked("p79b", plain, ["#search-toggle", "#facet-eng", "#facet-remote"]);
+    assert.strictEqual(
+      hydrateOn(plain, "p79b").chosenFrom,
+      "click.search-toggle+click.facet-eng+click.facet-remote",
+    );
+  });
+
 }
 
 module.exports = groupP;
