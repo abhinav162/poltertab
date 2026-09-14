@@ -207,31 +207,71 @@ function deriveName(fields, record) {
 //     accepted consequence is that two different search terms through the same
 //     box share a variant, which is fine: the same fields are present either
 //     way, so one baseline is the right bar for both.
-//   - A scroll's `count` is excluded. Scrolling 5 times or 10 to load the same
-//     list is not a different slice of the task.
+//   - SCROLLS are excluded outright, count and all. A scroll loads more of the
+//     slice already on screen; it never selects one, so "the recorded preamble
+//     plus a scroll of my own" is the SAME slice and has to derive the same
+//     key. Keying on it split one slice in two, and left variantFromSteps to
+//     be lenient about a trailing step instead of matching exactly. It also
+//     keeps a bare "scroll." out of the key — a step with no selector renders
+//     as a trailing dot, which reads as a truncation bug in the one string a
+//     caller uses to check the match.
 //
 // The action stays in the label rather than being dropped for readability: a
 // fill on #q and a click on #q leave the page in different states, and letting
 // them share a variant would be the same overwrite one level down.
 const VARIANT_LABEL_CAP = 64;
 
-function deriveVariant(steps) {
-  const ordered = (steps || [])
-    .filter((s) => s && s.action)
+// Shared with the step buffer below, which coalesces runs of these into one
+// counted step.
+const SCROLLS = new Set(["scroll", "smart_scroll"]);
+
+// One segment per step that selects something, in seq order. Kept separate
+// from the label because variantFromSteps has to match on ALL of them: four
+// clicks already overrun the cap, and matching against the truncated label
+// left the matcher reading the buffer's head — the exact thing it must stop
+// doing — with the steps that decided the page's state folded into "2-more".
+function variantSegments(steps) {
+  return (steps || [])
+    .filter((s) => s && s.action && !SCROLLS.has(s.action))
     .slice()
-    .sort((a, b) => (a.seq || 0) - (b.seq || 0));
-  // A task with no preamble genuinely has one slice.
+    .sort((a, b) => (a.seq || 0) - (b.seq || 0))
+    .map((s) => `${s.action}.${slugify(s.selector)}`);
+}
+
+function deriveVariant(steps) {
+  const ordered = variantSegments(steps);
+  // No preamble that selects anything: the task genuinely has one slice. Note
+  // that hydrate() also falls back to this name for a hand-edited store whose
+  // recipe carries no variants at all — same name, and harmless, because
+  // either way there is nothing for it to be confused with.
   if (!ordered.length) return "default";
 
-  const label = ordered.map((s) => `${s.action}.${slugify(s.selector)}`).join("+");
+  const label = ordered.join("+");
   if (label.length <= VARIANT_LABEL_CAP) return label;
-  // Past the cap the label has stopped being readable anyway: keep a head for
-  // a human and let the digest carry the distinctness, so two long preambles
-  // sharing a prefix do not share a variant. The digest suffix is longer than
-  // the separators trimmed off the head, so a truncated label always outruns
-  // the cap and can never collide with an untruncated one.
+  // Past the cap the label has stopped being readable anyway: keep some of it
+  // for a human and let the digest carry the distinctness, so two long
+  // preambles sharing a prefix do not share a variant.
+  //
+  // Whole segments are dropped, never bytes. A byte cut left "#facet-onsite"
+  // as "face" — this label is echoed back as `variant_chosen_from_steps`, so a
+  // reader checking the matcher's reasoning got a string broken inside the
+  // step that decided the outcome.
+  //
+  // The kept segments are the LAST ones, for the same reason variantFromSteps
+  // matches on the latest run: the most recent actions are the ones that put
+  // the page in its current state, and keeping the head instead showed the
+  // reader the slice that was NOT chosen while folding away the one that was.
+  //
+  // The "N-more" marker carries no ".", which no `action.selector` segment can
+  // say, so a truncated label can never collide with an untruncated one
+  // however the cap happens to fall.
   const digest = createHash("sha1").update(label).digest("hex").slice(0, 6);
-  return `${label.slice(0, VARIANT_LABEL_CAP).replace(/[-.+]+$/, "")}-${digest}`;
+  const segments = label.split("+");
+  for (let kept = segments.length - 1; kept >= 0; kept--) {
+    const marker = `${segments.length - kept}-more-${digest}`;
+    const out = kept ? `${marker}+${segments.slice(-kept).join("+")}` : marker;
+    if (out.length <= VARIANT_LABEL_CAP || kept === 0) return out;
+  }
 }
 
 // Decides "same task, new page variant" against "a second recipe". Only the
@@ -289,8 +329,6 @@ function redactValue(action, args, fingerprint) {
 const STEP_CAP = 20;
 
 const STEP_TTL_MS = 10 * 60 * 1000;
-
-const SCROLLS = new Set(["scroll", "smart_scroll"]);
 
 // targetKey is opaque here — it encodes session and tab, and this module never
 // parses it. Buffers are keyed strictly by it so two tasks in two tabs cannot
@@ -457,10 +495,18 @@ const HYDRATABLE = new Set(["extract", "extract_all"]);
 // prefix of the key "click.facet-english+click.facet-remote" and has nothing to
 // do with it, and matching the two would replay the wrong slice's baseline over
 // the wrong rows.
-function isPrefix(variantKey, issued) {
+// Where the variant's segments last occur as a contiguous run in what the
+// caller issued, or -1 if they never do. Compared segment-wise, never
+// byte-wise: "click.facet-eng" is a string prefix of "click.facet-english" and
+// matching it replays a different slice's baseline.
+function lastRunEnd(variantKey, issued) {
   const want = String(variantKey).split("+");
-  if (want.length > issued.length) return false;
-  return want.every((segment, i) => segment === issued[i]);
+  for (let start = issued.length - want.length; start >= 0; start--) {
+    if (want.every((segment, i) => segment === issued[start + i])) {
+      return start + want.length - 1;
+    }
+  }
+  return -1;
 }
 
 // Which slice the caller is standing in, read off the steps this server watched
@@ -480,14 +526,42 @@ function variantFromSteps(targetKey, variantNames, now = Date.now()) {
   const issuedKey = deriveVariant(steps);
   if (variantNames.includes(issuedKey)) return { variant: issuedKey, issuedKey };
 
-  // A variant may be a prefix of what was issued — the caller did the recorded
-  // preamble plus a scroll of its own. The reverse is not a match: steps the
-  // variant needs that the caller never issued mean a page in another state.
-  const issued = issuedKey.split("+");
-  const candidates = variantNames.filter((name) => isPrefix(name, issued));
-  return candidates.length === 1
-    ? { variant: candidates[0], issuedKey }
-    : null;
+  // Nothing matched the whole preamble, so the caller issued more than one
+  // slice's worth of steps. The most recent actions are what put the page in
+  // the state it is in NOW: the variant whose run of steps ends LAST wins.
+  //
+  // Matching the earliest occurrence instead — "the variant key is a prefix of
+  // what was issued" — broke every run that opened one slice and switched to
+  // another without extracting in between. The page showed design-onsite and
+  // the matcher picked eng-remote because it matched the buffer's head: every
+  // row came back labelled as the wrong slice, a healthy page read stale
+  // against the wrong baseline, the warning sent the caller off re-deriving a
+  // correct spec, and the untouched eng-remote variant was charged a failure.
+  // Three of those evict a slice that never failed.
+  //
+  // Scrolls are already out of the key (see deriveVariant), so a trailing
+  // scroll is an exact match above rather than something handled here.
+  //
+  // Read off the steps, not off issuedKey: past the label cap that string has
+  // segments folded into a "N-more" marker, and a variant whose clicks live in
+  // the folded tail would silently stop matching. A stored variant NAME can
+  // still be a capped one, and then only the exact match above can find it —
+  // an error listing the variants, which is the safe direction.
+  const issued = variantSegments(steps);
+  let latest = -1;
+  let winners = [];
+  for (const name of variantNames) {
+    const end = lastRunEnd(name, issued);
+    if (end < 0) continue;
+    if (end > latest) {
+      latest = end;
+      winners = [name];
+    } else if (end === latest) {
+      winners.push(name);
+    }
+  }
+  // Two slices ending on the same step is no more decisive than none at all.
+  return winners.length === 1 ? { variant: winners[0], issuedKey } : null;
 }
 
 // Fills a missing extract spec from what was learned on this page. Every

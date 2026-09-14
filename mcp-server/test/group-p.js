@@ -1614,8 +1614,9 @@ async function groupP() {
       "click.facet-eng+click.facet-remote",
     );
 
-    // A prefix still counts when nothing matches outright and only one slice
-    // is one: the caller may have done the recorded preamble and then some.
+    // A slice still counts when nothing matches the whole buffer and only one
+    // occurs in it: the caller may have done the recorded preamble and then
+    // some.
     const other = "p59b.example";
     seedVariants(other, ["click.facet-eng+click.facet-remote", "click.facet-design"]);
     clicked("p59b", other, ["#facet-eng", "#facet-remote", "#facet-senior"]);
@@ -1627,10 +1628,14 @@ async function groupP() {
 
   await test("P60 two slices matching the buffer errors rather than guessing", () => {
     const host = "p60.example";
-    seedVariants(host, ["click.facet-eng", "click.facet-eng+click.facet-remote"]);
+    seedVariants(host, [
+      "click.facet-remote+click.facet-senior",
+      "click.facet-senior",
+    ]);
     clicked("p60", host, ["#facet-eng", "#facet-remote", "#facet-senior"]);
-    // Both are prefixes of what was issued. Picking either returns the other
-    // slice's records as if they were the ones asked for.
+    // Both runs end on the same click, so neither is the more recent one.
+    // Picking either returns the other slice's records as if they were the
+    // ones asked for.
     assert.throws(() => hydrateOn(host, "p60"), /2 variants: /);
   });
 
@@ -1778,6 +1783,194 @@ async function groupP() {
         assert.ok(/record selector/.test(warn), warn);
       },
     );
+  });
+
+  await test("P69 a caller who switched slices gets the one it switched TO", () => {
+    const host = "p69.example";
+    seedVariants(host, [
+      "click.facet-eng+click.facet-remote",
+      "click.facet-design+click.facet-onsite",
+    ]);
+    // Opened one slice, then switched to another without extracting in
+    // between. Matching the buffer's head returned every design-onsite record
+    // labelled as the eng-remote slice, reported a healthy page stale against
+    // the wrong baseline, and charged the eng-remote variant a failure it
+    // never earned. The most recent actions are what put the page here.
+    clicked("p69", host, [
+      "#facet-eng",
+      "#facet-remote",
+      "#facet-design",
+      "#facet-onsite",
+    ]);
+    assert.strictEqual(
+      hydrateOn(host, "p69").variant,
+      "click.facet-design+click.facet-onsite",
+    );
+
+    // The same rule with one slice contained in the other: after the second
+    // click the page is no longer in the one-click slice.
+    const nested = "p69b.example";
+    seedVariants(nested, ["click.facet-eng", "click.facet-eng+click.facet-remote"]);
+    clicked("p69b", nested, ["#facet-eng", "#facet-remote", "#facet-senior"]);
+    assert.strictEqual(
+      hydrateOn(nested, "p69b").variant,
+      "click.facet-eng+click.facet-remote",
+    );
+  });
+
+  await test("P70 a scroll before an extract is not part of the slice", () => {
+    // A scroll loads more of the slice on screen; it never selects one. Keying
+    // on it would split one slice in two, and leave the matcher to be lenient
+    // about a trailing step instead of matching exactly.
+    const preamble = [
+      { seq: 0, action: "click", selector: "#facet-eng" },
+      { seq: 1, action: "click", selector: "#facet-remote" },
+    ];
+    const key = "click.facet-eng+click.facet-remote";
+    assert.strictEqual(recipes.deriveVariant(preamble), key);
+    assert.strictEqual(
+      recipes.deriveVariant([
+        ...preamble,
+        { seq: 2, action: "smart_scroll", selector: null, count: 40 },
+        { seq: 3, action: "scroll", selector: null },
+      ]),
+      key,
+      "a scroll minted a second variant for one slice",
+    );
+    // A step with no selector rendered a bare trailing dot in the key.
+    assert.ok(
+      !/scroll|\.(\+|$)/.test(recipes.deriveVariant([...preamble, { seq: 2, action: "scroll" }])),
+      recipes.deriveVariant([...preamble, { seq: 2, action: "scroll" }]),
+    );
+
+    const host = "p70.example";
+    seedVariants(host, [key, "click.facet-design+click.facet-onsite"]);
+    clicked("p70", host, ["#facet-eng", "#facet-remote"]);
+    recipes.noteStep("p70", { action: "smart_scroll", selector: null, path: "/search", host });
+    assert.strictEqual(hydrateOn(host, "p70").variant, key);
+  });
+
+  await test("P71 an unrelated earlier click does not hide the slice", () => {
+    const host = "p71.example";
+    seedVariants(host, [
+      "click.facet-eng+click.facet-remote",
+      "click.facet-design+click.facet-onsite",
+    ]);
+    // The search box was opened first. A slice that occurs anywhere in what
+    // was issued still describes the page; only where it ENDS decides.
+    clicked("p71", host, ["#search-toggle", "#facet-eng", "#facet-remote"]);
+    assert.strictEqual(
+      hydrateOn(host, "p71").variant,
+      "click.facet-eng+click.facet-remote",
+    );
+  });
+
+  await test("P72 half a preamble is not a slice", () => {
+    const host = "p72.example";
+    seedVariants(host, [
+      "click.facet-eng+click.facet-remote",
+      "click.facet-design+click.facet-onsite",
+    ]);
+    clicked("p72", host, ["#facet-eng"]);
+    // Neither slice has been reached yet. Returning the one whose first click
+    // matches would hand back records from a filter the page is not showing.
+    assert.throws(
+      () => hydrateOn(host, "p72"),
+      /click\.facet-eng\+click\.facet-remote, click\.facet-design\+click\.facet-onsite/,
+    );
+  });
+
+  await test("P73 a preamble past the cap is cut at a segment boundary", () => {
+    const long = (tail) =>
+      Array.from({ length: 12 }, (_, i) => ({
+        seq: i,
+        action: "click",
+        selector: `#facet-number-${i}${i === 11 ? tail : ""}`,
+      }));
+    const a = recipes.deriveVariant(long("a"));
+    assert.ok(a.length <= recipes.VARIANT_LABEL_CAP, `${a.length}: ${a}`);
+    // This string is what the matcher echoes back for a reader to check its
+    // reasoning against. Cutting mid-token left "#facet-onsite" as "face" —
+    // broken inside the very step that decided the outcome.
+    for (const segment of a.split("+")) {
+      assert.ok(
+        /^click\.facet-number-\d+[ab]?$/.test(segment) || /^\d+-more-[0-9a-f]{6}$/.test(segment),
+        `partial token in ${a}: ${segment}`,
+      );
+    }
+    assert.ok(/^\d+-more-[0-9a-f]{6}\+/.test(a), `it does not say how many were dropped: ${a}`);
+    // The steps kept are the ones that decided the match. Keeping the head
+    // showed a reader the slice that was not chosen.
+    assert.ok(a.endsWith("click.facet-number-11a"), a);
+    assert.strictEqual(a, recipes.deriveVariant(long("a")), "not deterministic past the cap");
+    assert.notStrictEqual(
+      a,
+      recipes.deriveVariant(long("b")),
+      "two long preambles sharing a prefix collapsed into one variant",
+    );
+  });
+
+  await test("P74 a healthy replay of the slice on screen costs it no failure", async () => {
+    // Two slices with different baselines, and a page showing the second one.
+    // Measured against the first's baseline a healthy page reads stale, and
+    // three such replays evict a variant that never failed.
+    const variant = (selectors, baseline) => ({
+      steps: selectors.map((selector, seq) => ({
+        seq,
+        action: "click",
+        selector,
+        path: "/search",
+      })),
+      baseline,
+      lastOk: Date.now(),
+      failCount: 0,
+    });
+    const ENG = "click.facet-eng+click.facet-remote";
+    const DESIGN = "click.facet-design+click.facet-onsite";
+    const seed = {
+      "t.json": {
+        notes: [],
+        selectors: {},
+        recipes: {
+          "/search": {
+            [LIVE_NAME]: {
+              extract: { record: LIVE_SPEC.record, fields: LIVE_SPEC.fields },
+              variants: {
+                [ENG]: variant(["#facet-eng", "#facet-remote"], { name: 1, url: 0.92 }),
+                [DESIGN]: variant(["#facet-design", "#facet-onsite"], {
+                  name: 1,
+                  url: 1 / 12,
+                }),
+              },
+            },
+          },
+        },
+      },
+    };
+    // The design-onsite listing: one row in twelve carries a link.
+    const sparseUrls = () =>
+      Array.from({ length: 12 }, (_, i) => ({
+        name: `Agent ${i}`,
+        url: i === 0 ? "http://t/a/0" : null,
+      }));
+
+    await withRecipeServer({ seed, ext: { rows: sparseUrls } }, async ({ srv, store }) => {
+      await call(srv, "browser_navigate", { url: "http://t/search" });
+      for (const selector of ["#facet-eng", "#facet-remote", "#facet-design", "#facet-onsite"])
+        await call(srv, "browser_click", { selector });
+
+      const out = jsonOf(await call(srv, "browser_extract", {}));
+      assert.strictEqual(out.used_recipe, `${LIVE_NAME}/${DESIGN}`, JSON.stringify(out).slice(0, 300));
+      assert.ok(!out.stale, `a healthy page read stale: ${(out.warnings || []).join(" ")}`);
+
+      const variants = store().recipes["/search"][LIVE_NAME].variants;
+      assert.strictEqual(variants[DESIGN].failCount, 0);
+      assert.strictEqual(
+        variants[ENG].failCount,
+        0,
+        "a slice that was never replayed was charged a failure",
+      );
+    });
   });
 }
 
