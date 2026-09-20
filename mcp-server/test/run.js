@@ -9,6 +9,10 @@
 //   J  the pagination loop                       (halt conditions, CSV output)
 //   K  benchmark-run regressions                 (site-memory lookup, output paths)
 //   L  bridge handshake origin check             (the drive-by extension takeover)
+//   M  actionability gate                        (hidden/disabled/covered targets)
+//   N  self-healing selectors                    (fingerprint relocation on drift)
+//   O  site-memory selector store                (persistence, dedup/cap, back-compat)
+//   P  learned extraction recipes                (path bucketing, merge/cap, corrupt store)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -17,7 +21,7 @@ const path = require("path");
 const { results } = require("./harness.js");
 
 // One file per group, run in order. Adding a group is adding a file.
-const GROUPS = "abcdefghijkl".split("");
+const GROUPS = "abcdefghijklmnop".split("");
 
 (async () => {
   console.log("PolterTab regression suite");

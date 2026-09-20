@@ -29,6 +29,39 @@ const SINK = {
   },
 };
 
+// Self-healing: browser_click/browser_fill return the resolved element's
+// fingerprint. Pass it back on a later call and, if the selector has drifted
+// (a renamed id/class), the element is relocated by structural similarity.
+// Learned recipes: a spec that produced clean rows is stored per host and page
+// shape, so a later extract on the same shape can omit it entirely. Shared by
+// browser_extract and browser_extract_all because the stored spec is the same
+// spec — a recipe learned by one is replayed by the other.
+const RECIPE = {
+  recipe: {
+    type: "string",
+    description:
+      "Name of a learned recipe to replay. Only needed when more than one has been learned for this page shape — with exactly one, omitting `record`/`fields` uses it. browser_navigate lists what exists in `recipes_available`, and browser_get_site_memory has the detail.",
+  },
+  variant: {
+    type: "string",
+    description:
+      "Which slice of the recipe to replay (a filter combination it was learned under). Only needed when the recipe has more than one. Variant names are derived from the steps that preceded the extract, so browser_get_site_memory shows which slice each one is.",
+  },
+  remember: {
+    type: "string",
+    description:
+      "Name this extraction so it can be replayed later, as 'name' or 'name/variant'. Optional: a spec that produced clean rows is remembered anyway, under a name derived from its fields and a variant derived from the clicks, fills and scrolls that preceded it. Nothing is stored from a result that fails the quality bar.",
+  },
+};
+
+const FINGERPRINT = {
+  fingerprint: {
+    type: "object",
+    description:
+      "Optional. The `fingerprint` object a previous browser_click/browser_fill returned for this element. When the selector no longer matches, the element is relocated by structural similarity and the result carries healed:true.",
+  },
+};
+
 // Define tools
 const BROWSER_TOOLS = [
   {
@@ -45,11 +78,13 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_click",
-    description: "Click an element on the page",
+    description:
+      "Click an element on the page. Returns the element's `fingerprint` (pass it back later to survive a selector change) and `healed:true` if the selector had drifted and the element was relocated.",
     inputSchema: {
       type: "object",
       properties: {
         selector: { type: "string" },
+        ...FINGERPRINT,
         ...TARGET,
       },
       required: ["selector"],
@@ -57,13 +92,15 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_fill",
-    description: "Fill an input field with text",
+    description:
+      "Fill an input field with text. Returns the field's `fingerprint` (pass it back later to survive a selector change) and `healed:true` if the selector had drifted and the field was relocated.",
     inputSchema: {
       type: "object",
       properties: {
         selector: { type: "string" },
         value: { type: "string" },
         submit: { type: "boolean" },
+        ...FINGERPRINT,
         ...TARGET,
       },
       required: ["selector", "value"],
@@ -105,7 +142,7 @@ const BROWSER_TOOLS = [
   {
     name: "browser_extract",
     description:
-      "Extract repeating records (cards, rows, listings) with fields grouped per record. Fields resolve INSIDE each record root and a missing field yields null instead of shifting later records' values. Returns fill rates and warns when a field is empty inside the record scope but matches page-wide (record boundary too narrow).",
+      "Extract repeating records (cards, rows, listings) with fields grouped per record. Fields resolve INSIDE each record root and a missing field yields null instead of shifting later records' values. Returns fill rates and warns when a field is empty inside the record scope but matches page-wide (record boundary too narrow). `record` and `fields` are optional when a recipe has already been learned for this page shape: omit them to replay it, and the result names it in `used_recipe` (with `stale: true` if the page no longer matches what was learned). `remember` names what a fresh spec is stored as.",
     inputSchema: {
       type: "object",
       properties: {
@@ -142,16 +179,20 @@ const BROWSER_TOOLS = [
           description:
             "Page-wide re-check of any field that came back entirely empty (default true)",
         },
+        ...RECIPE,
         ...SINK,
         ...TARGET,
       },
-      required: ["record", "fields"],
+      // record/fields are not required: with neither, a recipe learned on this
+      // page shape supplies them. Nothing known for the page is an error that
+      // says so, never a spec-less extract.
+      required: [],
     },
   },
   {
     name: "browser_extract_all",
     description:
-      "Paginate and extract in one call, with no model round-trip per page. Takes browser_extract's spec plus a URL template, walks pages, dedups on a key, and halts on: limit reached, empty page, a page whose records repeat an earlier page's (the trap where ignored page-size params silently return page 1 again), fill rates collapsing against page 1's baseline, or max_pages. Always reports which condition fired and returns everything collected so far.",
+      "Paginate and extract in one call, with no model round-trip per page. Takes browser_extract's spec plus a URL template — the spec is optional when a recipe was learned for that page shape, and a recipe learned here stores the template so a later call can replay both. Walks pages, dedups on a key, and halts on: limit reached, empty page, a page whose records repeat an earlier page's (the trap where ignored page-size params silently return page 1 again), fill rates collapsing against page 1's baseline, or max_pages. Always reports which condition fired and returns everything collected so far.",
     inputSchema: {
       type: "object",
       properties: {
@@ -188,12 +229,16 @@ const BROWSER_TOOLS = [
             "Halt when a field well-populated on the baseline page falls below this fraction of it (default 0.5). 0 disables the check.",
         },
         max_text: { type: "number" },
+        ...RECIPE,
         ...SINK,
         // Session only, deliberately: this tool drives its own navigation from
         // url_template, so a tabId would be accepted and then ignored.
         session: TARGET.session,
       },
-      required: ["url_template", "record", "fields"],
+      // Same as browser_extract: the spec is optional when a recipe exists for
+      // the page shape url_template points at. The template itself is not —
+      // it is what says which pages to walk.
+      required: ["url_template"],
     },
   },
   {
@@ -403,7 +448,7 @@ const BROWSER_TOOLS = [
   {
     name: "browser_get_site_memory",
     description:
-      "Get navigation memory, obstacles, and fixes for a specific website domain",
+      "Get navigation memory for a website domain: the obstacles and fixes saved for it, plus any extraction recipes learned there — their fields, their variants, and the steps that were observed before each one worked. The steps are observations, not a script: reissue one only if it still fits the page.",
     inputSchema: {
       type: "object",
       properties: {

@@ -13,7 +13,26 @@ const { SMART_SCROLL_SETTLE_MS, POLTERTAB_HOME } = require("./config.js");
 const updates = require("./update-check.js");
 const { BROWSER_TOOLS } = require("./tools.js");
 const { writeOutput, summarizeOutput, rowsOf } = require("./output.js");
-const { readMemory, saveMemory } = require("./memory.js");
+const {
+  readMemory,
+  saveMemory,
+  getSelector,
+  recordSelector,
+  noteSelectorFail,
+  selectorKey,
+  pathPattern,
+  listRecipeSummaries,
+} = require("./memory.js");
+const {
+  hydrate,
+  observe,
+  noteStep,
+  noteNavigation,
+  redactValue,
+  hintFor,
+  describeRecipes,
+  RECIPES_NOTE,
+} = require("./recipes.js");
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
 const OWN_VERSION = require("./../package.json").version;
@@ -52,6 +71,103 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: BROWSER_TOOLS,
   };
 });
+
+// Which page a tab (or a named session) is on, learned from the URL any
+// navigate/get_url/action result reveals — no extra round-trip to ask. The
+// selector store is keyed by this, so it has to be the page the click actually
+// lands on.
+const pageByTab = new Map();
+const pageBySession = new Map();
+let lastPage = null;
+
+function pageOf(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname ? { host: u.hostname, path: u.pathname } : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberPage(args, result) {
+  const page = pageOf(result && result.url);
+  if (!page) return;
+  const tabId = (result && result.tabId) ?? (args && args.tabId);
+  if (tabId != null) pageByTab.set(tabId, page);
+  if (args && args.session) pageBySession.set(args.session, page);
+  lastPage = page;
+}
+
+// An explicitly targeted tab or session resolves to ITS OWN page or to nothing.
+// Falling back to a process-global here is how a click in session s1 ended up
+// keyed to whatever host s2 had navigated to most recently — and `session` is
+// the documented multi-tab mechanism, so that path is normal usage, not a
+// corner case. No page means no healing, which is the safe direction.
+function pageFor(args) {
+  const a = args || {};
+  if (a.session) return pageBySession.get(a.session) || null;
+  if (a.tabId != null) return pageByTab.get(a.tabId) || null;
+  return lastPage;
+}
+
+// The step buffer's key, resolved by exactly the same rule as pageFor: an
+// explicit session or tab gets its own and never falls through to the
+// process-global one. Without that, two concurrent tasks in two tabs borrow
+// each other's preamble — the O13 failure, one layer up.
+function targetKeyFor(args) {
+  const a = args || {};
+  if (a.session) return `session:${a.session}`;
+  if (a.tabId != null) return `tab:${a.tabId}`;
+  return "last";
+}
+
+// Actions worth remembering as a recipe's preamble: the facet click, the
+// "100 per page", the scroll that loaded the list.
+const RECORDED = new Set(["click", "fill", "hover", "scroll", "smart_scroll"]);
+
+// Bookkeeping for an action that has already happened, so it can never throw
+// at the caller. A fill's value goes through redactValue and nowhere else: the
+// store is a plaintext file in the user's home directory.
+function noteStepFor(action, args, targetKey, page, result) {
+  try {
+    const { value, redacted } = redactValue(
+      action,
+      args,
+      result && result.fingerprint,
+    );
+    noteStep(targetKey, {
+      action,
+      selector: (args && args.selector) || null,
+      path: page && page.path,
+      host: page && page.host,
+      // Nothing at all for a redacted fill, not the null redactValue reports:
+      // a stored `value: null` reads back as "this field was filled with
+      // nothing", which is a different step from the one that happened.
+      value: redacted ? undefined : value,
+      redacted,
+    });
+  } catch (_) {
+    // A preamble we failed to record is a recipe with fewer steps, not a
+    // failed action.
+  }
+}
+
+// Recall has to be implicit — the tool surface is already 23 schemas on every
+// request — so a navigate says what has been learned about where it landed.
+// One memory read, and nothing at all on a host with no recipes.
+function onNavigate(args, targetKey, result) {
+  try {
+    const dest = pageOf(result && result.url);
+    if (!dest) return result;
+    noteNavigation(targetKey, dest.host);
+    const known = listRecipeSummaries(dest.host, pathPattern(dest.path));
+    if (!known.length) return result;
+    return { ...result, recipes_available: hintFor(known) };
+  } catch (_) {
+    // The navigation succeeded; a missing hint is the lesser evil.
+    return result;
+  }
+}
 
 const handleToolCall = async (request) => {
   const { name, arguments: args } = request.params;
@@ -106,6 +222,16 @@ const handleToolCall = async (request) => {
       const scrollResult = await bridge.sendCommand("scroll", args || {});
       bridge.noteActiveTab(scrollResult && scrollResult.tabId);
 
+      // The scroll that loaded the list is part of the preamble a recipe
+      // replays, and this branch returns before the generic path can see it.
+      noteStepFor(
+        "smart_scroll",
+        args,
+        targetKeyFor(args),
+        pageFor(args),
+        scrollResult,
+      );
+
       // Wait for network requests to arrive (lazy loading)
       await new Promise((r) => setTimeout(r, SMART_SCROLL_SETTLE_MS));
 
@@ -142,10 +268,18 @@ const handleToolCall = async (request) => {
     if (action === "get_site_memory") {
       const host = args.hostname || args.domain || args.url;
       if (!host) throw new Error("Missing 'hostname' parameter");
+      // The agent's own notes, plus what it worked out about extracting the
+      // site. The selectors map stays out: it is internal plumbing for
+      // self-healing and would just be noise here.
+      const memory = readMemory(host);
+      const payload = { notes: memory.notes };
+      const learned = describeRecipes(memory.recipes);
+      if (learned.length) {
+        payload.recipes = learned;
+        payload.recipes_note = RECIPES_NOTE;
+      }
       return {
-        content: [
-          { type: "text", text: JSON.stringify(readMemory(host), null, 2) },
-        ],
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
       };
     }
 
@@ -160,12 +294,24 @@ const handleToolCall = async (request) => {
 
     // Loops in the server, not in the model. One tool call covers every page.
     if (action === "extract_all") {
-      const payload = await extractAll(bridge.sendCommand, args || {});
       const opts = args || {};
+      const targetKey = targetKeyFor(opts);
+      // The page a recipe belongs to comes from the template, not from the tab:
+      // this tool drives its own navigation, so the tab can be anywhere. The
+      // inner sendCommand("extract", spec) calls always carry an explicit spec
+      // and so are never hydrated.
+      const page = pageOf(String(opts.url_template || "").replace("{page}", "1"));
+      const ctx = hydrate("extract_all", opts, page, targetKey);
+
+      const payload = await extractAll(bridge.sendCommand, opts);
+      const patch = ctx
+        ? observe({ action, args: opts, result: payload, ctx, targetKey })
+        : null;
+      const out = patch ? { ...payload, ...patch } : payload;
 
       if (opts.output_file) {
-        const written = writeOutput(opts.output_file, payload, payload.rows);
-        const { rows, pages, ...rest } = payload;
+        const written = writeOutput(opts.output_file, out, out.rows);
+        const { rows, pages, ...rest } = out;
         const summary = {
           ...rest,
           ...written,
@@ -180,24 +326,120 @@ const handleToolCall = async (request) => {
       }
 
       return {
-        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(out, null, 2) }],
       };
     }
 
-    const result = await bridge.sendCommand(action, args || {});
+    // Self-healing: for click/fill, supply a remembered fingerprint when the
+    // selector has no explicit one, and remember the fingerprint that worked so
+    // a later drift can be relocated. Keyed by the page the action lands on and
+    // by the action itself — see memory.selectorKey.
+    const healable = action === "click" || action === "fill";
+    const selector = args && args.selector;
+    // Resolved for every action, not just a healable click: the recipe layer
+    // is keyed by the same page the selector store is.
+    const page = pageFor(args);
+    const key =
+      healable && selector && page
+        ? selectorKey(action, page.path, selector)
+        : null;
+    if (key && !args.fingerprint) {
+      // Reading the store must never stop a click that would otherwise work.
+      try {
+        const stored = getSelector(page.host, key);
+        if (stored) args.fingerprint = stored.fingerprint;
+      } catch (_) {
+        // Unreadable store: proceed on the caller's own selector.
+      }
+    }
+
+    // Recipes live in the generic path on purpose: hydrate a missing extract
+    // spec before the command goes out, judge what came back after. A second
+    // `if (action === "extract")` branch would need its own copy of
+    // output_file, tab tracking and page learning. Throwing before sendCommand
+    // is deliberate too — an extract with no record selector is not a cheap
+    // mistake, it returns the page's whole text as one row.
+    const targetKey = targetKeyFor(args);
+    // targetKey, not just the page: hydrate matches a missing `variant`
+    // against the steps this server watched the caller issue on this target.
+    const ctx = hydrate(action, args, page, targetKey);
+
+    let result;
+    try {
+      result = await bridge.sendCommand(action, args || {});
+    } catch (err) {
+      // A selector that missed even with its stored fingerprint is drifting;
+      // enough misses and memory.js stops trusting it. Bookkeeping only — it
+      // must not replace the error the caller needs to see.
+      if (key && /not found/i.test(err.message)) {
+        try {
+          noteSelectorFail(page.host, key);
+        } catch (_) {
+          // Best effort.
+        }
+      }
+      throw err;
+    }
     bridge.noteActiveTab((result && result.tabId) || (args && args.tabId));
+
+    // Learn the page for later, and store the fingerprint of what resolved.
+    // Wrapped because the browser has ALREADY acted: a failure here would be
+    // reported as a failed click, and the agent would retry and double-submit.
+    try {
+      rememberPage(args, result);
+      if (key && result && result.fingerprint) {
+        recordSelector(page.host, key, result.fingerprint);
+      }
+    } catch (_) {
+      // The action succeeded; losing the bookkeeping is the lesser evil.
+    }
+
+    // Recorded only once the browser has confirmed the action, so a stored
+    // preamble never replays a click that never landed.
+    if (RECORDED.has(action)) {
+      noteStepFor(action, args, targetKey, page, result);
+    }
+
+    // browser_fill echoes back the value it typed. Keeping a password out of
+    // the store is no use if the echo puts it in the model's context and from
+    // there into the transcript, which is the exposure the redaction denylist
+    // exists to close. Only a fill redactValue calls sensitive is touched — a
+    // plain fill echoing its value is worth reading. The extension still sends
+    // the value over the local WebSocket, so this narrows where a secret lands
+    // rather than making the fill secret end to end.
+    if (action === "fill" && result && typeof result === "object") {
+      try {
+        const { redacted } = redactValue(action, args, result.fingerprint);
+        if (redacted && "value" in result) {
+          result = { ...result, value: "(value withheld)" };
+        }
+      } catch (_) {
+        // Same contract as noteStepFor: the fill has already happened.
+      }
+    }
+
+    if (action === "navigate") result = onNavigate(args, targetKey, result);
+
+    // Patched before the output_file branch below: a run that writes to disk
+    // is exactly the run where the model cannot see the rows for itself, so
+    // losing used_recipe/stale there would hide a replay entirely.
+    const patch = ctx
+      ? observe({ action, args, result, ctx, targetKey })
+      : null;
+    if (patch) result = { ...result, ...patch };
 
     // Any read tool can send its payload to disk. Placed after tab tracking so
     // taking the file path does not cost the session its tab bookkeeping.
     if (args && args.output_file && result && typeof result === "object") {
       const rows = rowsOf(result);
       const written = writeOutput(args.output_file, result, rows);
+      const summary = summarizeOutput(result, rows, written);
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(
-              summarizeOutput(result, rows, written),
+              patch ? { ...summary, ...patch } : summary,
               null,
               2,
             ),
