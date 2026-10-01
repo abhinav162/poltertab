@@ -36,6 +36,7 @@
   const RECONNECT_ALARM = "poltertab-reconnect";
   const KEEPALIVE_ALARM = "poltertab-keepalive";
   const STORAGE_KEY = "zc_sessions";
+  const TAB_STATE_KEY = "zc_tab_state";
 
   let ws = null;
   let isConnected = false;
@@ -49,12 +50,18 @@
   class SessionManager {
     constructor() {
       this.sessions = {};
-      this.activeSession = null;
       this.groupId = null;
       this.loaded = false;
-      // Implicit tab tracking: remembers the last tab we navigated,
-      // so subsequent commands target it even without explicit sessions.
-      this.lastNavigatedTabId = null;
+      // Which tab each connected agent is working in. One extension serves the
+      // Primary MCP server and every Secondary proxied through it, and this
+      // used to be a single global activeSession + lastNavigatedTabId: a
+      // Secondary's call moved the Primary's pointer, so the Primary's next
+      // untargeted click landed in someone else's tab. Keyed by params._client,
+      // which the bridge stamps on every command ("primary" when absent).
+      this.current = {};
+      // Tabs PolterTab opened itself. browser_tab_close only closes these (or a
+      // session's tab) unless forced, because every other tab is the user's.
+      this.owned = new Set();
     }
 
     async load() {
@@ -68,15 +75,94 @@
       } catch (err) {
         console.error("[PolterTab] Failed to load sessions:", err.message);
       }
+      // The pointers live in session storage, not local: they have to survive
+      // an MV3 worker suspension (losing them sent the next untargeted call to
+      // whatever tab the user had focused), but tab ids are only valid for one
+      // browser run, so they must NOT survive a restart into a reused id.
+      try {
+        const area = chrome.storage.session;
+        const saved = area && (await area.get(TAB_STATE_KEY))[TAB_STATE_KEY];
+        if (saved) {
+          this.current = saved.current || {};
+          this.owned = new Set(saved.owned || []);
+        }
+      } catch (err) {
+        console.error("[PolterTab] Failed to load tab state:", err.message);
+      }
       this.loaded = true;
     }
 
     async persist() {
       try {
         await chrome.storage.local.set({ [STORAGE_KEY]: this.sessions });
+        const area = chrome.storage.session;
+        if (area) {
+          await area.set({
+            [TAB_STATE_KEY]: { current: this.current, owned: [...this.owned] },
+          });
+        }
       } catch (err) {
         console.error("[PolterTab] Failed to persist sessions:", err.message);
       }
+    }
+
+    // --- Per-agent current-tab pointer ---
+
+    pointer(params) {
+      const client = (params && params._client) || "primary";
+      if (!this.current[client]) {
+        this.current[client] = { session: null, tabId: null, goneTabId: null };
+      }
+      return this.current[client];
+    }
+
+    point(cur, tabId, session = null) {
+      cur.tabId = tabId;
+      cur.session = session || this.sessionNameFor(tabId);
+      cur.goneTabId = null;
+    }
+
+    sessionNameFor(tabId) {
+      for (const [name, s] of Object.entries(this.sessions)) {
+        if (s.tabId === tabId) return name;
+      }
+      return null;
+    }
+
+    async tabAlive(tabId) {
+      if (tabId == null) return null;
+      try {
+        return await chrome.tabs.get(tabId);
+      } catch {
+        return null;
+      }
+    }
+
+    // An explicit tabId used to go straight to chrome.* and come back as
+    // Chrome's own "No tab with id: 123", which says nothing about what to do.
+    async requireTab(tabId) {
+      const tab = await this.tabAlive(tabId);
+      if (!tab) {
+        throw new Error(
+          `Tab ${tabId} is closed or does not exist. Call browser_tab_list to see the open tabs.`,
+        );
+      }
+      return tab;
+    }
+
+    // A closed tab is remembered as closed rather than forgotten, so the next
+    // untargeted call can say so instead of quietly acting on another tab.
+    forgetTab(tabId) {
+      let changed = this.owned.delete(tabId);
+      for (const cur of Object.values(this.current)) {
+        if (cur.tabId === tabId) {
+          cur.goneTabId = tabId;
+          cur.tabId = null;
+          cur.session = null;
+          changed = true;
+        }
+      }
+      return changed;
     }
 
     async ensureTabGroup() {
@@ -119,15 +205,19 @@
       }
     }
 
-    async create(name, url) {
+    async create(name, url, params = {}) {
       await this.load();
       if (!name) throw new Error("session_create requires a 'name' parameter");
 
       let tab;
-      if (url) {
+      if (params.tabId != null) {
+        // Adopt a tab that is already open (one browser_tab_list showed).
+        tab = await this.requireTab(params.tabId);
+      } else if (url) {
         const targetUrl = url.startsWith("http") ? url : `https://${url}`;
         const since = Date.now();
         tab = await chrome.tabs.create({ url: targetUrl });
+        this.owned.add(tab.id);
         tab = await waitForTabLoad(tab.id, since);
       } else {
         const [activeTab] = await chrome.tabs.query({
@@ -147,35 +237,30 @@
         createdAt: Date.now(),
         lastUsedAt: Date.now(),
       };
-      this.activeSession = name;
+      this.point(this.pointer(params), tab.id, name);
       await this.persist();
 
       return { name, tabId: tab.id, url: tab.url, title: tab.title };
     }
 
-    async switch(name) {
+    async switch(name, params = {}) {
       await this.load();
       const session = this.sessions[name];
       if (!session) throw new Error(`Session "${name}" not found`);
 
       // Validate tab still exists
-      if (session.tabId !== null) {
-        try {
-          const tab = await chrome.tabs.get(session.tabId);
-          session.url = tab.url;
-          session.title = tab.title;
-        } catch {
-          session.tabId = null; // Tab no longer exists
-        }
-      }
-
-      // Auto-recover if tab is stale
-      if (session.tabId === null) {
+      const tab = await this.tabAlive(session.tabId);
+      if (tab) {
+        session.url = tab.url;
+        session.title = tab.title;
+      } else {
+        session.tabId = null;
+        // Auto-recover if tab is stale
         await this.recoverSession(name);
       }
 
       session.lastUsedAt = Date.now();
-      this.activeSession = name;
+      this.point(this.pointer(params), session.tabId, name);
       await this.persist();
 
       return {
@@ -193,6 +278,7 @@
 
       const since = Date.now();
       const tab = await chrome.tabs.create({ url: session.url });
+      this.owned.add(tab.id);
       const updated = await waitForTabLoad(tab.id, since);
 
       await this.addTabToGroup(updated.id);
@@ -206,63 +292,57 @@
       return session;
     }
 
-    async resolve(params) {
+    // Which tab a command acts on. Returns null when nothing is targeted yet;
+    // `navigating` callers take null as "open a new tab", everyone else falls
+    // back to the user's focused tab (resolveOrFallback).
+    async resolve(params, { navigating = false } = {}) {
       await this.load();
+      const cur = this.pointer(params);
 
-      // 1. Explicit tabId — escape hatch
-      if (params.tabId) return params.tabId;
+      // 1. Explicit tabId — acts on that tab without moving the pointer, so a
+      //    one-off read of another tab does not change where the agent "is".
+      if (params.tabId != null) {
+        await this.requireTab(params.tabId);
+        return params.tabId;
+      }
 
-      // 2. Explicit session param — look up and set active
+      // 2. Explicit session — look up, recover if closed, and make it current.
       if (params.session) {
         const session = this.sessions[params.session];
         if (session) {
-          if (session.tabId !== null) {
-            try {
-              await chrome.tabs.get(session.tabId);
-              this.activeSession = params.session;
-              session.lastUsedAt = Date.now();
-              await this.persist();
-              return session.tabId;
-            } catch {
-              session.tabId = null;
-            }
+          if (!(await this.tabAlive(session.tabId))) {
+            session.tabId = null;
+            await this.recoverSession(params.session);
           }
-          // Auto-recover
-          await this.recoverSession(params.session);
-          this.activeSession = params.session;
+          session.lastUsedAt = Date.now();
+          this.point(cur, session.tabId, params.session);
+          await this.persist();
           return session.tabId;
         }
-        // Session doesn't exist yet — fall through
+        // An unknown session used to fall through to whatever tab was active,
+        // so browser_navigate({session:"b"}) navigated session a's tab and
+        // bound b to it too — two "sessions", one tab. navigate now opens b
+        // its own tab; anything else has no page to act on.
+        if (navigating) return null;
+        throw new Error(
+          `Session "${params.session}" does not exist. Open it with browser_navigate({ session, url }) or browser_tab_new({ session }), or see browser_session_list.`,
+        );
       }
 
-      // 3. Active session
-      if (this.activeSession) {
-        const session = this.sessions[this.activeSession];
-        if (session && session.tabId !== null) {
-          try {
-            await chrome.tabs.get(session.tabId);
-            session.lastUsedAt = Date.now();
-            return session.tabId;
-          } catch {
-            session.tabId = null;
-            this.activeSession = null;
-          }
-        } else {
-          this.activeSession = null;
-        }
+      // 3. This agent's current tab.
+      if (cur.tabId != null) {
+        if (await this.tabAlive(cur.tabId)) return cur.tabId;
+        this.forgetTab(cur.tabId);
       }
 
-      // 4. Implicit tab tracking — last tab we navigated to
-      if (this.lastNavigatedTabId !== null) {
-        try {
-          await chrome.tabs.get(this.lastNavigatedTabId);
-          return this.lastNavigatedTabId;
-        } catch {
-          this.lastNavigatedTabId = null;
-        }
+      // 4. Its current tab was closed: say so rather than acting on another.
+      if (cur.goneTabId != null && !navigating) {
+        throw new Error(
+          `The tab this agent was working in (tab ${cur.goneTabId}) was closed. Pick another with browser_tab_list and browser_tab_switch, or open one with browser_navigate or browser_tab_new.`,
+        );
       }
 
-      // 5. Legacy fallback — active Chrome tab
+      // 5. Nothing targeted yet — the caller decides.
       return null;
     }
 
@@ -278,7 +358,7 @@
       return activeTab.id;
     }
 
-    async list() {
+    async list(params = {}) {
       await this.load();
       const entries = [];
 
@@ -286,13 +366,9 @@
         let status = "alive";
         if (session.tabId === null) {
           status = session.url ? "recoverable" : "expired";
-        } else {
-          try {
-            await chrome.tabs.get(session.tabId);
-          } catch {
-            session.tabId = null;
-            status = session.url ? "recoverable" : "expired";
-          }
+        } else if (!(await this.tabAlive(session.tabId))) {
+          session.tabId = null;
+          status = session.url ? "recoverable" : "expired";
         }
         entries.push({
           name,
@@ -306,15 +382,16 @@
       }
 
       await this.persist();
-      return { sessions: entries, active: this.activeSession };
+      return { sessions: entries, active: this.pointer(params).session };
     }
 
-    async close(name) {
+    async close(name, params = {}) {
       await this.load();
       const session = this.sessions[name];
       if (!session) throw new Error(`Session "${name}" not found`);
 
       if (session.tabId !== null) {
+        this.forgetTab(session.tabId);
         try {
           await chrome.tabs.remove(session.tabId);
         } catch {
@@ -323,61 +400,174 @@
       }
 
       delete this.sessions[name];
-      if (this.activeSession === name) {
-        this.activeSession = null;
-      }
       await this.persist();
 
       return { closed: name };
     }
 
-    async context() {
+    async context(params = {}) {
       await this.load();
-      let tabInfo = null;
-
-      if (this.activeSession) {
-        const session = this.sessions[this.activeSession];
-        if (session && session.tabId !== null) {
-          try {
-            const tab = await chrome.tabs.get(session.tabId);
-            tabInfo = { tabId: tab.id, url: tab.url, title: tab.title };
-            session.url = tab.url;
-            session.title = tab.title;
-          } catch {
-            session.tabId = null;
-            this.activeSession = null;
-          }
-        } else {
-          this.activeSession = null;
-        }
+      const cur = this.pointer(params);
+      const tab = await this.tabAlive(cur.tabId);
+      if (cur.tabId != null && !tab) this.forgetTab(cur.tabId);
+      if (tab && cur.session && this.sessions[cur.session]) {
+        this.sessions[cur.session].url = tab.url;
+        this.sessions[cur.session].title = tab.title;
       }
 
-      const sessionNames = Object.keys(this.sessions);
       return {
-        active: this.activeSession,
-        tabId: tabInfo?.tabId ?? null,
-        url: tabInfo?.url ?? null,
-        title: tabInfo?.title ?? null,
-        sessions: sessionNames,
+        active: tab ? cur.session : null,
+        tabId: tab ? tab.id : null,
+        url: tab ? tab.url : null,
+        title: tab ? tab.title : null,
+        closedTabId: cur.goneTabId,
+        sessions: Object.keys(this.sessions),
+      };
+    }
+
+    // --- Tab tools ---
+
+    describe(tab, cur) {
+      return {
+        tabId: tab.id,
+        url: tab.url,
+        title: tab.title,
+        session: this.sessionNameFor(tab.id),
+        current: tab.id === cur.tabId,
+        ownedByPolterTab: this.owned.has(tab.id),
+        windowId: tab.windowId,
+        focused: !!tab.active,
+      };
+    }
+
+    async tabNew(params = {}) {
+      await this.load();
+      const name = params.session || params.name || null;
+      if (name && this.sessions[name] && (await this.tabAlive(this.sessions[name].tabId))) {
+        throw new Error(
+          `Session "${name}" already has a tab (${this.sessions[name].tabId}). Use browser_tab_switch({ session: "${name}" }) to go back to it.`,
+        );
+      }
+
+      const url = params.url
+        ? params.url.startsWith("http") || params.url.startsWith("about:")
+          ? params.url
+          : `https://${params.url}`
+        : "about:blank";
+      const since = Date.now();
+      let tab = await chrome.tabs.create({ url, active: !params.background });
+      this.owned.add(tab.id);
+      if (params.url) tab = await waitForTabLoad(tab.id, since);
+      await this.addTabToGroup(tab.id);
+
+      if (name) {
+        this.sessions[name] = {
+          tabId: tab.id,
+          url: tab.url,
+          title: tab.title,
+          createdAt: Date.now(),
+          lastUsedAt: Date.now(),
+        };
+      }
+      const cur = this.pointer(params);
+      this.point(cur, tab.id, name);
+      await this.persist();
+      return this.describe(tab, cur);
+    }
+
+    async tabList(params = {}) {
+      await this.load();
+      const cur = this.pointer(params);
+      const tracked = new Set(this.owned);
+      for (const s of Object.values(this.sessions)) {
+        if (s.tabId != null) tracked.add(s.tabId);
+      }
+      if (cur.tabId != null) tracked.add(cur.tabId);
+
+      const open = await chrome.tabs.query({});
+      const openIds = new Set(open.map((t) => t.id));
+      // Prune what Chrome no longer has, so the list never offers a dead id.
+      for (const id of [...this.owned]) if (!openIds.has(id)) this.owned.delete(id);
+
+      const tabs = open
+        .filter((t) => params.all || tracked.has(t.id))
+        .map((t) => this.describe(t, cur));
+      await this.persist();
+      return {
+        current: openIds.has(cur.tabId) ? cur.tabId : null,
+        closedTabId: cur.goneTabId,
+        count: tabs.length,
+        tabs,
+      };
+    }
+
+    async tabSwitch(params = {}) {
+      await this.load();
+      if (params.session) {
+        const r = await this.switch(params.session, params);
+        if (params.focus) await chrome.tabs.update(r.tabId, { active: true });
+        return { ...r, session: params.session, current: true };
+      }
+      if (params.tabId == null) {
+        throw new Error("browser_tab_switch needs a tabId or a session");
+      }
+      const tab = await this.requireTab(params.tabId);
+      const cur = this.pointer(params);
+      this.point(cur, tab.id);
+      if (params.focus) await chrome.tabs.update(tab.id, { active: true });
+      await this.persist();
+      return this.describe(tab, cur);
+    }
+
+    async tabClose(params = {}) {
+      await this.load();
+      const cur = this.pointer(params);
+      let tabId = params.tabId;
+      let name = params.session || null;
+      if (name) {
+        if (!this.sessions[name]) throw new Error(`Session "${name}" not found`);
+        tabId = this.sessions[name].tabId;
+      }
+      if (tabId == null && !name) tabId = cur.tabId;
+      if (tabId == null && !name) {
+        throw new Error("browser_tab_close needs a tabId or a session (this agent has no current tab)");
+      }
+      if (!name) name = this.sessionNameFor(tabId);
+
+      if (tabId != null && (await this.tabAlive(tabId))) {
+        // Everything not opened or bound by PolterTab is the user's own tab.
+        if (!params.force && !this.owned.has(tabId) && !name) {
+          throw new Error(
+            `Tab ${tabId} was not opened by PolterTab, so it is the user's own tab. Pass force: true only if the user asked to close it.`,
+          );
+        }
+        this.forgetTab(tabId);
+        await chrome.tabs.remove(tabId);
+      } else if (tabId != null) {
+        this.forgetTab(tabId);
+      }
+      if (name) delete this.sessions[name];
+      await this.persist();
+      return {
+        closed: tabId ?? null,
+        session: name,
+        current: cur.tabId,
+        hint:
+          cur.tabId == null
+            ? "No current tab now. Untargeted calls will error until you browser_tab_switch or browser_navigate."
+            : undefined,
       };
     }
 
     handleTabRemoved(closedTabId) {
-      if (this.lastNavigatedTabId === closedTabId) {
-        this.lastNavigatedTabId = null;
-      }
-      let changed = false;
-      for (const [name, session] of Object.entries(this.sessions)) {
+      // The user closes their own tabs all the time; only write when the tab
+      // was one PolterTab was tracking.
+      let changed = this.forgetTab(closedTabId);
+      for (const session of Object.values(this.sessions)) {
         if (session.tabId === closedTabId) {
           session.tabId = null;
           changed = true;
         }
-      }
-      if (
-        this.activeSession &&
-        this.sessions[this.activeSession]?.tabId === null
-      ) {
-        this.activeSession = null;
       }
       if (changed) this.persist();
     }
@@ -564,7 +754,7 @@
     if (message && message.type === "ZC_NETWORK_DATA") {
       const tabId = sender.tab
         ? sender.tab.id
-        : sessionManager.lastNavigatedTabId;
+        : sessionManager.pointer({}).tabId;
       if (tabId) {
         send({
           type: "network_data",
@@ -643,11 +833,18 @@
     },
 
     // Session management (accepts "name" or "session" as the identifier).
-    session_create: (p) => sessionManager.create(p.name || p.session, p.url),
-    session_switch: (p) => sessionManager.switch(p.name || p.session),
-    session_list: () => sessionManager.list(),
-    session_close: (p) => sessionManager.close(p.name || p.session),
-    session_context: () => sessionManager.context(),
+    session_create: (p) => sessionManager.create(p.name || p.session, p.url, p),
+    session_switch: (p) => sessionManager.switch(p.name || p.session, p),
+    session_list: (p) => sessionManager.list(p),
+    session_close: (p) => sessionManager.close(p.name || p.session, p),
+    session_context: (p) => sessionManager.context(p),
+
+    // Tabs, for one agent driving several at once. Each agent has its own
+    // current tab; untargeted calls go there, `tabId`/`session` override it.
+    tab_new: (p) => sessionManager.tabNew(p),
+    tab_list: (p) => sessionManager.tabList(p),
+    tab_switch: (p) => sessionManager.tabSwitch(p),
+    tab_close: (p) => sessionManager.tabClose(p),
   };
 
   async function handleCommand(action, params) {
@@ -665,29 +862,29 @@
     const targetUrl = url.startsWith("http") ? url : `https://${url}`;
 
     // Resolve tab via session manager
-    const resolvedTabId = await sessionManager.resolve(params);
+    const resolvedTabId = await sessionManager.resolve(params, {
+      navigating: true,
+    });
 
     let tab;
     const since = Date.now();
     if (resolvedTabId) {
       tab = await chrome.tabs.update(resolvedTabId, { url: targetUrl });
     } else {
-      // Nothing resolved means nothing has been navigated yet this session.
-      // This runs against the user's real browser, so the old behaviour here —
+      // Nothing resolved means nothing has been navigated yet by this agent
+      // (or its tab was closed, or `session` names a new one). This runs
+      // against the user's real browser, so the old behaviour here —
       // commandeering whatever tab they happened to be looking at — navigated
-      // them away from their own work. Open our own tab instead; resolve()
-      // returns it via lastNavigatedTabId from the next call onward, so a
-      // paginating loop still reuses one tab rather than opening hundreds.
+      // them away from their own work. Open our own tab instead; it becomes
+      // the agent's current tab, so a paginating loop still reuses one tab
+      // rather than opening hundreds.
       tab = await chrome.tabs.create({ url: targetUrl });
+      sessionManager.owned.add(tab.id);
     }
     tab = await waitForTabLoad(tab.id, since);
 
-    // Always track the last navigated tab for implicit fallback
-    sessionManager.lastNavigatedTabId = tab.id;
-
     // If a session param was provided, create/update the named session for this tab
     if (params.session) {
-      await sessionManager.load();
       const existing = sessionManager.sessions[params.session];
       if (existing) {
         existing.tabId = tab.id;
@@ -704,9 +901,16 @@
         };
         await sessionManager.addTabToGroup(tab.id);
       }
-      sessionManager.activeSession = params.session;
-      await sessionManager.persist();
     }
+
+    // The tab just navigated is where this agent now is — what "omit tabId to
+    // use the last tab navigated" promises.
+    sessionManager.point(
+      sessionManager.pointer(params),
+      tab.id,
+      params.session || null,
+    );
+    await sessionManager.persist();
 
     return {
       tabId: tab.id,

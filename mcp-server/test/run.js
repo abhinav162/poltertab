@@ -13,6 +13,7 @@
 //   N  self-healing selectors                    (fingerprint relocation on drift)
 //   O  site-memory selector store                (persistence, dedup/cap, back-compat)
 //   P  learned extraction recipes                (path bucketing, merge/cap, corrupt store)
+//   Q  one agent, many tabs                     (per-agent current tab, tab_* tools)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -21,7 +22,7 @@ const path = require("path");
 const { results } = require("./harness.js");
 
 // One file per group, run in order. Adding a group is adding a file.
-const GROUPS = "abcdefghijklmnop".split("");
+const GROUPS = "abcdefghijklmnopq".split("");
 
 (async () => {
   console.log("PolterTab regression suite");

@@ -48,7 +48,7 @@ async function groupD() {
     await test("D1 tools/list exposes the full browser toolset", async () => {
       const r = await rpc(primary, "tools/list", {});
       const names = r.result.tools.map((t) => t.name);
-      assert.strictEqual(names.length, 23, `got ${names.length} tools`);
+      assert.strictEqual(names.length, 27, `got ${names.length} tools`);
       assert.ok(names.includes("browser_get_network_state"));
       assert.ok(names.every((n) => n.startsWith("browser_")));
     });

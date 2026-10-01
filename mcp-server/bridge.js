@@ -301,7 +301,11 @@ function setupPrimaryWss(wss) {
         }
 
         if (msg.type === "proxy_command") {
-          const { id, action, params } = msg;
+          const { id, action } = msg;
+          // Stamp which agent is asking, from the socket rather than the
+          // message, so the extension keeps this Secondary's current tab apart
+          // from the Primary's and every other Secondary's.
+          const params = { ...(msg.params || {}), _client: ws.nodeId };
           if (params && params.tabId) {
             ws.lastTabId = params.tabId;
             broadcastSessionState();
@@ -537,10 +541,11 @@ async function sendCommand(action, params) {
       throw new Error("Secondary node not connected to Primary MCP server.");
     }
 
-    // Auto-inject a unique session to prevent collisions over shared tabs
-    if (!params.session) {
-      params.session = "agent_" + nodeId;
-    }
+    // No session is injected any more. It used to be ("agent_<nodeId>"), which
+    // overrode every browser_tab_switch this agent made, and an unknown session
+    // fell through to the Primary's active tab anyway. The Primary now stamps
+    // this node's id as _client and the extension keeps a current tab per
+    // client, so a Secondary's first navigate opens its own tab.
 
     return awaitReply(
       { type: "proxy_command", id: crypto.randomUUID(), action, params },
