@@ -119,7 +119,7 @@ Q. one agent, many tabs
    something: the click should happen on example.com.
 5. Close the current tab by hand and call `browser_snapshot`: it should fail
    with "…(tab N) was closed…".
-6. Call `browser_tab_close({tabId:<a tab you opened yourself>})`: it should be
+6. Call `browser_tab_close({tabId:<a tab the user opened>})`: it should be
    refused unless `force: true` is passed.
 7. Two agents: start a second Claude session so it runs as a secondary. Each
    one's `browser_navigate` should get its own tab, and neither should move the
@@ -129,3 +129,26 @@ Q. one agent, many tabs
 
 Steps 1 to 7 need someone to reload the extension and watch Chrome. I did not
 touch the live profile.
+
+## Live test results
+
+Run on 2026-10-10 in the test Chrome profile with the dev MCP server on port
+7826, the extension reloaded from `chrome-extension/`, and branch
+`feature/multi-tab` at 2237afa.
+
+| Step | Expected | Actual | Result |
+|---|---|---|---|
+| 1 | Extension and server are on the new code | `browser_get_url` connected. `browser_tab_list` answered with `{current:null, count:0}` and no "Unknown action". | PASS |
+| 2 | Two new tabs are listed and the second is current | Opened example.com (399727333) and wikipedia.org (399727334). The list showed both, with `current: 399727334`. | PASS |
+| 3 | A plain snapshot shows Wikipedia; `tabId` targets example.com; `get_url` stays on Wikipedia | Snapshot title "Wikipedia". Snapshot with `tabId:399727333` returned "Example Domain". `get_url` returned wikipedia.org on 399727334. | PASS |
+| 4 | After switching, a click happens on example.com | `tab_switch(399727333)` then `click("a")` clicked "Learn more". Tab 399727333 went to iana.org and the Wikipedia tab did not change. | PASS |
+| 5 | Closing the current tab by hand makes the next snapshot fail with "…(tab N) was closed…" | The human closed 399727333. The snapshot error was "The tab this agent was working in (tab 399727333) was closed. Pick another…". `tab_list` showed `closedTabId: 399727333, current: null`. | PASS |
+| 6 | Closing the user's tab is refused without `force`; closing a PolterTab tab works without it | The user's `chrome://extensions` tab was refused with "was not opened by PolterTab, so it is the user's own tab. Pass force: true only if the user asked…". The owned tab 399727334 closed without force. I did not force-close the user's tab. | PASS (step text corrected: it said "a tab you opened yourself") |
+| 7 | Two agents each get their own tab and neither moves the other's current tab | A second server process logged "Port 7826 in use, switching to Secondary Mode". Agent B navigated to tab 399727337 (example.org). Agent A then navigated to tab 399727338 (example.net). 45s later, B's `get_url` was still 399727337 and A's was still 399727338. | PASS |
+
+Note: in both agents, `browser_tab_list` lists every PolterTab-owned tab, the
+other agent's included, with only the agent's own tab marked current. That
+matches the tool description.
+
+`npm test`: 226/226 and 61/61 passed. Group D binds local ports, so it times
+out inside a sandbox that blocks binding and has to run unsandboxed.
