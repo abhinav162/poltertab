@@ -180,6 +180,20 @@ async function groupQ() {
     assert.strictEqual((await ok(bg, "get_url")).tabId, b.tabId, "navigate({tabId}) moved the current tab");
   });
 
+  // SB-3 (live): tab_new on a session whose tab was closed rebound the name
+  // to a fresh tab without a word, so the caller could not tell it had lost
+  // the old page.
+  await test("Q15 tab_new on a session whose tab closed says it replaced it", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new", { session: "s", url: "http://old.test/" });
+    bg.closeTab(a.tabId);
+    const b = await ok(bg, "tab_new", { session: "s", url: "http://new.test/" });
+    assert.notStrictEqual(b.tabId, a.tabId);
+    assert.strictEqual(b.replacedClosedTab, a.tabId, "no notice that the session's old tab was gone");
+    const fresh2 = await ok(bg, "tab_new", { session: "t" });
+    assert.strictEqual(fresh2.replacedClosedTab, undefined);
+  });
+
 }
 
 module.exports = groupQ;

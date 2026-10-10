@@ -367,6 +367,7 @@
         if (session.tabId === null) {
           status = session.url ? "recoverable" : "expired";
         } else if (!(await this.tabAlive(session.tabId))) {
+          session.lastTabId = session.tabId;
           session.tabId = null;
           status = session.url ? "recoverable" : "expired";
         }
@@ -448,6 +449,12 @@
           `Session "${name}" already has a tab (${this.sessions[name].tabId}). Use browser_tab_switch({ session: "${name}" }) to go back to it.`,
         );
       }
+      // The session's tab is gone: say so, rather than rebinding the name to a
+      // fresh tab without a word about the page that was lost.
+      const replacedClosedTab =
+        name && this.sessions[name]
+          ? (this.sessions[name].tabId ?? this.sessions[name].lastTabId ?? null)
+          : undefined;
 
       const url = params.url
         ? params.url.startsWith("http") || params.url.startsWith("about:")
@@ -472,7 +479,12 @@
       const cur = this.pointer(params);
       this.point(cur, tab.id, name);
       await this.persist();
-      return this.describe(tab, cur);
+      const described = this.describe(tab, cur);
+      if (replacedClosedTab !== undefined) {
+        described.replacedClosedTab = replacedClosedTab;
+        described.hint = `Session "${name}" had a tab (${replacedClosedTab}) that was closed; it now points at this new tab.`;
+      }
+      return described;
     }
 
     async tabList(params = {}) {
@@ -565,6 +577,7 @@
       let changed = this.forgetTab(closedTabId);
       for (const session of Object.values(this.sessions)) {
         if (session.tabId === closedTabId) {
+          session.lastTabId = closedTabId;
           session.tabId = null;
           changed = true;
         }
