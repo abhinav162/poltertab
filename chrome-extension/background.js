@@ -37,6 +37,8 @@
   const KEEPALIVE_ALARM = "poltertab-keepalive";
   const STORAGE_KEY = "zc_sessions";
   const TAB_STATE_KEY = "zc_tab_state";
+  // How long an agent's empty tab pointer outlives its last use.
+  const POINTER_TTL_MS = 24 * 60 * 60 * 1000;
 
   let ws = null;
   let isConnected = false;
@@ -92,7 +94,20 @@
       this.loaded = true;
     }
 
+    // A restarted Secondary comes back under a new nodeId, so its old pointer
+    // would sit in session storage for the rest of the browser run. Drop
+    // pointers nobody has used for a day that no longer hold a tab; one still
+    // on a live tab is kept, so an idle agent never loses where it was.
+    prunePointers() {
+      const cutoff = Date.now() - POINTER_TTL_MS;
+      for (const [client, cur] of Object.entries(this.current)) {
+        if (client === "primary" || cur.tabId != null) continue;
+        if ((cur.seenAt || 0) < cutoff) delete this.current[client];
+      }
+    }
+
     async persist() {
+      this.prunePointers();
       try {
         await chrome.storage.local.set({ [STORAGE_KEY]: this.sessions });
         const area = chrome.storage.session;
@@ -113,6 +128,7 @@
       if (!this.current[client]) {
         this.current[client] = { session: null, tabId: null, goneTabId: null };
       }
+      this.current[client].seenAt = Date.now();
       return this.current[client];
     }
 

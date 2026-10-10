@@ -194,6 +194,20 @@ async function groupQ() {
     assert.strictEqual(fresh2.replacedClosedTab, undefined);
   });
 
+  // SB-4 (live MT-39): a restarted Secondary comes back under a new nodeId and
+  // its old pointer stayed in chrome.storage.session forever.
+  await test("Q16 a departed agent's empty pointer is pruned, a live one is kept", async () => {
+    const bg = fresh();
+    const gone = await ok(bg, "tab_new", { _client: "node-gone" });
+    await ok(bg, "tab_close", { tabId: gone.tabId, _client: "node-gone" });
+    await ok(bg, "tab_new", { _client: "node-idle" });
+    bg.cfg.clockOffset = 25 * 60 * 60 * 1000;
+    await ok(bg, "tab_new");
+    const current = bg.sessionStore.zc_tab_state.current;
+    assert.ok(!("node-gone" in current), "dead agent's pointer never pruned");
+    assert.ok("node-idle" in current, "an agent still holding a live tab lost its pointer");
+    assert.ok("primary" in current);
+  });
 }
 
 module.exports = groupQ;

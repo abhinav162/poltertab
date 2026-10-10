@@ -194,6 +194,8 @@ function backgroundSandbox() {
   const navListeners = [];
   const removedListeners = [];
   const sockets = [];
+  // chrome.storage.session, where the per-agent tab pointers persist.
+  const sessionStore = {};
 
   const fireComplete = (tabId) => {
     for (const fn of navListeners) fn({ tabId, frameId: 0 });
@@ -268,6 +270,12 @@ function backgroundSandbox() {
           get: (keys, cb) => (cb ? cb({}) : Promise.resolve({})),
           set: (_o, cb) => (cb ? cb() : Promise.resolve()),
         },
+        session: {
+          get: async (key) => ({ [key]: sessionStore[key] && JSON.parse(JSON.stringify(sessionStore[key])) }),
+          set: async (o) => {
+            for (const [k, v] of Object.entries(o)) sessionStore[k] = JSON.parse(JSON.stringify(v));
+          },
+        },
         onChanged: { addListener() {} },
       },
       tabs: {
@@ -337,6 +345,7 @@ function backgroundSandbox() {
     updated,
     fireComplete,
     closeTab,
+    sessionStore,
     navListenerCount: () => navListeners.length,
     command: (msg) => ws.onmessage({ data: JSON.stringify(msg) }),
     replyFor: (id) => sent.find((m) => m.id === id),
