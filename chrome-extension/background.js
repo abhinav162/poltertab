@@ -904,12 +904,15 @@
     }
 
     // The tab just navigated is where this agent now is — what "omit tabId to
-    // use the last tab navigated" promises.
-    sessionManager.point(
-      sessionManager.pointer(params),
-      tab.id,
-      params.session || null,
-    );
+    // use the last tab navigated" promises. An explicit tabId is a one-off, as
+    // on every other tool, and leaves the pointer where it was.
+    if (params.tabId == null) {
+      sessionManager.point(
+        sessionManager.pointer(params),
+        tab.id,
+        params.session || null,
+      );
+    }
     await sessionManager.persist();
 
     return {

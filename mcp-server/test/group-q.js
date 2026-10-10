@@ -168,6 +168,18 @@ async function groupQ() {
     assert.ok(/_client: ws\.nodeId/.test(src), "proxy path does not stamp _client");
     assert.ok(!/"agent_" \+ nodeId/.test(src), "secondary still injects a session");
   });
+  // SB-5 (live MT-20): navigate({tabId}) moved the pointer to that tab, so the
+  // agent's next untargeted call landed there — the opposite of what tabId
+  // promises on every other tool.
+  await test("Q14 navigate with an explicit tabId does not move the pointer", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new");
+    const b = await ok(bg, "tab_new");
+    const nav = await ok(bg, "navigate", { tabId: a.tabId, url: "http://elsewhere.test/" });
+    assert.strictEqual(nav.tabId, a.tabId);
+    assert.strictEqual((await ok(bg, "get_url")).tabId, b.tabId, "navigate({tabId}) moved the current tab");
+  });
+
 }
 
 module.exports = groupQ;
