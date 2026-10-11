@@ -80,6 +80,11 @@ user's focused tab (Q12).
 
 ## Test result
 
+This transcript is the run as it stood when this report was written. The suite
+has grown since (and group Q's tests were renumbered into one sequence), so
+the counts and test names below are a record of that run, not the current
+suite. Run `node mcp-server/test/run.js` for today's.
+
 `npm test` was run outside the sandbox, because the sandbox blocks binding a
 local port (EPERM):
 

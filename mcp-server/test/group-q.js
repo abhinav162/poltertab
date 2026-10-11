@@ -160,15 +160,15 @@ async function groupQ() {
     assert.strictEqual((await ok(fresh(), "get_url")).tabId, 7);
   });
 
-  // Q13 used to read bridge.js's source text and regex it for `_client:
-  // ws.nodeId`, which pinned a spelling rather than a behaviour and broke on
-  // any reflow of that line. The two things it meant to assert are now R3 (the
-  // envelope carries the agent's id and no injected session) and D8 (the same,
-  // end-to-end through a live Primary and Secondary).
+  // A test here used to read bridge.js's own source text and regex it for
+  // `_client: ws.nodeId`, which pinned a spelling rather than a behaviour and
+  // broke on any reflow of that line. The two things it meant to assert are
+  // now R3 (the envelope carries the agent's id and no injected session) and
+  // D8 (the same, end-to-end through a live Primary and Secondary).
   // SB-5 (live MT-20): navigate({tabId}) moved the pointer to that tab, so the
   // agent's next untargeted call landed there — the opposite of what tabId
   // promises on every other tool.
-  await test("Q14 navigate with an explicit tabId does not move the pointer", async () => {
+  await test("Q13 navigate with an explicit tabId does not move the pointer", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new");
     const b = await ok(bg, "tab_new");
@@ -180,7 +180,7 @@ async function groupQ() {
   // SB-3 (live): tab_new on a session whose tab was closed rebound the name
   // to a fresh tab without a word, so the caller could not tell it had lost
   // the old page.
-  await test("Q15 tab_new on a session whose tab closed says it replaced it", async () => {
+  await test("Q14 tab_new on a session whose tab closed says it replaced it", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new", { session: "s", url: "http://old.test/" });
     bg.closeTab(a.tabId);
@@ -193,7 +193,7 @@ async function groupQ() {
 
   // SB-4 (live MT-39): a restarted Secondary comes back under a new nodeId and
   // its old pointer stayed in chrome.storage.session forever.
-  await test("Q16 a departed agent's empty pointer is pruned, a live one is kept", async () => {
+  await test("Q15 a departed agent's empty pointer is pruned, a live one is kept", async () => {
     const bg = fresh();
     const gone = await ok(bg, "tab_new", { _client: "node-gone" });
     await ok(bg, "tab_close", { tabId: gone.tabId, _client: "node-gone" });
@@ -209,7 +209,7 @@ async function groupQ() {
   // SB-1 / MT-48: a tab adopted via session_create({tabId}) was opened by the
   // user, so tab_close must refuse it without force — but the old guard checked
   // `!name`, which was false for a session, bypassing the check entirely.
-  await test("Q17 tab_close refuses an adopted user tab unless force is set", async () => {
+  await test("Q16 tab_close refuses an adopted user tab unless force is set", async () => {
     const bg = fresh();
     // Adopt the user's pre-existing tab (id 7, in activeTabs, not owned by PolterTab).
     await ok(bg, "session_create", { session: "u", tabId: 7 });
@@ -232,7 +232,7 @@ async function groupQ() {
   // SB-1 variant: session_close must apply the same guard as tab_close. Before
   // this fix, close() called chrome.tabs.remove() with no owned/force check, so
   // browser_session_close({name}) silently closed a tab the user had open.
-  await test("Q19 session_close refuses an adopted user tab without force", async () => {
+  await test("Q17 session_close refuses an adopted user tab without force", async () => {
     const bg = fresh();
     // Adopt the user's pre-existing tab (id 7, not owned by PolterTab).
     await ok(bg, "session_create", { session: "u", tabId: 7 });
@@ -254,7 +254,7 @@ async function groupQ() {
   // S2: screenshot() must not permanently steal focus from the tab the user had
   // active. After capturing, restore the previously focused tab so tab_new(
   // {background:true}) promises are honoured and the user's cursor doesn't jump.
-  await test("Q20 screenshot restores the tab that was active before the capture", async () => {
+  await test("Q18 screenshot restores the tab that was active before the capture", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new", { url: "http://a.test/" });
     const b = await ok(bg, "tab_new", { url: "http://b.test/" });
@@ -278,7 +278,7 @@ async function groupQ() {
   // load body independently and can overwrite in-memory mutations made by the
   // first. The fix makes load() return the same promise for every concurrent
   // caller.
-  await test("Q23 concurrent tab_new calls both complete without clobbering each other", async () => {
+  await test("Q19 concurrent tab_new calls both complete without clobbering each other", async () => {
     const bg = fresh();
     const id1 = `q${n++}`;
     const id2 = `q${n++}`;
@@ -300,7 +300,7 @@ async function groupQ() {
   // not silently succeed. MT-16 (a tab PolterTab opened, then Chrome closed)
   // collapses into the same error because we cannot distinguish them without
   // persisting a "ever-owned" set; both now return tab_not_found.
-  await test("Q18 tab_close on a non-alive tabId returns tab_not_found", async () => {
+  await test("Q20 tab_close on a non-alive tabId returns tab_not_found", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new");
 
@@ -319,7 +319,7 @@ async function groupQ() {
   // Live beta.1 smoke test: Chrome allows 2 captureVisibleTab calls per second.
   // The screenshot mutex ran captures ~300ms apart, so the second of two
   // concurrent screenshots failed with the quota error.
-  await test("Q24 concurrent screenshots stay under Chrome's capture quota", async () => {
+  await test("Q21 concurrent screenshots stay under Chrome's capture quota", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new", { url: "http://a.test/", background: true });
     const b = await ok(bg, "tab_new", { url: "http://b.test/", background: true });
@@ -342,7 +342,7 @@ async function groupQ() {
     assert.strictEqual(bg.replyFor(id2).success, true, bg.replyFor(id2).error);
   });
 
-  await test("Q25 screenshot restores the previously active tab when the capture fails", async () => {
+  await test("Q22 screenshot restores the previously active tab when the capture fails", async () => {
     const bg = fresh();
     const a = await ok(bg, "tab_new", { url: "http://a.test/" });
     const b = await ok(bg, "tab_new", { url: "http://b.test/", background: true });
@@ -365,7 +365,7 @@ async function groupQ() {
   // persisted — and the pointer came back from session storage intact.
   // resolve() re-checks liveness so most calls self-healed, but tab_list reads
   // goneTabId directly and reported neither a current tab nor a closed one.
-  await test("Q26 a tab closed before the pointers load is still reported as closed", async () => {
+  await test("Q23 a tab closed before the pointers load is still reported as closed", async () => {
     const bg = fresh();
     // A woken worker: session storage holds a pointer, nothing is loaded yet.
     bg.sessionStore.zc_tab_state = {
