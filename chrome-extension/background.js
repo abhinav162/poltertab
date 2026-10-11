@@ -1122,15 +1122,19 @@
     }
   }
 
+  // The tab a command resolves to, fetched. Both readers below want the same
+  // two fields and differ only in which one they lead with.
+  async function resolveAndGet(params) {
+    return chrome.tabs.get(await sessionManager.resolveOrFallback(params));
+  }
+
   async function getTitle(params) {
-    const targetTabId = await sessionManager.resolveOrFallback(params);
-    const tab = await chrome.tabs.get(targetTabId);
+    const tab = await resolveAndGet(params);
     return { title: tab.title, url: tab.url, tabId: tab.id };
   }
 
   async function getUrl(params) {
-    const targetTabId = await sessionManager.resolveOrFallback(params);
-    const tab = await chrome.tabs.get(targetTabId);
+    const tab = await resolveAndGet(params);
     return { url: tab.url, title: tab.title, tabId: tab.id };
   }
 
