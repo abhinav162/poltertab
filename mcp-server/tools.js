@@ -433,11 +433,16 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_session_close",
-    description: "Close a tracked session",
+    description:
+      "Close a tracked session and its tab. Tabs not opened by PolterTab — including ones adopted via browser_session_create({tabId}) — require the user's permission: the tool returns code needs_user_permission with the tab's id, title and url; ask the user, then retry with force: true.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string" },
+        force: {
+          type: "boolean",
+          description: "Close a tab the user opened. Only when the user asked.",
+        },
       },
       required: ["name"],
     },

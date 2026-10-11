@@ -196,7 +196,7 @@ next use.
 | `browser_session_create` | `name` (required), `url`, `tabId` | Create a session, adopt an open tab, or bind one to the active tab |
 | `browser_session_switch` | `name` (required) | Make a session active, recovering its tab if closed |
 | `browser_session_list` | — | All sessions, each `alive`, `recoverable`, or `expired` |
-| `browser_session_close` | `name` (required) | Close a session and its tab |
+| `browser_session_close` | `name` (required), `force` | Close a session and its tab. Adopted tabs return `needs_user_permission`; retry with `force: true` after asking the user. |
 | `browser_session_context` | — | The current tab's id, URL, title and session, or `closedTabId` |
 
 ### Tabs

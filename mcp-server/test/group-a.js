@@ -2,6 +2,7 @@ const {
   EXT,
   REPO,
   SERVER,
+  TOOLS,
   assert,
   fs,
   path,
@@ -238,6 +239,21 @@ async function groupA() {
     assert.ok(guard !== -1, "no injection sentinel");
     assert.ok(guard < listener, "sentinel must precede window listeners");
     assert.ok(guard < onMessage, "sentinel must precede the command listener");
+  });
+
+  await test("A14 browser_session_close inputSchema declares 'force'", () => {
+    const { BROWSER_TOOLS } = require(TOOLS);
+    const sessionClose = BROWSER_TOOLS.find((t) => t.name === "browser_session_close");
+    assert.ok(sessionClose, "browser_session_close not found in tools");
+    assert.ok(
+      sessionClose.inputSchema.properties.force,
+      "browser_session_close.inputSchema missing 'force' property",
+    );
+    assert.strictEqual(
+      sessionClose.inputSchema.properties.force.type,
+      "boolean",
+      "browser_session_close.force must be type boolean",
+    );
   });
 }
 
