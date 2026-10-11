@@ -11,7 +11,7 @@ const TARGET = {
   tabId: {
     type: "number",
     description:
-      "Act on this tab (an id from browser_tab_list) without making it current. Omit to use this agent's current tab: the last one navigated, opened or switched to.",
+      "Act on this tab (an id from browser_tab_list) without making it current. Omit to use this agent's current tab: the last one navigated, opened or switched to. A tabId Chrome does not have returns tab_not_found.",
   },
   session: {
     type: "string",
@@ -498,7 +498,11 @@ const BROWSER_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        tabId: { type: "number" },
+        tabId: {
+          type: "number",
+          description:
+            "Tab to switch to; a tabId Chrome does not have returns tab_not_found",
+        },
         session: { type: "string" },
         focus: {
           type: "boolean",

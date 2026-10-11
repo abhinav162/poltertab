@@ -203,7 +203,8 @@ next use.
 
 One agent can drive many tabs. Each agent (and each secondary server) has its
 own **current tab**; page-facing tools without `tabId`/`session` act there. An
-explicit `tabId` acts on that tab without changing the current one. If the
+explicit `tabId` acts on that tab without changing the current one; a `tabId`
+Chrome does not have returns `tab_not_found` on any tool that takes one. If the
 current tab is closed, untargeted calls fail with a message naming the closed
 tab instead of quietly acting on another one.
 
@@ -211,7 +212,7 @@ tab instead of quietly acting on another one.
 | -------- | ----------- | ------------- |
 | `browser_tab_new` | `url`, `session`, `background` | Open a tab and make it current |
 | `browser_tab_list` | `all` | PolterTab's tabs (or every tab), marking the current one |
-| `browser_tab_switch` | `tabId` or `session`, `focus` | Make another tab current |
+| `browser_tab_switch` | `tabId` or `session`, `focus` | Make another tab current. A tab that does not exist in Chrome returns `tab_not_found`. |
 | `browser_tab_close` | `tabId` or `session`, `force` | Close a tab (default: current). Tabs not opened by PolterTab (including ones adopted via `browser_session_create({tabId})`) return `needs_user_permission` — ask the user, then retry with `force: true`. A tab that does not exist in Chrome returns `tab_not_found`. |
 
 ### Site memory

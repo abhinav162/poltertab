@@ -204,7 +204,9 @@ commandeer the tab the user is looking at — and later calls reuse it.
 For several tabs: `browser_tab_new` opens one and makes it current,
 `browser_tab_list` shows them with their ids, `browser_tab_switch` changes the
 current one, and `browser_tab_close` closes one. Pass `tabId` to act on a tab
-once without switching to it, or name tabs with `session` and pass that. If a
+once without switching to it — a `tabId` Chrome does not have returns
+`tab_not_found` on any tool that takes one — or name tabs with `session` and
+pass that. If a
 call says your tab was closed, list and switch — do not assume another tab is
 the same page. Close what you opened.
 

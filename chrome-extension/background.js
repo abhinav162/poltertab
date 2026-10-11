@@ -189,11 +189,14 @@
 
     // An explicit tabId used to go straight to chrome.* and come back as
     // Chrome's own "No tab with id: 123", which says nothing about what to do.
+    // Carries the same [tab_not_found] code tab_close returns for the same
+    // condition: an agent branching on the code used to miss every tool but
+    // that one.
     async requireTab(tabId) {
       const tab = await this.tabAlive(tabId);
       if (!tab) {
         throw new Error(
-          `Tab ${tabId} is closed or does not exist. Call browser_tab_list to see the open tabs.`,
+          `[tab_not_found] Tab ${tabId} is closed or does not exist. Call browser_tab_list to see the open tabs.`,
         );
       }
       return tab;
