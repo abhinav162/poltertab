@@ -232,6 +232,28 @@ async function groupQ() {
     assert.strictEqual(forced.session, "u");
   });
 
+  // SB-1 variant: session_close must apply the same guard as tab_close. Before
+  // this fix, close() called chrome.tabs.remove() with no owned/force check, so
+  // browser_session_close({name}) silently closed a tab the user had open.
+  await test("Q19 session_close refuses an adopted user tab without force", async () => {
+    const bg = fresh();
+    // Adopt the user's pre-existing tab (id 7, not owned by PolterTab).
+    await ok(bg, "session_create", { session: "u", tabId: 7 });
+
+    // Without force: must refuse with needs_user_permission.
+    const refused = await call(bg, "session_close", { name: "u" });
+    assert.strictEqual(refused.success, false, "session_close closed adopted user tab without force");
+    assert.match(refused.error, /needs_user_permission/);
+
+    // Session still intact after the refusal.
+    const ctx = await ok(bg, "session_context", {});
+    assert.strictEqual(ctx.tabId, 7, "session lost its tab after a refused close");
+
+    // With force: succeeds.
+    const forced = await ok(bg, "session_close", { name: "u", force: true });
+    assert.strictEqual(forced.closed, "u");
+  });
+
   // MT-15: tab_close on a tabId Chrome does not have must return tab_not_found,
   // not silently succeed. MT-16 (a tab PolterTab opened, then Chrome closed)
   // collapses into the same error because we cannot distinguish them without

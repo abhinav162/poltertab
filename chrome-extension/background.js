@@ -408,6 +408,12 @@
       if (!session) throw new Error(`Session "${name}" not found`);
 
       if (session.tabId !== null) {
+        const liveTab = await this.tabAlive(session.tabId);
+        if (liveTab && !params.force && !this.owned.has(session.tabId)) {
+          throw new Error(
+            `[needs_user_permission] Tab ${session.tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. This tab was adopted by a session. Ask the user for permission to close it, then retry with force: true.`,
+          );
+        }
         this.forgetTab(session.tabId);
         try {
           await chrome.tabs.remove(session.tabId);
