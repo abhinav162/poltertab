@@ -167,6 +167,17 @@
       return null;
     }
 
+    // The tab the user is looking at. Three callers reach for it as a fallback
+    // and each phrased the query itself; null rather than undefined so the
+    // "none" case is explicit.
+    async activeTab() {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      return tab || null;
+    }
+
     async tabAlive(tabId) {
       if (tabId == null) return null;
       try {
@@ -269,10 +280,7 @@
         this.owned.add(tab.id);
         tab = await waitForTabLoad(tab.id, since);
       } else {
-        const [activeTab] = await chrome.tabs.query({
-          active: true,
-          currentWindow: true,
-        });
+        const activeTab = await this.activeTab();
         if (!activeTab) throw new Error("No active tab to bind session to");
         tab = activeTab;
       }
@@ -399,10 +407,7 @@
       const resolved = await this.resolve(params);
       if (resolved) return resolved;
 
-      const [activeTab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
+      const activeTab = await this.activeTab();
       if (!activeTab) throw new Error("No active tab found");
       return activeTab.id;
     }
@@ -1081,7 +1086,7 @@
     await prev.catch(() => {});
     let activeTab;
     try {
-      [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      activeTab = await sessionManager.activeTab();
       await chrome.tabs.update(targetTabId, { active: true });
       await new Promise((r) => setTimeout(r, TAB_FOCUS_SETTLE_MS));
       const dataUrl = await capturePaced();
