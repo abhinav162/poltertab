@@ -214,6 +214,29 @@ async function groupG() {
     assert.strictEqual(reply.success, true, reply.error);
     assert.strictEqual(reply.data.count, 1);
   });
+
+  // MT-59 (live): a tab Chrome discarded to save memory was reported as a
+  // "restricted Chrome page", which sends the agent looking for the wrong fix.
+  await test("G15 a discarded tab is called discarded, not a restricted page", async () => {
+    const bg = frameSearchSandbox({
+      tab: { discarded: true, url: "http://localhost:8766/iframe-heavy.html" },
+      executeScriptError: "Cannot access contents of the page. Extension manifest must request permission to access the respective host.",
+    });
+    const reply = await bg.command({ id: "g15", action: "snapshot" });
+    assert.strictEqual(reply.success, false);
+    assert.match(reply.error, /discarded/);
+    assert.doesNotMatch(reply.error, /restricted Chrome page/);
+  });
+
+  await test("G16 a chrome:// page is still reported as restricted", async () => {
+    const bg = frameSearchSandbox({
+      tab: { url: "chrome://extensions/" },
+      executeScriptError: "Cannot access a chrome:// URL",
+    });
+    const reply = await bg.command({ id: "g16", action: "snapshot" });
+    assert.strictEqual(reply.success, false);
+    assert.match(reply.error, /restricted Chrome page/);
+  });
 }
 
 module.exports = groupG;

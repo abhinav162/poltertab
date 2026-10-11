@@ -1154,6 +1154,14 @@
         (err.message.includes("Cannot access") ||
           err.message.includes("restricted"))
       ) {
+        // A discarded tab fails the same way, but calling it a restricted
+        // page sends the agent looking for the wrong fix.
+        const tab = await sessionManager.tabAlive(targetTabId);
+        if (tab && tab.discarded) {
+          throw new Error(
+            `Tab ${targetTabId} was discarded by Chrome to save memory, so its page is not loaded. Reload it with browser_navigate({ tabId: ${targetTabId}, url }) or show it with browser_tab_switch({ tabId: ${targetTabId}, focus: true }), then retry.`,
+          );
+        }
         throw new Error(
           "Cannot interact with this page (restricted Chrome page)",
         );
