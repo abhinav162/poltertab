@@ -1089,7 +1089,9 @@
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       lastCaptureAt = Date.now();
       try {
-        return await chrome.tabs.captureVisibleTab(null, { format: "png", quality: 90 });
+        // No `quality`: Chrome applies it to jpeg only, and carrying it here
+        // read as though these captures were lossy.
+        return await chrome.tabs.captureVisibleTab(null, { format: "png" });
       } catch (err) {
         if (attempt > 0 || !/MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/.test(err?.message || "")) throw err;
       }
