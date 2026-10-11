@@ -174,6 +174,23 @@ function contentScriptSandbox() {
 
 // ─────────────── C. background.js navigation load race ───────────────
 
+// Loads the real background.js into a prepared sandbox the way Chrome loads a
+// classic service worker: importScripts() synchronously evaluates each named
+// file into the SAME worker global, resolved against the extension root (Chrome
+// resolves against the worker's location, which is that root). Without this the
+// sandbox cannot load a background.js that is split across files at all.
+function loadExtensionWorker(sandbox) {
+  sandbox.importScripts = (...files) => {
+    for (const file of files) {
+      vm.runInContext(fs.readFileSync(path.join(EXT, file), "utf8"), sandbox);
+    }
+  };
+  vm.runInContext(
+    fs.readFileSync(path.join(EXT, "background.js"), "utf8"),
+    sandbox,
+  );
+}
+
 function backgroundSandbox() {
   const cfg = {
     activeTabs: [],
@@ -338,7 +355,7 @@ function backgroundSandbox() {
   vm.createContext(sandbox);
   sandbox.window = sandbox;
   sandbox.self = sandbox;
-  vm.runInContext(fs.readFileSync(path.join(EXT, "background.js"), "utf8"), sandbox);
+  loadExtensionWorker(sandbox);
 
   const ws = sockets[0];
   ws.onopen && ws.onopen();
@@ -927,14 +944,10 @@ function frameSearchSandbox(cfg = {}) {
     },
   };
 
-  const vm = require("vm");
   vm.createContext(sandbox);
   sandbox.window = sandbox;
   sandbox.self = sandbox;
-  vm.runInContext(
-    fs.readFileSync(path.join(EXT, "background.js"), "utf8"),
-    sandbox,
-  );
+  loadExtensionWorker(sandbox);
 
   const ws = sockets[0];
   if (ws && ws.onopen) ws.onopen();
