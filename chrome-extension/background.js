@@ -1018,18 +1018,34 @@
     );
   }
 
+  // One screenshot at a time: captureVisibleTab captures the VISIBLE tab, so
+  // concurrent agents activating different tabs interleave and each gets the
+  // wrong pixels. The mutex also prevents stealing focus permanently — we
+  // restore whichever tab was active before we switched.
+  let screenshotLock = Promise.resolve();
+
   async function screenshot(params) {
     const targetTabId = await sessionManager.resolveOrFallback(params);
 
-    await chrome.tabs.update(targetTabId, { active: true });
-    await new Promise((r) => setTimeout(r, 300));
-
-    const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-      format: "png",
-      quality: 90,
-    });
-
-    return { screenshot: dataUrl, tabId: targetTabId };
+    const prev = screenshotLock;
+    let release;
+    screenshotLock = new Promise((r) => (release = r));
+    await prev.catch(() => {});
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.update(targetTabId, { active: true });
+      await new Promise((r) => setTimeout(r, 300));
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, {
+        format: "png",
+        quality: 90,
+      });
+      if (activeTab && activeTab.id !== targetTabId) {
+        chrome.tabs.update(activeTab.id, { active: true }).catch(() => {});
+      }
+      return { screenshot: dataUrl, tabId: targetTabId };
+    } finally {
+      release();
+    }
   }
 
   async function getTitle(params) {

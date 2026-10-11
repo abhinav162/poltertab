@@ -308,6 +308,10 @@ function backgroundSandbox() {
                   .map((c) => ({ ...tab(c.id), url: c.url })),
               ],
         remove: async (id) => closeTab(id),
+        captureVisibleTab: async (windowId, opts) =>
+          cfg.captureVisibleTab
+            ? cfg.captureVisibleTab(windowId, opts, cfg.activeTabs)
+            : "data:image/png;base64,AAAA",
         group: async () => 1,
         sendMessage: async () => ({ success: true }),
         onRemoved: { addListener: (fn) => removedListeners.push(fn) },

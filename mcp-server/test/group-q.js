@@ -254,6 +254,28 @@ async function groupQ() {
     assert.strictEqual(forced.closed, "u");
   });
 
+  // S2: screenshot() must not permanently steal focus from the tab the user had
+  // active. After capturing, restore the previously focused tab so tab_new(
+  // {background:true}) promises are honoured and the user's cursor doesn't jump.
+  await test("Q20 screenshot restores the tab that was active before the capture", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new", { url: "http://a.test/" });
+    const b = await ok(bg, "tab_new", { url: "http://b.test/" });
+
+    // Simulate: the browser has tab A focused (e.g. user clicked it).
+    bg.cfg.activeTabs = [{ id: a.tabId, url: "http://a.test/", title: "A" }];
+
+    const before = bg.updated.length;
+    await ok(bg, "screenshot", { tabId: b.tabId }); // capture tab B, not active
+    const after = bg.updated.slice(before);
+
+    // Must have restored A as the active tab.
+    assert.ok(
+      after.some((u) => u.id === a.tabId),
+      "screenshot did not restore the previously active tab",
+    );
+  });
+
   // MT-15: tab_close on a tabId Chrome does not have must return tab_not_found,
   // not silently succeed. MT-16 (a tab PolterTab opened, then Chrome closed)
   // collapses into the same error because we cannot distinguish them without
