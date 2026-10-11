@@ -276,6 +276,29 @@ async function groupQ() {
     );
   });
 
+  // N6: two commands that wake the service worker at the same time both call
+  // load() before it finishes. Without memoization the second call enters the
+  // load body independently and can overwrite in-memory mutations made by the
+  // first. The fix makes load() return the same promise for every concurrent
+  // caller.
+  await test("Q23 concurrent tab_new calls both complete without clobbering each other", async () => {
+    const bg = fresh();
+    const id1 = `q${n++}`;
+    const id2 = `q${n++}`;
+    // Fire both without awaiting — both handlers start before either completes load().
+    bg.command({ id: id1, action: "tab_new", url: "http://a.test/" });
+    bg.command({ id: id2, action: "tab_new", url: "http://b.test/" });
+    await waitFor("concurrent tab_new 1", () => bg.replyFor(id1), 5000);
+    await waitFor("concurrent tab_new 2", () => bg.replyFor(id2), 5000);
+    assert.strictEqual(bg.replyFor(id1).success, true, "first concurrent tab_new failed");
+    assert.strictEqual(bg.replyFor(id2).success, true, "second concurrent tab_new failed");
+    assert.notStrictEqual(
+      bg.replyFor(id1).data.tabId,
+      bg.replyFor(id2).data.tabId,
+      "both concurrent tab_new returned the same tabId",
+    );
+  });
+
   // MT-15: tab_close on a tabId Chrome does not have must return tab_not_found,
   // not silently succeed. MT-16 (a tab PolterTab opened, then Chrome closed)
   // collapses into the same error because we cannot distinguish them without

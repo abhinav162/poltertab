@@ -66,32 +66,41 @@
       this.owned = new Set();
     }
 
-    async load() {
-      if (this.loaded) return;
-      try {
-        const result = await chrome.storage.local.get(STORAGE_KEY);
-        if (result[STORAGE_KEY]) {
-          this.sessions = result[STORAGE_KEY];
-          // Mark all tabs as potentially stale (will be validated on use)
-        }
-      } catch (err) {
-        console.error("[PolterTab] Failed to load sessions:", err.message);
+    load() {
+      if (this.loaded) return Promise.resolve();
+      // Memoize to a single promise so concurrent callers at worker wake share
+      // one load instead of each entering the body independently. Without this,
+      // a second caller sees this.loaded === false, enters the body, and its
+      // storage reads can overwrite in-memory mutations made by the first caller
+      // before the first caller had a chance to persist.
+      if (!this._loadPromise) {
+        this._loadPromise = (async () => {
+          try {
+            const result = await chrome.storage.local.get(STORAGE_KEY);
+            if (result[STORAGE_KEY]) {
+              this.sessions = result[STORAGE_KEY];
+            }
+          } catch (err) {
+            console.error("[PolterTab] Failed to load sessions:", err.message);
+          }
+          // The pointers live in session storage, not local: they have to survive
+          // an MV3 worker suspension (losing them sent the next untargeted call to
+          // whatever tab the user had focused), but tab ids are only valid for one
+          // browser run, so they must NOT survive a restart into a reused id.
+          try {
+            const area = chrome.storage.session;
+            const saved = area && (await area.get(TAB_STATE_KEY))[TAB_STATE_KEY];
+            if (saved) {
+              this.current = saved.current || {};
+              this.owned = new Set(saved.owned || []);
+            }
+          } catch (err) {
+            console.error("[PolterTab] Failed to load tab state:", err.message);
+          }
+          this.loaded = true;
+        })();
       }
-      // The pointers live in session storage, not local: they have to survive
-      // an MV3 worker suspension (losing them sent the next untargeted call to
-      // whatever tab the user had focused), but tab ids are only valid for one
-      // browser run, so they must NOT survive a restart into a reused id.
-      try {
-        const area = chrome.storage.session;
-        const saved = area && (await area.get(TAB_STATE_KEY))[TAB_STATE_KEY];
-        if (saved) {
-          this.current = saved.current || {};
-          this.owned = new Set(saved.owned || []);
-        }
-      } catch (err) {
-        console.error("[PolterTab] Failed to load tab state:", err.message);
-      }
-      this.loaded = true;
+      return this._loadPromise;
     }
 
     // A restarted Secondary comes back under a new nodeId, so its old pointer
