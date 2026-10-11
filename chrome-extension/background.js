@@ -5,7 +5,7 @@
 // We use chrome.alarms (which persist across suspensions) to ensure reconnection
 // whenever the bridge server restarts.
 
-importScripts("bg/frames.js");
+importScripts("bg/frames.js", "bg/screenshot.js");
 
 (() => {
   // Mirrors mcp-server/config.js. It cannot be required from here — this runs
@@ -23,8 +23,6 @@ importScripts("bg/frames.js");
   const NAV_SETTLE_MS = 500;
   // How often waitForTabLoad re-checks the load epoch while waiting.
   const LOAD_POLL_MS = 100;
-  // After activating a tab, let Chrome finish painting it before capturing.
-  const TAB_FOCUS_SETTLE_MS = 300;
 
   // MV3 suspends a service worker after ~30s idle. The keepalive fires inside
   // that window while connected; the reconnect poll runs when it is not.
@@ -696,6 +694,12 @@ importScripts("bg/frames.js");
     ERR,
   });
 
+  // Built here, above ROUTES, because ROUTES names `screenshot` directly: a
+  // const declared further down would still be in its temporal dead zone when
+  // the table is evaluated.
+  const { forwardToContentScript } = self.PT.makeFrames({ sessionManager });
+  const { screenshot } = self.PT.makeScreenshot({ sessionManager });
+
   // --- WebSocket connection management ---
 
   function connect() {
@@ -1090,55 +1094,6 @@ importScripts("bg/frames.js");
     );
   }
 
-  // One screenshot at a time: captureVisibleTab captures the VISIBLE tab, so
-  // concurrent agents activating different tabs interleave and each gets the
-  // wrong pixels. The mutex also prevents stealing focus permanently — we
-  // restore whichever tab was active before we switched.
-  let screenshotLock = Promise.resolve();
-  // Chrome allows MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND (2) captures per
-  // second; back-to-back queued screenshots must be spaced or the second fails.
-  const MIN_CAPTURE_GAP_MS = 550;
-  let lastCaptureAt = 0;
-
-  async function capturePaced() {
-    for (let attempt = 0; ; attempt++) {
-      const wait = lastCaptureAt + MIN_CAPTURE_GAP_MS - Date.now();
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      lastCaptureAt = Date.now();
-      try {
-        // No `quality`: Chrome applies it to jpeg only, and carrying it here
-        // read as though these captures were lossy.
-        return await chrome.tabs.captureVisibleTab(null, { format: "png" });
-      } catch (err) {
-        if (attempt > 0 || !/MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/.test(err?.message || "")) throw err;
-      }
-    }
-  }
-
-  async function screenshot(params) {
-    const targetTabId = await sessionManager.resolveOrFallback(params);
-
-    const prev = screenshotLock;
-    let release;
-    screenshotLock = new Promise((r) => (release = r));
-    await prev.catch(() => {});
-    let activeTab;
-    try {
-      activeTab = await sessionManager.activeTab();
-      await chrome.tabs.update(targetTabId, { active: true });
-      await new Promise((r) => setTimeout(r, TAB_FOCUS_SETTLE_MS));
-      const dataUrl = await capturePaced();
-      return { screenshot: dataUrl, tabId: targetTabId };
-    } finally {
-      // Restore focus even when the capture throws, so a failed screenshot
-      // never leaves the agent's tab in front of the user's.
-      if (activeTab && activeTab.id !== targetTabId) {
-        await chrome.tabs.update(activeTab.id, { active: true }).catch(() => {});
-      }
-      release();
-    }
-  }
-
   // The tab a command resolves to, fetched. Both readers below want the same
   // two fields and differ only in which one they lead with.
   async function resolveAndGet(params) {
@@ -1154,10 +1109,6 @@ importScripts("bg/frames.js");
     const tab = await resolveAndGet(params);
     return { url: tab.url, title: tab.title, tabId: tab.id };
   }
-
-  // --- Content script forwarding ---
-
-  const { forwardToContentScript } = self.PT.makeFrames({ sessionManager });
 
   // --- Startup ---
   function init() {
