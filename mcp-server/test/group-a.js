@@ -329,6 +329,35 @@ async function groupA() {
     );
   });
 
+
+  // MV3 restarts the service worker on an event and replays it only to
+  // listeners registered synchronously on that first turn. background.js is the
+  // entry, so its top level is the one place guaranteed to run. A listener
+  // registered inside a module file — behind a factory call, or after an await
+  // — can be missed after an idle restart, and the symptom is a tab close or an
+  // alarm that silently does nothing an hour later.
+  await test("A16 every chrome.* listener is registered in background.js", () => {
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const imported = [
+      ...bg.matchAll(/importScripts\(([^)]*)\)/g),
+    ].flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((f) => f[1]));
+    assert.ok(
+      imported.length > 0,
+      "background.js imports nothing — this check would pass vacuously",
+    );
+
+    const offenders = imported.flatMap((file) => {
+      const src = fs.readFileSync(path.join(EXT, file), "utf8");
+      return [...src.matchAll(/chrome\.[\w.]*on\w+\.addListener/g)].map(
+        (m) => `${file}: ${m[0]}`,
+      );
+    });
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `chrome.* listeners outside background.js: ${offenders.join(", ")}`,
+    );
+  });
 }
 
 module.exports = groupA;
