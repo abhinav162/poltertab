@@ -44,6 +44,15 @@
   // How long an agent's empty tab pointer outlives its last use.
   const POINTER_TTL_MS = 24 * 60 * 60 * 1000;
 
+  // The error codes the tool contract names. They reach the agent as a
+  // bracketed prefix on the message; tools.js documents each one by name, and
+  // group-a A15 fails if a code thrown here is not documented there, or if a
+  // new one is hand-written into a message instead of declared here.
+  const ERR = {
+    NEEDS_USER_PERMISSION: "needs_user_permission",
+    TAB_NOT_FOUND: "tab_not_found",
+  };
+
   let ws = null;
   let isConnected = false;
   let activeSessions = [];
@@ -196,7 +205,7 @@
       const tab = await this.tabAlive(tabId);
       if (!tab) {
         throw new Error(
-          `[tab_not_found] Tab ${tabId} is closed or does not exist. Call browser_tab_list to see the open tabs.`,
+          `[${ERR.TAB_NOT_FOUND}] Tab ${tabId} is closed or does not exist. Call browser_tab_list to see the open tabs.`,
         );
       }
       return tab;
@@ -224,7 +233,7 @@
     requireClosePermission(tabId, liveTab, params, how) {
       if (!liveTab || params.force || this.owned.has(tabId)) return;
       throw new Error(
-        `[needs_user_permission] Tab ${tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. ${how} Ask the user for permission to close it, then retry with force: true.`,
+        `[${ERR.NEEDS_USER_PERMISSION}] Tab ${tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. ${how} Ask the user for permission to close it, then retry with force: true.`,
       );
     }
 
@@ -622,7 +631,7 @@
         // An explicit tabId that Chrome does not have. We cannot tell if it was
         // never valid or if it was already closed, so we surface both the same way.
         throw new Error(
-          `[tab_not_found] Tab ${tabId} not found — it may never have existed or may already be closed. Call browser_tab_list to see open tabs.`,
+          `[${ERR.TAB_NOT_FOUND}] Tab ${tabId} not found — it may never have existed or may already be closed. Call browser_tab_list to see open tabs.`,
         );
       } else if (tabId != null) {
         // Session's tab was already closed by Chrome before we arrived; clean up

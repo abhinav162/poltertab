@@ -274,6 +274,37 @@ async function groupA() {
       "browser_session_close.force must be type boolean",
     );
   });
+
+  // The codes are a contract with the agent: it branches on them. They live as
+  // a bracketed prefix on an English sentence in background.js, with the prose
+  // hand-copied into tools.js, and nothing checked the two agreed — the same
+  // gap A13 closes for the restricted-page sentence.
+  await test("A15 every error code the extension throws is documented in tools.js", () => {
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const tools = fs.readFileSync(TOOLS, "utf8");
+
+    const start = bg.indexOf("const ERR = {");
+    assert.notStrictEqual(start, -1, "background.js no longer declares ERR");
+    const block = bg.slice(start, bg.indexOf("};", start));
+    const codes = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    assert.ok(codes.length >= 2, `parsed no codes out of ERR: ${codes}`);
+
+    const undocumented = codes.filter((c) => !tools.includes(c));
+    assert.deepStrictEqual(
+      undocumented,
+      [],
+      `thrown by the extension, named nowhere in tools.js: ${undocumented}`,
+    );
+
+    // And nobody added a code by hand-writing the bracket into a message,
+    // which is how the two that exist got past review in the first place.
+    const inline = [...bg.matchAll(/`\[([a-z_]+)\]/g)].map((m) => m[1]);
+    assert.deepStrictEqual(
+      inline,
+      [],
+      `codes written inline instead of declared in ERR: ${inline}`,
+    );
+  });
 }
 
 module.exports = groupA;
