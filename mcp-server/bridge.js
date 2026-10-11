@@ -359,7 +359,15 @@ function setupPrimaryWss(wss) {
           }, COMMAND_TIMEOUT_MS);
 
           pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
-          extensionSocket.send(JSON.stringify({ id, action, ...params }));
+          // Same envelope construction as the direct path, so a tool argument
+          // named id or action cannot override the routing here either. The
+          // Primary's own id is kept last: pendingCommands is keyed on it.
+          extensionSocket.send(
+            JSON.stringify({
+              ..._buildEnvelope(action, msg.params, ws.nodeId),
+              id,
+            }),
+          );
           return;
         }
 

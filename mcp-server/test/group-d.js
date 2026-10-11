@@ -150,7 +150,30 @@ async function groupD() {
       );
     });
 
-    await test("D8 stdout carried only well-formed JSON-RPC for the whole run", () => {
+    // M1: the direct path builds its envelope through _buildEnvelope, which
+    // strips the reserved keys. The Primary's proxy path spread the Secondary's
+    // params straight into {id, action, ...params}, so a tool argument named
+    // "id" or "action" overwrote the routing — a reply id that matches no
+    // pending command, or a different action than the tool named. Asserted
+    // end-to-end rather than in group R, because this path only exists with a
+    // live Primary, Secondary and extension, which this group already runs.
+    await test("D8 a Secondary's tool args cannot override the envelope's id or action", async () => {
+      const before = ext.seen.length;
+      await rpc(secondary, "tools/call", {
+        name: "browser_get_url",
+        arguments: { id: "hijack", action: "evil", _client: "spoofed" },
+      });
+      const envelope = ext.seen
+        .slice(before)
+        .find((m) => m.id && m.action);
+      assert.ok(envelope, "nothing reached the extension");
+      assert.strictEqual(envelope.action, "get_url", "params.action hijacked the route");
+      assert.notStrictEqual(envelope.id, "hijack", "params.id hijacked the reply id");
+      assert.notStrictEqual(envelope._client, "spoofed", "params._client spoofed the agent");
+      assert.ok(envelope._client, "the proxying Secondary was not identified");
+    });
+
+    await test("D9 stdout carried only well-formed JSON-RPC for the whole run", () => {
       assert.ok(primary.messages.length >= 4, `only ${primary.messages.length} protocol messages`);
       for (const m of primary.messages) {
         assert.strictEqual(m.parsed && m.parsed.jsonrpc, "2.0", `bad line: ${m.line}`);
