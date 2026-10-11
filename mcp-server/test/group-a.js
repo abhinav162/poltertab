@@ -130,6 +130,27 @@ async function groupA() {
     return keys;
   };
 
+  // Every .js file the extension ships, as {file, src}. background.js is the
+  // service-worker entry and pulls the rest in with importScripts, so a check
+  // that reads only background.js stops seeing code the moment it moves to one
+  // of those files. These walk all of them instead.
+  const extensionSources = (dir = EXT, prefix = "") =>
+    fs
+      .readdirSync(dir, { withFileTypes: true })
+      .flatMap((e) =>
+        e.isDirectory()
+          ? extensionSources(path.join(dir, e.name), `${prefix}${e.name}/`)
+          : e.name.endsWith(".js")
+            ? [
+                {
+                  file: prefix + e.name,
+                  src: fs.readFileSync(path.join(dir, e.name), "utf8"),
+                },
+              ]
+            : [],
+      );
+  const allExtensionJs = () => extensionSources().map((f) => f.src).join("\n");
+
   // Tools this process answers itself; they never reach the extension, so
   // background.js must not be expected to route them. Adding a tool here is a
   // deliberate act — if you add one and forget, A10 tells you.
@@ -172,7 +193,7 @@ async function groupA() {
   });
 
   await test("A12 every action forwarded into the page has a content-script handler", () => {
-    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const bg = allExtensionJs();
     const cs = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
     const handlers = keysOf(cs, "const handlers = {");
     assert.ok(handlers.size >= 8, `only parsed ${handlers.size} handlers`);
@@ -201,10 +222,10 @@ async function groupA() {
   await test("A13 the restricted-page error is spelled the same on both sides", () => {
     // background.js throws it; index.js string-matches it to decide isError.
     // Two processes, one English sentence, and nothing pinning it.
-    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const bg = allExtensionJs();
     const idx = fs.readFileSync(SERVER, "utf8");
     const thrown = /"(Cannot interact with this page[^"]*)"/.exec(bg);
-    assert.ok(thrown, "background.js no longer throws the restricted-page error");
+    assert.ok(thrown, "the extension no longer throws the restricted-page error");
     const matched = /result\.includes\(\s*"([^"]+)"/.exec(idx);
     assert.ok(matched, "index.js no longer string-matches a result");
     assert.ok(
@@ -298,13 +319,16 @@ async function groupA() {
 
     // And nobody added a code by hand-writing the bracket into a message,
     // which is how the two that exist got past review in the first place.
-    const inline = [...bg.matchAll(/`\[([a-z_]+)\]/g)].map((m) => m[1]);
+    const inline = [...allExtensionJs().matchAll(/`\[([a-z_]+)\]/g)].map(
+      (m) => m[1],
+    );
     assert.deepStrictEqual(
       inline,
       [],
       `codes written inline instead of declared in ERR: ${inline}`,
     );
   });
+
 }
 
 module.exports = groupA;
