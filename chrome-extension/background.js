@@ -1242,18 +1242,16 @@
     });
   }
 
-  async function forwardToContentScript(action, params) {
-    const targetTabId = await sessionManager.resolveOrFallback(params);
-
-    // Inject into the TOP FRAME only as a safety net for tabs that were open
-    // before the extension loaded. Child frames get their content script from
-    // the manifest's content_scripts declaration (matches: <all_urls>,
-    // run_at: document_start) — re-injecting into all frames via executeScript
-    // is expensive (~1s per frame) and unnecessary since the manifest already
-    // covers every frame that loaded after the extension was active.
+  // Inject into the TOP FRAME only as a safety net for tabs that were open
+  // before the extension loaded. Child frames get their content script from
+  // the manifest's content_scripts declaration (matches: <all_urls>,
+  // run_at: document_start) — re-injecting into all frames via executeScript
+  // is expensive (~1s per frame) and unnecessary since the manifest already
+  // covers every frame that loaded after the extension was active.
+  async function injectTopFrame(tabId) {
     try {
       await chrome.scripting.executeScript({
-        target: { tabId: targetTabId },
+        target: { tabId },
         files: ["content_script.js"],
       });
     } catch (err) {
@@ -1264,10 +1262,10 @@
       ) {
         // A discarded tab fails the same way, but calling it a restricted
         // page sends the agent looking for the wrong fix.
-        const tab = await sessionManager.tabAlive(targetTabId);
+        const tab = await sessionManager.tabAlive(tabId);
         if (tab && tab.discarded) {
           throw new Error(
-            `Tab ${targetTabId} was discarded by Chrome to save memory, so its page is not loaded. Reload it with browser_navigate({ tabId: ${targetTabId}, url }) or show it with browser_tab_switch({ tabId: ${targetTabId}, focus: true }), then retry.`,
+            `Tab ${tabId} was discarded by Chrome to save memory, so its page is not loaded. Reload it with browser_navigate({ tabId: ${tabId}, url }) or show it with browser_tab_switch({ tabId: ${tabId}, focus: true }), then retry.`,
           );
         }
         throw new Error(
@@ -1275,76 +1273,62 @@
         );
       }
     }
+  }
 
-    // Enumerate frames: top frame first, then children.
-    let frameIds = [0];
+  // Every frame to probe, top frame first, then children.
+  async function enumerateFrames(tabId) {
     try {
-      const frames = await chrome.webNavigation.getAllFrames({
-        tabId: targetTabId,
-      });
+      const frames = await chrome.webNavigation.getAllFrames({ tabId });
       if (frames && frames.length > 1) {
-        frameIds = [
-          0,
-          ...frames.map((f) => f.frameId).filter((id) => id !== 0),
-        ];
+        return [0, ...frames.map((f) => f.frameId).filter((id) => id !== 0)];
       }
     } catch (_) {
       // webNavigation may fail on restricted pages; fall back to top only.
     }
+    return [0];
+  }
 
-    // --- Aggregate actions: merge results across all frames ---
-    if (isAggregateAction(action, params)) {
-      const results = await Promise.all(
-        frameIds.map((fid) => sendToFrame(targetTabId, fid, action, params)),
+  // Merge one snapshot per frame into a single page snapshot.
+  function mergeSnapshots(results, frameIds, tabId) {
+    // No frame answered (a crashed renderer, a page mid-teardown): that
+    // used to come back as a successful empty page, which reads exactly
+    // like a blank one. Frames that failed while others answered are
+    // still skipped, so a partial snapshot stays a snapshot.
+    if (!results.some((r) => r && r.success)) {
+      const top = results[0];
+      throw new Error(
+        `Could not snapshot tab ${tabId}: no frame answered (${(top && top.error) || "no response"}). The page may have crashed or still be loading; reload it with browser_navigate.`,
       );
-
-      if (action === "snapshot") {
-        // No frame answered (a crashed renderer, a page mid-teardown): that
-        // used to come back as a successful empty page, which reads exactly
-        // like a blank one. Frames that failed while others answered are
-        // still skipped, so a partial snapshot stays a snapshot.
-        if (!results.some((r) => r && r.success)) {
-          const top = results[0];
-          throw new Error(
-            `Could not snapshot tab ${targetTabId}: no frame answered (${(top && top.error) || "no response"}). The page may have crashed or still be loading; reload it with browser_navigate.`,
-          );
-        }
-        const merged = { title: "", url: "", count: 0, nodes: [] };
-        for (let i = 0; i < results.length; i++) {
-          const r = results[i];
-          if (!r || !r.success) continue;
-          const d = r.data;
-          if (i === 0) {
-            merged.title = d.title || "";
-            merged.url = d.url || "";
-          }
-          const fid = frameIds[i];
-          for (const node of d.nodes || []) {
-            merged.nodes.push(fid === 0 ? node : { ...node, frameId: fid });
-          }
-        }
-        merged.count = merged.nodes.length;
-        return merged;
-      }
-
-      // Full-page scrape without selector: return from the first frame that
-      // has body text (top frame preferred).
-      for (const r of results) {
-        if (r && r.success && r.data) return r.data;
-      }
-      throw new Error("No frame returned page data");
     }
+    const merged = { title: "", url: "", count: 0, nodes: [] };
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (!r || !r.success) continue;
+      const d = r.data;
+      if (i === 0) {
+        merged.title = d.title || "";
+        merged.url = d.url || "";
+      }
+      const fid = frameIds[i];
+      for (const node of d.nodes || []) {
+        merged.nodes.push(fid === 0 ? node : { ...node, frameId: fid });
+      }
+    }
+    merged.count = merged.nodes.length;
+    return merged;
+  }
 
-    // --- Element-targeting actions: fast-probe, parallel child frames ---
-    // Strategy:
-    //   1. Try frame 0 instantly (_noWait) — top frame is the most common hit.
-    //   2. On miss, probe ALL child frames in parallel (_noWait). Take the
-    //      first success. This turns N sequential round-trips into one batch.
-    //   3. If still nothing, retry frame 0 WITH the wait — a portal or modal
-    //      may be mounting right now in the top document.
-    // Cost: element in top frame = 1 round-trip. In any iframe = 2 round-trips.
-    // Late modal = 2 round-trips + 3 s wait. Versus the old sequential path
-    // that took ~1 s × N frames before even finding the element.
+  // Element-targeting actions: fast-probe, parallel child frames.
+  // Strategy:
+  //   1. Try frame 0 instantly (_noWait) — top frame is the most common hit.
+  //   2. On miss, probe ALL child frames in parallel (_noWait). Take the
+  //      first success. This turns N sequential round-trips into one batch.
+  //   3. If still nothing, retry frame 0 WITH the wait — a portal or modal
+  //      may be mounting right now in the top document.
+  // Cost: element in top frame = 1 round-trip. In any iframe = 2 round-trips.
+  // Late modal = 2 round-trips + 3 s wait. Versus the old sequential path
+  // that took ~1 s × N frames before even finding the element.
+  async function searchFramesForElement(targetTabId, frameIds, action, params) {
     const probeParams = { ...params, _noWait: true };
 
     // A successful extract that found no records is an answer, not a miss to
@@ -1416,6 +1400,30 @@
 
     if (emptyAnswer) return emptyAnswer;
     throw new Error(lastError);
+  }
+
+  async function forwardToContentScript(action, params) {
+    const targetTabId = await sessionManager.resolveOrFallback(params);
+    await injectTopFrame(targetTabId);
+    const frameIds = await enumerateFrames(targetTabId);
+
+    // Aggregate actions: ask every frame, merge what comes back.
+    if (isAggregateAction(action, params)) {
+      const results = await Promise.all(
+        frameIds.map((fid) => sendToFrame(targetTabId, fid, action, params)),
+      );
+      if (action === "snapshot") {
+        return mergeSnapshots(results, frameIds, targetTabId);
+      }
+      // Full-page scrape without selector: return from the first frame that
+      // has body text (top frame preferred).
+      for (const r of results) {
+        if (r && r.success && r.data) return r.data;
+      }
+      throw new Error("No frame returned page data");
+    }
+
+    return searchFramesForElement(targetTabId, frameIds, action, params);
   }
 
   // --- Startup ---
