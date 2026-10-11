@@ -898,6 +898,12 @@
   // "Unknown action: scrap" on a user's machine, mid-scrape. A table rather than
   // a switch so the suite can read the routes back and assert against the
   // server's tool list.
+  //
+  // So the repetition below is LOAD-BEARING, not something to tidy up. group-a
+  // A10 and A11 parse the route NAMES out of this object literal's source text,
+  // and A12 counts the literal forwardToContentScript("…") calls. Generating
+  // these entries from an array would still run, and would silently switch off
+  // the check that four files spell each action the same way.
   const ROUTES = {
     // Background-handled: these need chrome.* APIs the page cannot reach.
     navigate,
