@@ -863,7 +863,14 @@
   // --- Tab lifecycle listeners ---
 
   chrome.tabs.onRemoved.addListener((closedTabId) => {
-    sessionManager.handleTabRemoved(closedTabId);
+    // Load first. On a freshly woken worker the pointers are still empty, so
+    // acting on them finds nothing to forget and persists nothing — and the
+    // stale pointer is read back from session storage afterwards. tab_list
+    // then reports neither a current tab nor the closed one, which is the one
+    // case the agent most needs told.
+    sessionManager
+      .load()
+      .then(() => sessionManager.handleTabRemoved(closedTabId));
     send({ type: "tab_closed", tabId: closedTabId });
   });
 

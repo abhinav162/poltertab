@@ -358,6 +358,25 @@ async function groupQ() {
       "screenshot left the target tab focused after a failed capture",
     );
   });
+
+  // The onRemoved listener is registered when the worker starts, but the
+  // pointers load lazily. A tab closed on a freshly woken worker was therefore
+  // forgotten from empty in-memory state — nothing to forget, nothing
+  // persisted — and the pointer came back from session storage intact.
+  // resolve() re-checks liveness so most calls self-healed, but tab_list reads
+  // goneTabId directly and reported neither a current tab nor a closed one.
+  await test("Q26 a tab closed before the pointers load is still reported as closed", async () => {
+    const bg = fresh();
+    // A woken worker: session storage holds a pointer, nothing is loaded yet.
+    bg.sessionStore.zc_tab_state = {
+      current: { primary: { session: null, tabId: 555, goneTabId: null } },
+      owned: [555],
+    };
+    bg.closeTab(555);
+    const list = await ok(bg, "tab_list");
+    assert.strictEqual(list.current, null, "a dead tab is still reported current");
+    assert.strictEqual(list.closedTabId, 555, "the closed tab was not reported");
+  });
 }
 
 module.exports = groupQ;
