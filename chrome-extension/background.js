@@ -1032,6 +1032,23 @@
   // wrong pixels. The mutex also prevents stealing focus permanently — we
   // restore whichever tab was active before we switched.
   let screenshotLock = Promise.resolve();
+  // Chrome allows MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND (2) captures per
+  // second; back-to-back queued screenshots must be spaced or the second fails.
+  const MIN_CAPTURE_GAP_MS = 550;
+  let lastCaptureAt = 0;
+
+  async function capturePaced() {
+    for (let attempt = 0; ; attempt++) {
+      const wait = lastCaptureAt + MIN_CAPTURE_GAP_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      lastCaptureAt = Date.now();
+      try {
+        return await chrome.tabs.captureVisibleTab(null, { format: "png", quality: 90 });
+      } catch (err) {
+        if (attempt > 0 || !/MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/.test(err?.message || "")) throw err;
+      }
+    }
+  }
 
   async function screenshot(params) {
     const targetTabId = await sessionManager.resolveOrFallback(params);
@@ -1040,19 +1057,19 @@
     let release;
     screenshotLock = new Promise((r) => (release = r));
     await prev.catch(() => {});
+    let activeTab;
     try {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       await chrome.tabs.update(targetTabId, { active: true });
       await new Promise((r) => setTimeout(r, 300));
-      const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-        format: "png",
-        quality: 90,
-      });
-      if (activeTab && activeTab.id !== targetTabId) {
-        chrome.tabs.update(activeTab.id, { active: true }).catch(() => {});
-      }
+      const dataUrl = await capturePaced();
       return { screenshot: dataUrl, tabId: targetTabId };
     } finally {
+      // Restore focus even when the capture throws, so a failed screenshot
+      // never leaves the agent's tab in front of the user's.
+      if (activeTab && activeTab.id !== targetTabId) {
+        await chrome.tabs.update(activeTab.id, { active: true }).catch(() => {});
+      }
       release();
     }
   }

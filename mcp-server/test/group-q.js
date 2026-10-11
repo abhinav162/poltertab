@@ -318,6 +318,49 @@ async function groupQ() {
     const b = await ok(bg, "tab_new", { url: "http://other.test/" });
     assert.ok(b.tabId, "tab_new still works after a failed tab_close");
   });
+
+  // Live beta.1 smoke test: Chrome allows 2 captureVisibleTab calls per second.
+  // The screenshot mutex ran captures ~300ms apart, so the second of two
+  // concurrent screenshots failed with the quota error.
+  await test("Q24 concurrent screenshots stay under Chrome's capture quota", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new", { url: "http://a.test/", background: true });
+    const b = await ok(bg, "tab_new", { url: "http://b.test/", background: true });
+    let last = 0;
+    bg.cfg.captureVisibleTab = async () => {
+      const now = Date.now();
+      if (now - last < 500) {
+        throw new Error("This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.");
+      }
+      last = now;
+      return "data:image/png;base64,AAAA";
+    };
+    const id1 = `q${n++}`;
+    const id2 = `q${n++}`;
+    bg.command({ id: id1, action: "screenshot", tabId: a.tabId });
+    bg.command({ id: id2, action: "screenshot", tabId: b.tabId });
+    await waitFor("screenshot 1", () => bg.replyFor(id1), 8000);
+    await waitFor("screenshot 2", () => bg.replyFor(id2), 8000);
+    assert.strictEqual(bg.replyFor(id1).success, true, bg.replyFor(id1).error);
+    assert.strictEqual(bg.replyFor(id2).success, true, bg.replyFor(id2).error);
+  });
+
+  await test("Q25 screenshot restores the previously active tab when the capture fails", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new", { url: "http://a.test/" });
+    const b = await ok(bg, "tab_new", { url: "http://b.test/", background: true });
+    bg.cfg.activeTabs = [{ id: a.tabId, url: "http://a.test/", title: "A" }];
+    bg.cfg.captureVisibleTab = async () => {
+      throw new Error("Failed to capture tab: image readback failed");
+    };
+    const before = bg.updated.length;
+    const r = await call(bg, "screenshot", { tabId: b.tabId });
+    assert.strictEqual(r.success, false);
+    assert.ok(
+      bg.updated.slice(before).some((u) => u.id === a.tabId && u.props?.active !== false),
+      "screenshot left the target tab focused after a failed capture",
+    );
+  });
 }
 
 module.exports = groupQ;
