@@ -51,6 +51,15 @@
   // so the popup never shows a stale comparison against a server that is gone.
   let serverVersion = null;
 
+  // "example.com" -> "https://example.com"; a url that already names its
+  // scheme is left alone. tab_new also accepts about: urls (about:blank is its
+  // default), which nothing else does.
+  function normalizeUrl(url, { allowAbout = false } = {}) {
+    if (url.startsWith("http")) return url;
+    if (allowAbout && url.startsWith("about:")) return url;
+    return `https://${url}`;
+  }
+
   // --- Session Manager ---
 
   class SessionManager {
@@ -243,7 +252,7 @@
         // Adopt a tab that is already open (one browser_tab_list showed).
         tab = await this.requireTab(params.tabId);
       } else if (url) {
-        const targetUrl = url.startsWith("http") ? url : `https://${url}`;
+        const targetUrl = normalizeUrl(url);
         const since = Date.now();
         tab = await chrome.tabs.create({ url: targetUrl });
         this.owned.add(tab.id);
@@ -492,9 +501,7 @@
           : undefined;
 
       const url = params.url
-        ? params.url.startsWith("http") || params.url.startsWith("about:")
-          ? params.url
-          : `https://${params.url}`
+        ? normalizeUrl(params.url, { allowAbout: true })
         : "about:blank";
       const since = Date.now();
       let tab = await chrome.tabs.create({ url, active: !params.background });
@@ -917,7 +924,7 @@
     const { url } = params;
     if (!url) throw new Error("navigate requires a 'url' parameter");
 
-    const targetUrl = url.startsWith("http") ? url : `https://${url}`;
+    const targetUrl = normalizeUrl(url);
 
     // Resolve tab via session manager
     const resolvedTabId = await sessionManager.resolve(params, {
