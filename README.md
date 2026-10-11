@@ -244,8 +244,11 @@ themselves into **secondary** mode, proxying their commands through the primary,
 so concurrent agents share one browser with no extra configuration. The
 primary tags each secondary's commands with its id, and the extension keeps a
 separate current tab per agent, so agents get their own tabs. Up to
-5 secondaries are accepted, and if the primary exits one of them promotes itself
-to replace it. The extension popup lists whichever agents are connected.
+50 secondaries are accepted (set `POLTERTAB_MAX_SECONDARIES` to change the
+limit). A secondary refused for capacity is told why and retries with backoff
+(2s doubling to 60s) instead of looping. If the primary exits, exactly one
+secondary promotes itself to replace it and the others reconnect to it. The
+extension popup lists whichever agents are connected.
 
 **Changing the WebSocket Port:**
 Only needed when something that *isn't* PolterTab already holds `7822` —
