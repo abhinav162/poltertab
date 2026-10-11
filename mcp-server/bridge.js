@@ -532,6 +532,20 @@ function awaitReply(envelope, { timedOut, sendFailed }) {
   });
 }
 
+// Build the envelope that goes to the extension. Strips reserved keys (_client,
+// id, action) from caller-supplied params so a tool argument named "_client"
+// cannot spoof the routing identity, and stamps activeNodeId as _client when
+// the caller is a promoted Secondary that still holds a node UUID.
+function _buildEnvelope(action, params, activeNodeId) {
+  const { _client: _c, id: _i, action: _a, ...safeParams } = params || {};
+  return {
+    id: crypto.randomUUID(),
+    action,
+    ...safeParams,
+    ...(activeNodeId ? { _client: activeNodeId } : {}),
+  };
+}
+
 // Helper to send command to the extension
 async function sendCommand(action, params) {
   const isConnected = await waitForConnection(5000);
@@ -564,7 +578,7 @@ async function sendCommand(action, params) {
   }
 
   return awaitReply(
-    { id: crypto.randomUUID(), action, ...params },
+    _buildEnvelope(action, params, nodeId),
     {
       timedOut: `Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
       sendFailed: (e) => `Failed to send command over WebSocket: ${e.message}`,
@@ -595,4 +609,5 @@ module.exports = {
   noteActiveTab,
   isSecondary: () => isSecondary,
   extensionVersion: () => extensionVersion,
+  _buildEnvelope,
 };
