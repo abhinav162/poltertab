@@ -12,6 +12,7 @@
 
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const net = require("net");
 const {
   resolvePort,
   DEFAULT_WS_PORT,
@@ -23,6 +24,9 @@ const {
   NETWORK_MAX_BODY_BYTES,
   PROMOTION_DELAY_MS,
   PROMOTION_JITTER_MS,
+  PROMOTION_BACKOFF_INITIAL_MS,
+  PROMOTION_BACKOFF_MAX_MS,
+  PROMOTION_BACKOFF_JITTER,
   MAX_SECONDARIES,
   POLTERTAB_HOME,
 } = require("./config.js");
@@ -46,6 +50,15 @@ let isSecondary = false;
 let nodeId = null;
 let wss = null;
 let httpServer = null;
+
+// Secondary-side retry state. One counter for the whole reconnect/probe/promote
+// cycle, reset only by a Primary's secondary_accepted; `refusal` and
+// `unreachable` say why this node is between connections, so a command sent
+// meanwhile can name the cause instead of a generic "not connected".
+let backoffAttempt = 0;
+let retryTimer = null;
+let refusal = null;
+let unreachable = false;
 
 function broadcastSessionState() {
   if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
@@ -107,6 +120,10 @@ function setupPrimaryServer() {
       console.error(
         `[PolterTab MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
       );
+      // A server that never bound is still a handle; every lost promotion race
+      // used to leave one behind.
+      httpServer.close();
+      httpServer = null;
       startSecondaryMode();
     } else {
       console.error(`[PolterTab MCP] HTTP server error: ${e.message}`);
@@ -174,7 +191,10 @@ function setupPrimaryServer() {
 
 function startSecondaryMode() {
   isSecondary = true;
-  nodeId = crypto.randomUUID();
+  // Once per process. The extension keys this agent's current tab by nodeId,
+  // so a fresh one after a lost promotion race orphaned that pointer and the
+  // agent's next untargeted command landed on the user's focused tab.
+  if (!nodeId) nodeId = crypto.randomUUID();
   console.error(
     `[PolterTab MCP] Node ${nodeId} running as Secondary. Connecting to Primary...`,
   );
@@ -182,19 +202,93 @@ function startSecondaryMode() {
   connectToPrimary();
 }
 
+// The retry schedule: INITIAL × 2^attempt, capped, ±JITTER so a crowd of
+// refused Secondaries does not come back in step. `rand` is injectable for
+// the tests.
+function _backoffDelay(attempt, rand = Math.random) {
+  const base = Math.min(
+    PROMOTION_BACKOFF_INITIAL_MS * 2 ** attempt,
+    PROMOTION_BACKOFF_MAX_MS,
+  );
+  const jitter = 1 + PROMOTION_BACKOFF_JITTER * (2 * rand() - 1);
+  return Math.min(Math.round(base * jitter), PROMOTION_BACKOFF_MAX_MS);
+}
+
+function scheduleRetry(fn, delay) {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(fn, delay);
+}
+
+// Is anything listening on the port? Binding to find out is what leaked a
+// server per attempt; a refused TCP connect is the only answer that means the
+// Primary is gone.
+function probePrimary() {
+  return new Promise((resolve) => {
+    const sock = net.connect(WS_PORT, "localhost");
+    // A listener with a full accept backlog answers with neither connect nor
+    // error, which would park this node with no retry scheduled. Treat silence
+    // as "something is there": connectToPrimary's handshake timeout then sorts
+    // a hung Primary from a live one and keeps the backoff running.
+    sock.setTimeout(1000, () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once("connect", () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once("error", (err) => resolve(err.code !== "ECONNREFUSED"));
+  });
+}
+
+async function promoteOrRejoin() {
+  if (await probePrimary()) {
+    connectToPrimary();
+    return;
+  }
+  isSecondary = false;
+  setupPrimaryServer();
+}
+
 function connectToPrimary() {
-  extensionSocket = new WebSocket(`ws://localhost:${WS_PORT}`, {
+  const ws = new WebSocket(`ws://localhost:${WS_PORT}`, {
     perMessageDeflate: true,
+    // A Primary that accepts TCP but never answers the upgrade (event loop
+    // blocked, SIGSTOP) would otherwise hold this node forever.
+    handshakeTimeout: 5000,
   });
+  extensionSocket = ws;
+  let opened = false;
+  let accepted = false;
+  let errCode = null;
 
-  extensionSocket.on("open", () => {
+  ws.on("open", () => {
+    opened = true;
     console.error("[PolterTab MCP] Connected to Primary MCP Server.");
-    extensionSocket.send(JSON.stringify({ type: "secondary_mcp", nodeId }));
+    // The version is what tells a Primary this node understands 4xxx closes.
+    ws.send(
+      JSON.stringify({
+        type: "secondary_mcp",
+        nodeId,
+        version: OWN_VERSION,
+        pid: process.pid,
+        parentPid: process.ppid,
+      }),
+    );
   });
 
-  extensionSocket.on("message", (message) => {
+  ws.on("message", (message) => {
     try {
       const msg = JSON.parse(message);
+      // Frames about this connection carry a type, never a command id, and
+      // are handled before the id branch so none can settle a pending command.
+      if (msg.type === "secondary_accepted") {
+        accepted = true;
+        backoffAttempt = 0;
+        refusal = null;
+        unreachable = false;
+        return;
+      }
       if (msg.id && pendingCommands.has(msg.id)) {
         const { resolve, reject, timer } = pendingCommands.get(msg.id);
         clearTimeout(timer);
@@ -214,30 +308,70 @@ function connectToPrimary() {
     }
   });
 
-  extensionSocket.on("close", () => {
-    console.error(
-      "[PolterTab MCP] Connection to Primary lost. Attempting to become Primary...",
-    );
-    extensionSocket = null;
+  ws.on("close", (code, reason) => {
+    if (extensionSocket === ws) extensionSocket = null;
+    // Each branch below sets the one that applies; neither may outlive the
+    // close that caused it.
+    refusal = null;
+    unreachable = false;
+
+    const refused = code >= 4000 && code <= 4999;
+    let info = {};
+    if (refused) {
+      try {
+        info = JSON.parse(reason.toString());
+      } catch (_) {}
+    }
 
     // Reject all pending commands
+    const aborted =
+      info.reason === "capacity_rejected"
+        ? `[capacity_rejected limit=${info.limit}] Primary (pid ${info.pid}) refused this node. Command aborted.`
+        : "Primary node disconnected. Command aborted.";
     for (const [id, { reject, timer }] of pendingCommands) {
       clearTimeout(timer);
-      reject(new Error("Primary node disconnected. Command aborted."));
+      reject(new Error(aborted));
       pendingCommands.delete(id);
     }
 
-    // Try to become primary with exponential backoff & jitter
-    const delay =
-      PROMOTION_DELAY_MS + Math.floor(Math.random() * PROMOTION_JITTER_MS);
+    // Refused by a live Primary: it is not dying, so promoting can only fail.
+    if (refused) {
+      const delay = _backoffDelay(backoffAttempt++);
+      refusal = { ...info, retryAt: Date.now() + delay };
+      console.error(
+        `[PolterTab MCP] Primary refused this node (${code} ${info.reason || "unknown"}). Retrying as Secondary in ${delay}ms.`,
+      );
+      scheduleRetry(connectToPrimary, delay);
+      return;
+    }
 
-    setTimeout(() => {
-      isSecondary = false;
-      setupPrimaryServer();
-    }, delay);
+    // Something holds the port but never completed the handshake: a hung
+    // Primary, or not a PolterTab one. Promoting would only hit EADDRINUSE.
+    if (!opened && errCode !== "ECONNREFUSED") {
+      const delay = _backoffDelay(backoffAttempt++);
+      unreachable = true;
+      console.error(
+        `[PolterTab MCP] Primary on port ${WS_PORT} is not responding (${errCode || code}). Retrying in ${delay}ms.`,
+      );
+      scheduleRetry(connectToPrimary, delay);
+      return;
+    }
+
+    // The Primary went away, or closed this node without saying why (as a
+    // pre-1.8 Primary does at its limit). Probe first; promote only if the port
+    // is free. A node that was never accepted stays on the backoff schedule, so
+    // even a codeless refusal cannot loop at full speed.
+    const delay = accepted
+      ? PROMOTION_DELAY_MS + Math.floor(Math.random() * PROMOTION_JITTER_MS)
+      : _backoffDelay(backoffAttempt++);
+    console.error(
+      `[PolterTab MCP] Connection to Primary lost. Attempting to become Primary in ${delay}ms...`,
+    );
+    scheduleRetry(promoteOrRejoin, delay);
   });
 
-  extensionSocket.on("error", (err) => {
+  ws.on("error", (err) => {
+    errCode = err.code || null;
     console.error(`[PolterTab MCP] Secondary WebSocket error: ${err.message}`);
   });
 }
@@ -270,6 +404,7 @@ async function readNetworkState(params = {}) {
 function setupPrimaryWss(wss) {
   wss.on("connection", (ws) => {
     ws.isAlive = true;
+    ws.supportsNewCloseCodes = false;
     ws.on("pong", () => {
       ws.isAlive = true;
     });
@@ -279,18 +414,55 @@ function setupPrimaryWss(wss) {
         const msg = JSON.parse(message);
 
         if (msg.type === "secondary_mcp") {
-          if (secondaryClients.size >= MAX_SECONDARIES) {
-            console.error(
-              `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
-            );
-            ws.close();
-            return;
+          // Only a Secondary that names its version understands a 4xxx close.
+          // An older one answers any close by trying to promote — the loop this
+          // limit used to trigger — so it is never refused and never counted.
+          ws.supportsNewCloseCodes =
+            typeof msg.version === "string" && msg.version !== "";
+          if (ws.supportsNewCloseCodes) {
+            let v2 = 0;
+            for (const [id, c] of secondaryClients) {
+              if (id !== msg.nodeId && c.supportsNewCloseCodes) v2++;
+            }
+            if (v2 >= MAX_SECONDARIES) {
+              console.error(
+                `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - limit reached.`,
+              );
+              ws.close(
+                4000,
+                JSON.stringify({
+                  reason: "capacity_rejected",
+                  limit: MAX_SECONDARIES,
+                  retry_in_ms: PROMOTION_BACKOFF_INITIAL_MS,
+                  pid: process.pid,
+                }),
+              );
+              return;
+            }
+          }
+          // Same node, new socket: the old one is dead weight the client may
+          // never end, and the close guard below keeps its close harmless.
+          const displaced = secondaryClients.get(msg.nodeId);
+          if (displaced && displaced !== ws && displaced.readyState === WebSocket.OPEN) {
+            displaced.close(1000);
           }
           secondaryClients.set(msg.nodeId, ws);
           ws.nodeId = msg.nodeId;
+          ws.version = msg.version || null;
+          ws.pid = msg.pid || null;
+          ws.parentPid = msg.parentPid || null;
           console.error(
             `[PolterTab MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
           );
+          if (ws.supportsNewCloseCodes) {
+            ws.send(
+              JSON.stringify({
+                type: "secondary_accepted",
+                nodeId: msg.nodeId,
+                primaryVersion: OWN_VERSION,
+              }),
+            );
+          }
           broadcastSessionState();
           return;
         }
@@ -302,6 +474,23 @@ function setupPrimaryWss(wss) {
 
         if (msg.type === "proxy_command") {
           const { id, action } = msg;
+          // No nodeId means no secondary_mcp yet — or a socket refused with
+          // 4000 an instant ago. The extension would bucket its command as the
+          // Primary agent's and move that agent's current tab; a refused
+          // socket would not even get the reply. A well-behaved client's
+          // handshake always precedes its first command on the same socket.
+          if (!ws.nodeId) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  id,
+                  success: false,
+                  error: "[not_registered] Send secondary_mcp before proxy_command.",
+                }),
+              );
+            }
+            return;
+          }
           // Stamp which agent is asking, from the socket rather than the
           // message, so the extension keeps this Secondary's current tab apart
           // from the Primary's and every other Secondary's.
@@ -481,8 +670,12 @@ function setupPrimaryWss(wss) {
         console.error(
           `[PolterTab MCP] Secondary node disconnected: ${ws.nodeId}`,
         );
-        secondaryClients.delete(ws.nodeId);
-        broadcastSessionState();
+        // A node now keeps its id across reconnects, so its new socket may
+        // already be registered by the time the old one's close arrives.
+        if (secondaryClients.get(ws.nodeId) === ws) {
+          secondaryClients.delete(ws.nodeId);
+          broadcastSessionState();
+        }
       } else if (extensionSocket === ws) {
         console.error("[PolterTab MCP] Chrome extension disconnected.");
         extensionSocket = null;
@@ -560,6 +753,17 @@ async function sendCommand(action, params) {
 
   if (isSecondary) {
     if (!isConnected) {
+      if (refusal && refusal.reason === "capacity_rejected") {
+        const s = Math.max(0, Math.ceil((refusal.retryAt - Date.now()) / 1000));
+        throw new Error(
+          `[capacity_rejected limit=${refusal.limit}] Primary (pid ${refusal.pid}) has ${refusal.limit} secondaries. Retry in ${s}s.`,
+        );
+      }
+      if (unreachable) {
+        throw new Error(
+          `[primary_unreachable port=${WS_PORT}] Primary is not responding. Backing off.`,
+        );
+      }
       throw new Error("Secondary node not connected to Primary MCP server.");
     }
 
@@ -618,4 +822,6 @@ module.exports = {
   isSecondary: () => isSecondary,
   extensionVersion: () => extensionVersion,
   _buildEnvelope,
+  _backoffDelay,
+  _probePrimary: probePrimary,
 };
