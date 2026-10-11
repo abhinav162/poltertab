@@ -611,9 +611,11 @@
         if (!this.sessions[name]) throw new Error(`Session "${name}" not found`);
         tabId = this.sessions[name].tabId;
       }
-      if (tabId == null && !name) tabId = cur.tabId;
       if (tabId == null && !name) {
-        throw new Error("browser_tab_close needs a tabId or a session (this agent has no current tab)");
+        tabId = cur.tabId;
+        if (tabId == null) {
+          throw new Error("browser_tab_close needs a tabId or a session (this agent has no current tab)");
+        }
       }
       if (!name) name = this.sessionNameFor(tabId);
 
