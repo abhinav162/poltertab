@@ -74,9 +74,20 @@ module.exports = {
   PROMOTION_DELAY_MS: 500,
   PROMOTION_JITTER_MS: 2000,
 
-  // More concurrent agents than this sharing one browser stops being useful and
-  // starts being a way to lose track of which tab belongs to whom.
-  MAX_SECONDARIES: 5,
+  // A refused or unreachable Secondary retries on this schedule — 2 s, 4 s,
+  // 8 s … ±25%, capped — and the whole probe/connect/promote cycle runs under
+  // it, reset only when a Primary sends secondary_accepted. Without it a
+  // refusal was answered by an immediate reconnect, refused again, forever.
+  PROMOTION_BACKOFF_INITIAL_MS: 2000,
+  PROMOTION_BACKOFF_MAX_MS: 60000,
+  PROMOTION_BACKOFF_JITTER: 0.25,
+
+  // A safety net against runaway processes, not a usage limit: at 5 it was
+  // routinely hit by idle helpers, and every refusal fed the loop above. Only
+  // Secondaries that declare a version count; an old one is always accepted,
+  // because the only refusal it understands is a close it answers by trying to
+  // promote.
+  MAX_SECONDARIES: parseInt(process.env.POLTERTAB_MAX_SECONDARIES, 10) || 50,
 
   // Lazy-loaded content arrives after the scroll returns. Long enough for the
   // XHR it triggered to land in the capture buffer, short enough that a
