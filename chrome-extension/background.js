@@ -25,6 +25,10 @@
   // executeScript can resolve before the content script's listener is live, so
   // the first message into a fresh frame can lose the race. One short retry.
   const FRAME_RETRY_MS = 150;
+  // How often waitForTabLoad re-checks the load epoch while waiting.
+  const LOAD_POLL_MS = 100;
+  // After activating a tab, let Chrome finish painting it before capturing.
+  const TAB_FOCUS_SETTLE_MS = 300;
 
   // MV3 suspends a service worker after ~30s idle. The keepalive fires inside
   // that window while connected; the reconnect poll runs when it is not.
@@ -1002,7 +1006,7 @@
       } catch {
         throw new Error("Tab was closed during navigation");
       }
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, LOAD_POLL_MS));
     }
 
     // The deadline passed without an onCompleted we could match, which is not
@@ -1061,7 +1065,7 @@
     try {
       [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       await chrome.tabs.update(targetTabId, { active: true });
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, TAB_FOCUS_SETTLE_MS));
       const dataUrl = await capturePaced();
       return { screenshot: dataUrl, tabId: targetTabId };
     } finally {
