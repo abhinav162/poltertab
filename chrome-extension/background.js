@@ -203,6 +203,17 @@
       return changed;
     }
 
+    // Everything not opened by PolterTab belongs to the user — including tabs
+    // adopted via session_create({tabId}). Both close paths (session_close and
+    // tab_close) refuse one without force; they differ only in how the tab came
+    // to be tracked, which the caller passes as `how`.
+    requireClosePermission(tabId, liveTab, params, how) {
+      if (!liveTab || params.force || this.owned.has(tabId)) return;
+      throw new Error(
+        `[needs_user_permission] Tab ${tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. ${how} Ask the user for permission to close it, then retry with force: true.`,
+      );
+    }
+
     async ensureTabGroup() {
       if (this.groupId !== null) {
         try {
@@ -431,11 +442,12 @@
 
       if (session.tabId !== null) {
         const liveTab = await this.tabAlive(session.tabId);
-        if (liveTab && !params.force && !this.owned.has(session.tabId)) {
-          throw new Error(
-            `[needs_user_permission] Tab ${session.tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. This tab was adopted by a session. Ask the user for permission to close it, then retry with force: true.`,
-          );
-        }
+        this.requireClosePermission(
+          session.tabId,
+          liveTab,
+          params,
+          "This tab was adopted by a session.",
+        );
         this.forgetTab(session.tabId);
         try {
           await chrome.tabs.remove(session.tabId);
@@ -590,13 +602,12 @@
 
       const liveTab = tabId != null ? await this.tabAlive(tabId) : null;
       if (liveTab) {
-        // Everything not opened by PolterTab belongs to the user — including tabs
-        // adopted via session_create({tabId}). Require explicit permission.
-        if (!params.force && !this.owned.has(tabId)) {
-          throw new Error(
-            `[needs_user_permission] Tab ${tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. This tab was opened by the user. Ask the user for permission to close it, then retry with force: true.`,
-          );
-        }
+        this.requireClosePermission(
+          tabId,
+          liveTab,
+          params,
+          "This tab was opened by the user.",
+        );
         this.forgetTab(tabId);
         await chrome.tabs.remove(tabId);
       } else if (tabId != null && !name) {
