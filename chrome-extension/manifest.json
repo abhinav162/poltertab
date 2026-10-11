@@ -21,7 +21,8 @@
       "matches": ["<all_urls>"],
       "js": ["content_script.js"],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": true,
+      "match_origin_as_fallback": true
     }
   ],
   "web_accessible_resources": [

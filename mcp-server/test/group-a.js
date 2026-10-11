@@ -27,6 +27,25 @@ async function groupA() {
     );
   });
 
+  // <all_urls> matches only http/https/file/ftp/ws, so an about:srcdoc,
+  // about:blank, data: or blob: iframe never gets the content script and
+  // snapshot silently drops it (MT-60). match_origin_as_fallback runs the
+  // script there under the parent's origin.
+  await test("A1b manifest content script reaches srcdoc/about:blank frames", () => {
+    const m = JSON.parse(
+      fs.readFileSync(path.join(EXT, "manifest.json"), "utf8"),
+    );
+    const cs = (m.content_scripts || []).find((c) =>
+      (c.js || []).includes("content_script.js"),
+    );
+    assert.ok(cs, "no content_scripts entry for content_script.js");
+    assert.ok(cs.all_frames, "content script must run in all frames");
+    assert.ok(
+      cs.match_origin_as_fallback || cs.match_about_blank,
+      "srcdoc/about:blank iframes get no content script without match_origin_as_fallback",
+    );
+  });
+
   await test("A2 mcp-server never writes to stdout (it is the JSON-RPC channel)", () => {
     const src = fs.readFileSync(SERVER, "utf8");
     const hits = src.split("\n").filter((l) => /(^|[^.\w])console\.log\(/.test(l));
