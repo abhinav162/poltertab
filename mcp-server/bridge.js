@@ -225,6 +225,14 @@ function scheduleRetry(fn, delay) {
 function probePrimary() {
   return new Promise((resolve) => {
     const sock = net.connect(WS_PORT, "localhost");
+    // A listener with a full accept backlog answers with neither connect nor
+    // error, which would park this node with no retry scheduled. Treat silence
+    // as "something is there": connectToPrimary's handshake timeout then sorts
+    // a hung Primary from a live one and keeps the backoff running.
+    sock.setTimeout(1000, () => {
+      sock.destroy();
+      resolve(true);
+    });
     sock.once("connect", () => {
       sock.destroy();
       resolve(true);
@@ -302,23 +310,34 @@ function connectToPrimary() {
 
   ws.on("close", (code, reason) => {
     if (extensionSocket === ws) extensionSocket = null;
+    // Each branch below sets the one that applies; neither may outlive the
+    // close that caused it.
+    refusal = null;
+    unreachable = false;
+
+    const refused = code >= 4000 && code <= 4999;
+    let info = {};
+    if (refused) {
+      try {
+        info = JSON.parse(reason.toString());
+      } catch (_) {}
+    }
 
     // Reject all pending commands
+    const aborted =
+      info.reason === "capacity_rejected"
+        ? `[capacity_rejected limit=${info.limit}] Primary (pid ${info.pid}) refused this node. Command aborted.`
+        : "Primary node disconnected. Command aborted.";
     for (const [id, { reject, timer }] of pendingCommands) {
       clearTimeout(timer);
-      reject(new Error("Primary node disconnected. Command aborted."));
+      reject(new Error(aborted));
       pendingCommands.delete(id);
     }
 
     // Refused by a live Primary: it is not dying, so promoting can only fail.
-    if (code >= 4000 && code <= 4999) {
-      let info = {};
-      try {
-        info = JSON.parse(reason.toString());
-      } catch (_) {}
+    if (refused) {
       const delay = _backoffDelay(backoffAttempt++);
       refusal = { ...info, retryAt: Date.now() + delay };
-      unreachable = false;
       console.error(
         `[PolterTab MCP] Primary refused this node (${code} ${info.reason || "unknown"}). Retrying as Secondary in ${delay}ms.`,
       );
@@ -330,7 +349,6 @@ function connectToPrimary() {
     // Primary, or not a PolterTab one. Promoting would only hit EADDRINUSE.
     if (!opened && errCode !== "ECONNREFUSED") {
       const delay = _backoffDelay(backoffAttempt++);
-      refusal = null;
       unreachable = true;
       console.error(
         `[PolterTab MCP] Primary on port ${WS_PORT} is not responding (${errCode || code}). Retrying in ${delay}ms.`,
@@ -422,6 +440,12 @@ function setupPrimaryWss(wss) {
               return;
             }
           }
+          // Same node, new socket: the old one is dead weight the client may
+          // never end, and the close guard below keeps its close harmless.
+          const displaced = secondaryClients.get(msg.nodeId);
+          if (displaced && displaced !== ws && displaced.readyState === WebSocket.OPEN) {
+            displaced.close(1000);
+          }
           secondaryClients.set(msg.nodeId, ws);
           ws.nodeId = msg.nodeId;
           ws.version = msg.version || null;
@@ -450,6 +474,23 @@ function setupPrimaryWss(wss) {
 
         if (msg.type === "proxy_command") {
           const { id, action } = msg;
+          // No nodeId means no secondary_mcp yet — or a socket refused with
+          // 4000 an instant ago. The extension would bucket its command as the
+          // Primary agent's and move that agent's current tab; a refused
+          // socket would not even get the reply. A well-behaved client's
+          // handshake always precedes its first command on the same socket.
+          if (!ws.nodeId) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  id,
+                  success: false,
+                  error: "[not_registered] Send secondary_mcp before proxy_command.",
+                }),
+              );
+            }
+            return;
+          }
           // Stamp which agent is asking, from the socket rather than the
           // message, so the extension keeps this Secondary's current tab apart
           // from the Primary's and every other Secondary's.
@@ -782,4 +823,5 @@ module.exports = {
   extensionVersion: () => extensionVersion,
   _buildEnvelope,
   _backoffDelay,
+  _probePrimary: probePrimary,
 };
