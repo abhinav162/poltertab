@@ -804,7 +804,8 @@ function frameSearchSandbox(cfg = {}) {
         onChanged: { addListener() {} },
       },
       tabs: {
-        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete" }),
+        // cfg.tab overrides what chrome.tabs.get reports (discarded, chrome:// url).
+        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete", ...(cfg.tab || {}) }),
         create: async (props) => ({ id: 99, url: props.url || "about:blank", title: "T" }),
         update: async (id, props) => ({ id, url: props.url || "http://t/", title: "T" }),
         query: async () => [{ id: 99, url: "http://t/", title: "T" }],
@@ -912,7 +913,13 @@ function frameSearchSandbox(cfg = {}) {
           removeListener() {},
         },
       },
-      scripting: { executeScript: async () => [] },
+      scripting: {
+        // cfg.executeScriptError: what Chrome throws on a page it will not inject into.
+        executeScript: async () => {
+          if (cfg.executeScriptError) throw new Error(cfg.executeScriptError);
+          return [];
+        },
+      },
     },
   };
 

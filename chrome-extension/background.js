@@ -1183,6 +1183,16 @@
       );
 
       if (action === "snapshot") {
+        // No frame answered (a crashed renderer, a page mid-teardown): that
+        // used to come back as a successful empty page, which reads exactly
+        // like a blank one. Frames that failed while others answered are
+        // still skipped, so a partial snapshot stays a snapshot.
+        if (!results.some((r) => r && r.success)) {
+          const top = results[0];
+          throw new Error(
+            `Could not snapshot tab ${targetTabId}: no frame answered (${(top && top.error) || "no response"}). The page may have crashed or still be loading; reload it with browser_navigate.`,
+          );
+        }
         const merged = { title: "", url: "", count: 0, nodes: [] };
         for (let i = 0; i < results.length; i++) {
           const r = results[i];

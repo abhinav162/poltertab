@@ -192,6 +192,28 @@ async function groupG() {
     assert.strictEqual(reply.success, false);
   });
 
+  // MT-58 (live): a crashed tab answers no frame, and snapshot came back as
+  // a successful empty page — indistinguishable from a blank one.
+  await test("G13 snapshot errors, naming the tab, when no frame answers", async () => {
+    const bg = frameSearchSandbox({ frames: [{ frameId: 0, noContentScript: true }] });
+    const reply = await bg.command({ id: "g13", action: "snapshot" });
+    assert.ok(reply, "no reply");
+    assert.strictEqual(reply.success, false, `empty success: ${JSON.stringify(reply.data)}`);
+    assert.match(reply.error, /tab 99/);
+    assert.match(reply.error, /Receiving end does not exist/);
+  });
+
+  await test("G14 snapshot keeps the frames that did answer when only a child fails", async () => {
+    const bg = frameSearchSandbox({
+      frames: [
+        { frameId: 0, snapshotNodes: [{ ref: "@e1", tag: "h1", text: "top" }] },
+        { frameId: 123, noContentScript: true },
+      ],
+    });
+    const reply = await bg.command({ id: "g14", action: "snapshot" });
+    assert.strictEqual(reply.success, true, reply.error);
+    assert.strictEqual(reply.data.count, 1);
+  });
 }
 
 module.exports = groupG;
