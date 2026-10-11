@@ -33,11 +33,11 @@ function freePort() {
 
 // A hand-rolled Secondary speaking the wire protocol, so a test can fill a
 // Primary with fifty of them or pose as an old (versionless) client.
-function fakeSecondary(port, { version } = {}) {
+function fakeSecondary(port, { version, nodeId } = {}) {
   const ws = new WebSocket(`ws://localhost:${port}`);
   const st = {
     ws,
-    nodeId: crypto.randomUUID(),
+    nodeId: nodeId || crypto.randomUUID(),
     open: false,
     closed: false,
     code: null,
@@ -342,6 +342,96 @@ async function groupS() {
       await new Promise((r) => old.close(r));
     }
   }
+
+  // ── Jim's PR-1 review: S-1, S-2, NICE-2, NICE-3 ──
+  {
+    const port = await freePort();
+    const primary = startServer({ port });
+    const all = [];
+    let ext = null;
+    try {
+      await waitFor("primary listening", () => primary.stderr.includes("WebSocket server listening"));
+      ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://test" });
+      const commands = [];
+      ext.on("open", () => ext.send(JSON.stringify({ type: "extension_ready", version: "test" })));
+      ext.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.id && m.action) commands.push(m);
+      });
+      await waitFor("extension connected", () => primary.stderr.includes("Chrome extension connected"));
+
+      await test("S13 (review S-1) a socket that never registered cannot send commands", async () => {
+        // A socket refused with 4000 an instant ago is exactly this: open,
+        // unregistered, and stamped as the Primary agent by the extension.
+        const raw = new WebSocket(`ws://localhost:${port}`);
+        all.push({ ws: raw });
+        const replies = [];
+        raw.on("message", (m) => replies.push(JSON.parse(m)));
+        await new Promise((r) => raw.on("open", r));
+        raw.send(JSON.stringify({ type: "proxy_command", id: "stray-1", action: "navigate", params: { url: "http://x/" } }));
+        await waitFor("reply", () => replies.length > 0, 3000).catch(() => {});
+        assert.deepStrictEqual(commands.filter((c) => c.id === "stray-1"), [], "the extension received the stray command");
+        assert.ok(replies[0] && replies[0].id === "stray-1" && replies[0].success === false, `reply: ${JSON.stringify(replies[0])}`);
+        assert.ok(/\[not_registered\]/.test(replies[0].error), replies[0].error);
+      });
+
+      await test("S14 (review NICE-2) a nodeId that re-registers closes its displaced socket", async () => {
+        const first = fakeSecondary(port, { version: "test" });
+        all.push(first);
+        await waitFor("first accepted", () => first.seen.some((m) => m.type === "secondary_accepted"), 3000);
+        const second = fakeSecondary(port, { version: "test", nodeId: first.nodeId });
+        all.push(second);
+        await waitFor("second accepted", () => second.seen.some((m) => m.type === "secondary_accepted"), 3000);
+        await waitFor("first closed", () => first.closed, 2000).catch(() => {});
+        assert.ok(first.closed, "the displaced socket is still open");
+        assert.strictEqual(first.code, 1000, `closed with ${first.code}`);
+        await sleep(200);
+        assert.ok(!second.closed, "the new socket was closed");
+      });
+    } finally {
+      closeAll(all);
+      if (ext) ext.terminate();
+      await stop(primary);
+    }
+  }
+
+  await test("S15 (review S-2) the port probe gives up on a socket that never answers", async () => {
+    // A listener with a full accept backlog: no connect, no error, ever.
+    assert.strictEqual(typeof bridge._probePrimary, "function", "probe not exported");
+    const EventEmitter = require("events");
+    const realConnect = net.connect;
+    let fake = null;
+    net.connect = () => {
+      fake = new EventEmitter();
+      fake.setTimeout = (ms, cb) => (fake.timer = setTimeout(cb, ms));
+      fake.destroy = () => {
+        clearTimeout(fake.timer);
+        fake.destroyed = true;
+      };
+      return fake;
+    };
+    try {
+      const t0 = Date.now();
+      const r = await Promise.race([bridge._probePrimary(), sleep(4000).then(() => "hung")]);
+      assert.strictEqual(r, true, `probe settled with ${r}`);
+      assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+      assert.ok(fake.destroyed, "the probe socket was left open");
+    } finally {
+      net.connect = realConnect;
+    }
+  });
+
+  await test("S16 (review NICE-3) POLTERTAB_MAX_SECONDARIES=0 means zero, junk means the default", () => {
+    const { resolveMaxSecondaries } = require("../config.js");
+    assert.strictEqual(typeof resolveMaxSecondaries, "function", "no resolver exported");
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "0" }), 0);
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "7" }), 7);
+    assert.strictEqual(resolveMaxSecondaries({}), 50);
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "" }), 50);
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "lots" }), 50);
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "-3" }), 50);
+    assert.strictEqual(resolveMaxSecondaries({ POLTERTAB_MAX_SECONDARIES: "2.5" }), 50);
+  });
 
   // ── T3: promotion race, loser side ──
   {
