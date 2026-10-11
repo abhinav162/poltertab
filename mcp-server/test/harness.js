@@ -178,6 +178,7 @@ function backgroundSandbox() {
   const cfg = {
     activeTabs: [],
     fireOnCompleteFor: null, // tabId to complete immediately, or null for none
+    fireAll: false, // complete every navigation immediately (multi-tab tests)
     nextTabId: 100,
     // Lets a test walk past a 30s deadline without waiting 30s for it.
     clockOffset: 0,
@@ -188,9 +189,13 @@ function backgroundSandbox() {
   const created = [];
   const updated = [];
   const sent = [];
+  // Tabs that no longer exist: chrome.tabs.get throws for them, as Chrome does.
+  const closed = new Set();
   const navListeners = [];
   const removedListeners = [];
   const sockets = [];
+  // chrome.storage.session, where the per-agent tab pointers persist.
+  const sessionStore = {};
 
   const fireComplete = (tabId) => {
     for (const fn of navListeners) fn({ tabId, frameId: 0 });
@@ -198,7 +203,12 @@ function backgroundSandbox() {
   const maybeFire = (tabId) => {
     // Simulates a fast page: the load finishes before the caller could have
     // attached a per-navigation listener.
-    if (cfg.fireOnCompleteFor === tabId) fireComplete(tabId);
+    if (cfg.fireAll || cfg.fireOnCompleteFor === tabId) fireComplete(tabId);
+  };
+
+  const closeTab = (id) => {
+    closed.add(id);
+    for (const fn of removedListeners) fn(id);
   };
 
   const tab = (id) => ({
@@ -260,10 +270,19 @@ function backgroundSandbox() {
           get: (keys, cb) => (cb ? cb({}) : Promise.resolve({})),
           set: (_o, cb) => (cb ? cb() : Promise.resolve()),
         },
+        session: {
+          get: async (key) => ({ [key]: sessionStore[key] && JSON.parse(JSON.stringify(sessionStore[key])) }),
+          set: async (o) => {
+            for (const [k, v] of Object.entries(o)) sessionStore[k] = JSON.parse(JSON.stringify(v));
+          },
+        },
         onChanged: { addListener() {} },
       },
       tabs: {
-        get: async (id) => tab(id),
+        get: async (id) => {
+          if (closed.has(id)) throw new Error(`No tab with id: ${id}.`);
+          return tab(id);
+        },
         create: async (props) => {
           const id = cfg.nextTabId++;
           created.push({ id, url: props.url });
@@ -277,8 +296,22 @@ function backgroundSandbox() {
           maybeFire(id);
           return t;
         },
-        query: async () => cfg.activeTabs,
-        remove: async () => {},
+        // The focused-tab query keeps its old answer; an unfiltered one lists
+        // every tab, including the ones this sandbox created.
+        query: async (props = {}) =>
+          props.active
+            ? cfg.activeTabs
+            : [
+                ...cfg.activeTabs,
+                ...created
+                  .filter((c) => !closed.has(c.id))
+                  .map((c) => ({ ...tab(c.id), url: c.url })),
+              ],
+        remove: async (id) => closeTab(id),
+        captureVisibleTab: async (windowId, opts) =>
+          cfg.captureVisibleTab
+            ? cfg.captureVisibleTab(windowId, opts, cfg.activeTabs)
+            : "data:image/png;base64,AAAA",
         group: async () => 1,
         sendMessage: async () => ({ success: true }),
         onRemoved: { addListener: (fn) => removedListeners.push(fn) },
@@ -315,6 +348,8 @@ function backgroundSandbox() {
     created,
     updated,
     fireComplete,
+    closeTab,
+    sessionStore,
     navListenerCount: () => navListeners.length,
     command: (msg) => ws.onmessage({ data: JSON.stringify(msg) }),
     replyFor: (id) => sent.find((m) => m.id === id),
@@ -773,7 +808,8 @@ function frameSearchSandbox(cfg = {}) {
         onChanged: { addListener() {} },
       },
       tabs: {
-        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete" }),
+        // cfg.tab overrides what chrome.tabs.get reports (discarded, chrome:// url).
+        get: async (id) => ({ id, url: "http://t/", title: "T", status: "complete", ...(cfg.tab || {}) }),
         create: async (props) => ({ id: 99, url: props.url || "about:blank", title: "T" }),
         update: async (id, props) => ({ id, url: props.url || "http://t/", title: "T" }),
         query: async () => [{ id: 99, url: "http://t/", title: "T" }],
@@ -881,7 +917,13 @@ function frameSearchSandbox(cfg = {}) {
           removeListener() {},
         },
       },
-      scripting: { executeScript: async () => [] },
+      scripting: {
+        // cfg.executeScriptError: what Chrome throws on a page it will not inject into.
+        executeScript: async () => {
+          if (cfg.executeScriptError) throw new Error(cfg.executeScriptError);
+          return [];
+        },
+      },
     },
   };
 

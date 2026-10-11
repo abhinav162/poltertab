@@ -2,6 +2,7 @@ const {
   EXT,
   REPO,
   SERVER,
+  TOOLS,
   assert,
   fs,
   path,
@@ -23,6 +24,25 @@ async function groupA() {
     assert.ok(
       fs.existsSync(path.join(EXT, page)),
       `options page ${page} missing on disk`,
+    );
+  });
+
+  // <all_urls> matches only http/https/file/ftp/ws, so an about:srcdoc,
+  // about:blank, data: or blob: iframe never gets the content script and
+  // snapshot silently drops it (MT-60). match_origin_as_fallback runs the
+  // script there under the parent's origin.
+  await test("A1b manifest content script reaches srcdoc/about:blank frames", () => {
+    const m = JSON.parse(
+      fs.readFileSync(path.join(EXT, "manifest.json"), "utf8"),
+    );
+    const cs = (m.content_scripts || []).find((c) =>
+      (c.js || []).includes("content_script.js"),
+    );
+    assert.ok(cs, "no content_scripts entry for content_script.js");
+    assert.ok(cs.all_frames, "content script must run in all frames");
+    assert.ok(
+      cs.match_origin_as_fallback || cs.match_about_blank,
+      "srcdoc/about:blank iframes get no content script without match_origin_as_fallback",
     );
   });
 
@@ -238,6 +258,52 @@ async function groupA() {
     assert.ok(guard !== -1, "no injection sentinel");
     assert.ok(guard < listener, "sentinel must precede window listeners");
     assert.ok(guard < onMessage, "sentinel must precede the command listener");
+  });
+
+  await test("A14 browser_session_close inputSchema declares 'force'", () => {
+    const { BROWSER_TOOLS } = require(TOOLS);
+    const sessionClose = BROWSER_TOOLS.find((t) => t.name === "browser_session_close");
+    assert.ok(sessionClose, "browser_session_close not found in tools");
+    assert.ok(
+      sessionClose.inputSchema.properties.force,
+      "browser_session_close.inputSchema missing 'force' property",
+    );
+    assert.strictEqual(
+      sessionClose.inputSchema.properties.force.type,
+      "boolean",
+      "browser_session_close.force must be type boolean",
+    );
+  });
+
+  // The codes are a contract with the agent: it branches on them. They live as
+  // a bracketed prefix on an English sentence in background.js, with the prose
+  // hand-copied into tools.js, and nothing checked the two agreed — the same
+  // gap A13 closes for the restricted-page sentence.
+  await test("A15 every error code the extension throws is documented in tools.js", () => {
+    const bg = fs.readFileSync(path.join(EXT, "background.js"), "utf8");
+    const tools = fs.readFileSync(TOOLS, "utf8");
+
+    const start = bg.indexOf("const ERR = {");
+    assert.notStrictEqual(start, -1, "background.js no longer declares ERR");
+    const block = bg.slice(start, bg.indexOf("};", start));
+    const codes = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    assert.ok(codes.length >= 2, `parsed no codes out of ERR: ${codes}`);
+
+    const undocumented = codes.filter((c) => !tools.includes(c));
+    assert.deepStrictEqual(
+      undocumented,
+      [],
+      `thrown by the extension, named nowhere in tools.js: ${undocumented}`,
+    );
+
+    // And nobody added a code by hand-writing the bracket into a message,
+    // which is how the two that exist got past review in the first place.
+    const inline = [...bg.matchAll(/`\[([a-z_]+)\]/g)].map((m) => m[1]);
+    assert.deepStrictEqual(
+      inline,
+      [],
+      `codes written inline instead of declared in ERR: ${inline}`,
+    );
   });
 }
 

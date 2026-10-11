@@ -84,11 +84,12 @@ Running from a clone instead of npm? Point the client at the file directly:
 
 ## Supported MCP Tools
 
-The server exposes 23 tools to the LLM (all prefixed with `browser_`). Every
+The server exposes 27 tools to the LLM (all prefixed with `browser_`). Every
 page-facing tool also takes optional `tabId` and `session` to target a specific
-tab — omit both and PolterTab uses the last tab it navigated. The first
-`browser_navigate` of a session opens its own tab rather than commandeering the
-one you are looking at.
+tab — omit both and PolterTab uses the agent's current tab: the last one it
+navigated, opened or switched to. The first `browser_navigate` (and the first
+`browser_navigate` of each new session) opens its own tab rather than
+commandeering the one you are looking at.
 
 ### Page actions
 
@@ -192,11 +193,27 @@ next use.
 
 | Action | Parameters | Description |
 | -------- | ----------- | ------------- |
-| `browser_session_create` | `name` (required), `url` | Create a session, or bind one to the active tab |
+| `browser_session_create` | `name` (required), `url`, `tabId` | Create a session, adopt an open tab, or bind one to the active tab |
 | `browser_session_switch` | `name` (required) | Make a session active, recovering its tab if closed |
 | `browser_session_list` | — | All sessions, each `alive`, `recoverable`, or `expired` |
-| `browser_session_close` | `name` (required) | Close a session and its tab |
-| `browser_session_context` | — | Active session's tab, URL and title |
+| `browser_session_close` | `name` (required), `force` | Close a session and its tab. Adopted tabs return `needs_user_permission`; retry with `force: true` after asking the user. |
+| `browser_session_context` | — | The current tab's id, URL, title and session, or `closedTabId` |
+
+### Tabs
+
+One agent can drive many tabs. Each agent (and each secondary server) has its
+own **current tab**; page-facing tools without `tabId`/`session` act there. An
+explicit `tabId` acts on that tab without changing the current one; a `tabId`
+Chrome does not have returns `tab_not_found` on any tool that takes one. If the
+current tab is closed, untargeted calls fail with a message naming the closed
+tab instead of quietly acting on another one.
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_tab_new` | `url`, `session`, `background` | Open a tab and make it current |
+| `browser_tab_list` | `all` | PolterTab's tabs (or every tab), marking the current one |
+| `browser_tab_switch` | `tabId` or `session`, `focus` | Make another tab current. A tab that does not exist in Chrome returns `tab_not_found`. |
+| `browser_tab_close` | `tabId` or `session`, `force` | Close a tab (default: current). Tabs not opened by PolterTab (including ones adopted via `browser_session_create({tabId})`) return `needs_user_permission` — ask the user, then retry with `force: true`. A tab that does not exist in Chrome returns `tab_not_found`. |
 
 ### Site memory
 
@@ -224,8 +241,9 @@ exists inside a web component still resolves.
 The first MCP server to bind port `7822` becomes the **primary** and owns the
 connection to the extension. Later servers find the port taken and switch
 themselves into **secondary** mode, proxying their commands through the primary,
-so concurrent agents share one browser with no extra configuration. Each
-secondary auto-injects a per-agent `session` so agents get their own tabs. Up to
+so concurrent agents share one browser with no extra configuration. The
+primary tags each secondary's commands with its id, and the extension keeps a
+separate current tab per agent, so agents get their own tabs. Up to
 5 secondaries are accepted, and if the primary exits one of them promotes itself
 to replace it. The extension popup lists whichever agents are connected.
 

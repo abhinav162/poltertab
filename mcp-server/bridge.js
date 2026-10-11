@@ -301,7 +301,11 @@ function setupPrimaryWss(wss) {
         }
 
         if (msg.type === "proxy_command") {
-          const { id, action, params } = msg;
+          const { id, action } = msg;
+          // Stamp which agent is asking, from the socket rather than the
+          // message, so the extension keeps this Secondary's current tab apart
+          // from the Primary's and every other Secondary's.
+          const params = { ...(msg.params || {}), _client: ws.nodeId };
           if (params && params.tabId) {
             ws.lastTabId = params.tabId;
             broadcastSessionState();
@@ -355,7 +359,15 @@ function setupPrimaryWss(wss) {
           }, COMMAND_TIMEOUT_MS);
 
           pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
-          extensionSocket.send(JSON.stringify({ id, action, ...params }));
+          // Same envelope construction as the direct path, so a tool argument
+          // named id or action cannot override the routing here either. The
+          // Primary's own id is kept last: pendingCommands is keyed on it.
+          extensionSocket.send(
+            JSON.stringify({
+              ..._buildEnvelope(action, msg.params, ws.nodeId),
+              id,
+            }),
+          );
           return;
         }
 
@@ -528,6 +540,20 @@ function awaitReply(envelope, { timedOut, sendFailed }) {
   });
 }
 
+// Build the envelope that goes to the extension. Strips reserved keys (_client,
+// id, action) from caller-supplied params so a tool argument named "_client"
+// cannot spoof the routing identity, and stamps activeNodeId as _client when
+// the caller is a promoted Secondary that still holds a node UUID.
+function _buildEnvelope(action, params, activeNodeId) {
+  const { _client: _c, id: _i, action: _a, ...safeParams } = params || {};
+  return {
+    id: crypto.randomUUID(),
+    action,
+    ...safeParams,
+    ...(activeNodeId ? { _client: activeNodeId } : {}),
+  };
+}
+
 // Helper to send command to the extension
 async function sendCommand(action, params) {
   const isConnected = await waitForConnection(5000);
@@ -537,10 +563,11 @@ async function sendCommand(action, params) {
       throw new Error("Secondary node not connected to Primary MCP server.");
     }
 
-    // Auto-inject a unique session to prevent collisions over shared tabs
-    if (!params.session) {
-      params.session = "agent_" + nodeId;
-    }
+    // No session is injected any more. It used to be ("agent_<nodeId>"), which
+    // overrode every browser_tab_switch this agent made, and an unknown session
+    // fell through to the Primary's active tab anyway. The Primary now stamps
+    // this node's id as _client and the extension keeps a current tab per
+    // client, so a Secondary's first navigate opens its own tab.
 
     return awaitReply(
       { type: "proxy_command", id: crypto.randomUUID(), action, params },
@@ -559,7 +586,7 @@ async function sendCommand(action, params) {
   }
 
   return awaitReply(
-    { id: crypto.randomUUID(), action, ...params },
+    _buildEnvelope(action, params, nodeId),
     {
       timedOut: `Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
       sendFailed: (e) => `Failed to send command over WebSocket: ${e.message}`,
@@ -590,4 +617,5 @@ module.exports = {
   noteActiveTab,
   isSecondary: () => isSecondary,
   extensionVersion: () => extensionVersion,
+  _buildEnvelope,
 };

@@ -197,14 +197,23 @@ skip the discovery entirely next time.
 
 ## Multiple tabs
 
-`browser_session_create` gives a named tab you can return to. Every page-facing
-tool takes `session` (or `tabId`).
+You have a **current tab**; every page-facing tool without `tabId`/`session`
+acts on it. The first `browser_navigate` opens its own tab — it does not
+commandeer the tab the user is looking at — and later calls reuse it.
 
-Omit both and the first `browser_navigate` opens its own tab — it does not
-commandeer the tab the user is looking at — and later calls reuse it. That is
-fine for single-track work and ambiguous the moment two flows interleave, so
-name your sessions when running more than one. Close what you opened with
-`browser_session_close`.
+For several tabs: `browser_tab_new` opens one and makes it current,
+`browser_tab_list` shows them with their ids, `browser_tab_switch` changes the
+current one, and `browser_tab_close` closes one. Pass `tabId` to act on a tab
+once without switching to it — a `tabId` Chrome does not have returns
+`tab_not_found` on any tool that takes one — or name tabs with `session` and
+pass that. If a
+call says your tab was closed, list and switch — do not assume another tab is
+the same page. Close what you opened.
+
+`browser_tab_close` refuses tabs that PolterTab did not open — including tabs
+adopted via `browser_session_create({tabId})` — and returns `needs_user_permission`
+with the tab's id, title and url. Ask the user for permission, then retry with
+`force: true`. Closing a tabId that Chrome does not have returns `tab_not_found`.
 
 ## Pitfalls
 

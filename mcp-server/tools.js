@@ -10,12 +10,13 @@
 const TARGET = {
   tabId: {
     type: "number",
-    description: "Target a specific tab. Omit to use the last tab navigated.",
+    description:
+      "Act on this tab (an id from browser_tab_list) without making it current. Omit to use this agent's current tab: the last one navigated, opened or switched to. A tabId Chrome does not have returns tab_not_found.",
   },
   session: {
     type: "string",
     description:
-      "Named session (tab) to run against. Created on first use by browser_navigate, so a loop can keep one tab instead of opening hundreds.",
+      "Named session (tab) to run against; it becomes the current tab. browser_navigate with a new name opens it its own tab, so a loop can keep one tab instead of opening hundreds. Other tools error on a name that does not exist yet.",
   },
 };
 
@@ -395,12 +396,17 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_session_create",
-    description: "Create or track a named browser session (tab)",
+    description:
+      "Create or track a named browser session (tab): opens `url` in a new tab, adopts `tabId`, or with neither binds the tab the user is looking at. It becomes the current tab.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string" },
         url: { type: "string" },
+        tabId: {
+          type: "number",
+          description: "Adopt this already-open tab instead of opening one",
+        },
       },
       required: ["name"],
     },
@@ -427,21 +433,99 @@ const BROWSER_TOOLS = [
   },
   {
     name: "browser_session_close",
-    description: "Close a tracked session",
+    description:
+      "Close a tracked session and its tab. Tabs not opened by PolterTab — including ones adopted via browser_session_create({tabId}) — require the user's permission: the tool returns code needs_user_permission with the tab's id, title and url; ask the user, then retry with force: true.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string" },
+        force: {
+          type: "boolean",
+          description: "Close a tab the user opened. Only when the user asked.",
+        },
       },
       required: ["name"],
     },
   },
   {
     name: "browser_session_context",
-    description: "Get context info for the current active session",
+    description:
+      "Get this agent's current tab: its id, URL, title and session name, or closedTabId if the tab it was on has been closed",
     inputSchema: {
       type: "object",
       properties: {},
+      required: [],
+    },
+  },
+  // One agent, many tabs. Each agent (Primary or Secondary) has its own
+  // current tab; every page-facing tool without tabId/session acts there.
+  {
+    name: "browser_tab_new",
+    description:
+      "Open a new tab and make it this agent's current tab. Later calls without tabId/session act on it. Returns its tabId.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Page to open; blank tab if omitted" },
+        session: {
+          type: "string",
+          description: "Also name the tab as a session, to come back to it by name",
+        },
+        background: {
+          type: "boolean",
+          description: "Open without stealing focus from the user's tab",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_tab_list",
+    description:
+      "List the tabs this agent can work with: every tab PolterTab opened or bound to a session, marking which one is current. all: true lists every open tab in the browser (ids, URLs and titles only).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        all: { type: "boolean", description: "Include the user's other tabs" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_tab_switch",
+    description:
+      "Make another tab this agent's current tab, by tabId or session name. Does not bring it to the front unless focus: true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: {
+          type: "number",
+          description:
+            "Tab to switch to; a tabId Chrome does not have returns tab_not_found",
+        },
+        session: { type: "string" },
+        focus: {
+          type: "boolean",
+          description: "Also show the tab to the user",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "browser_tab_close",
+    description:
+      "Close a tab by tabId or session name (default: the current tab). Tabs not opened by PolterTab — including ones adopted via browser_session_create({tabId}) — require the user's permission: the tool returns code needs_user_permission with the tab's id, title and url; ask the user, then retry with force: true. A tabId that does not exist in Chrome returns tab_not_found. Closing the current tab leaves no current tab; untargeted calls then error until you switch or navigate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tabId: { type: "number" },
+        session: { type: "string" },
+        force: {
+          type: "boolean",
+          description: "Close a tab the user opened. Only when the user asked.",
+        },
+      },
       required: [],
     },
   },
