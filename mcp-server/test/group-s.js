@@ -119,6 +119,7 @@ async function groupS() {
     const primary = startServer({ port });
     let fakes = [];
     let secondary = null;
+    let extraId = null;
     try {
       await waitFor("primary listening", () => primary.stderr.includes("WebSocket server listening"));
       fakes = await fill(primary, port, 50, { version: "test" });
@@ -130,6 +131,7 @@ async function groupS() {
           `the default ceiling refused ${fakes.filter((f) => f.closed).length} of 50 secondaries`,
         );
         const extra = fakeSecondary(port, { version: "test" });
+        extraId = extra.nodeId;
         await waitFor("extra closed", () => extra.closed, 3000).catch(() => {});
         assert.strictEqual(extra.code, 4000, `closed with ${extra.code}, reason ${JSON.stringify(extra.reason)}`);
         const reason = JSON.parse(extra.reason);
@@ -157,7 +159,9 @@ async function groupS() {
         const ids = new Set(nodeIdsIn(err));
         assert.strictEqual(ids.size, 1, `minted ${ids.size} nodeIds in 8.5 s`);
         const refusedIds = new Set(
-          [...primary.stderr.matchAll(/Rejecting secondary node (\S+?)[ .]/g)].map((m) => m[1]),
+          [...primary.stderr.matchAll(/Rejecting secondary node (\S+?)[ .]/g)]
+            .map((m) => m[1])
+            .filter((id) => id !== extraId),
         );
         assert.strictEqual(refusedIds.size, 1, `the Primary refused ${refusedIds.size} distinct nodeIds`);
       });
@@ -285,6 +289,57 @@ async function groupS() {
       });
     } finally {
       await stop(primary);
+    }
+  }
+
+  // ── Review S1: backoff wraps the whole cycle, not only 4xxx closes ──
+  {
+    const port = await freePort();
+    // Accepts TCP, never answers the upgrade: an event-loop-blocked Primary.
+    const sockets = [];
+    const hung = net.createServer((s) => sockets.push(s));
+    await new Promise((r) => hung.listen(port, r));
+    const secondary = startServer({ port });
+    try {
+      await sleep(8000);
+      await test("S11 a hung Primary is backed off from, never promoted over", () => {
+        const err = secondary.stderr;
+        assert.ok(/Primary on port \d+ is not responding/.test(err), "the hung handshake never timed out");
+        assert.ok(!err.includes("Primary WebSocket server listening"), "bound a server");
+        assert.strictEqual(count(err, "in use, switching to Secondary Mode"), 1, "tried to bind again");
+        assert.ok(sockets.length <= 3, `${sockets.length} connection attempts in 8 s`);
+      });
+    } finally {
+      await stop(secondary);
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => hung.close(r));
+    }
+  }
+  {
+    const port = await freePort();
+    // A pre-PR-1 Primary at its limit: closes the Secondary with no code.
+    const old = new WebSocket.WebSocketServer({ port });
+    let attempts = 0;
+    old.on("connection", (ws) => {
+      ws.on("message", () => {
+        attempts++;
+        ws.close();
+      });
+    });
+    await new Promise((r) => old.once("listening", r));
+    const secondary = startServer({ port });
+    try {
+      await sleep(6000);
+      await test("S12 a codeless close from an old Primary is backed off, not looped", () => {
+        const err = secondary.stderr;
+        assert.ok(!err.includes("Primary WebSocket server listening"), "bound a server");
+        assert.strictEqual(new Set(nodeIdsIn(err)).size, 1, "minted a new nodeId");
+        assert.ok(attempts >= 2 && attempts <= 3, `${attempts} handshakes in 6 s (expected t=0, ~2 s, ~6 s)`);
+      });
+    } finally {
+      await stop(secondary);
+      for (const c of old.clients) c.terminate();
+      await new Promise((r) => old.close(r));
     }
   }
 
