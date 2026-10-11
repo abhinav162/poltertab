@@ -1,9 +1,6 @@
 const {
   assert,
   backgroundSandbox,
-  fs,
-  path,
-  REPO,
   test,
   waitFor,
 } = require("./harness.js");
@@ -163,11 +160,11 @@ async function groupQ() {
     assert.strictEqual((await ok(fresh(), "get_url")).tabId, 7);
   });
 
-  await test("Q13 the bridge stamps the proxying agent instead of injecting a session", () => {
-    const src = fs.readFileSync(path.join(REPO, "mcp-server", "bridge.js"), "utf8");
-    assert.ok(/_client: ws\.nodeId/.test(src), "proxy path does not stamp _client");
-    assert.ok(!/"agent_" \+ nodeId/.test(src), "secondary still injects a session");
-  });
+  // Q13 used to read bridge.js's source text and regex it for `_client:
+  // ws.nodeId`, which pinned a spelling rather than a behaviour and broke on
+  // any reflow of that line. The two things it meant to assert are now R3 (the
+  // envelope carries the agent's id and no injected session) and D8 (the same,
+  // end-to-end through a live Primary and Secondary).
   // SB-5 (live MT-20): navigate({tabId}) moved the pointer to that tab, so the
   // agent's next untargeted call landed there — the opposite of what tabId
   // promises on every other tool.

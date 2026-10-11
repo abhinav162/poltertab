@@ -171,6 +171,10 @@ async function groupD() {
       assert.notStrictEqual(envelope.id, "hijack", "params.id hijacked the reply id");
       assert.notStrictEqual(envelope._client, "spoofed", "params._client spoofed the agent");
       assert.ok(envelope._client, "the proxying Secondary was not identified");
+      // The other half of the old Q13: a Secondary used to have
+      // session: "agent_<nodeId>" injected into every command, overriding each
+      // browser_tab_switch it made. Its identity rides on _client now.
+      assert.ok(!("session" in envelope), "a session was injected into the envelope");
     });
 
     await test("D9 stdout carried only well-formed JSON-RPC for the whole run", () => {
