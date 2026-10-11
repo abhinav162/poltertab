@@ -208,6 +208,49 @@ async function groupQ() {
     assert.ok("node-idle" in current, "an agent still holding a live tab lost its pointer");
     assert.ok("primary" in current);
   });
+
+  // SB-1 / MT-48: a tab adopted via session_create({tabId}) was opened by the
+  // user, so tab_close must refuse it without force — but the old guard checked
+  // `!name`, which was false for a session, bypassing the check entirely.
+  await test("Q17 tab_close refuses an adopted user tab unless force is set", async () => {
+    const bg = fresh();
+    // Adopt the user's pre-existing tab (id 7, in activeTabs, not owned by PolterTab).
+    await ok(bg, "session_create", { session: "u", tabId: 7 });
+
+    // Without force: must refuse with needs_user_permission.
+    const refused = await call(bg, "tab_close", { session: "u" });
+    assert.strictEqual(refused.success, false, "adopted user tab closed without force");
+    assert.match(refused.error, /needs_user_permission/);
+
+    // Session still intact after the refusal (no side-effects on a refused close).
+    const ctx = await ok(bg, "session_context", { session: "u" });
+    assert.strictEqual(ctx.tabId, 7, "session lost its tab after a refused close");
+
+    // With force: closes successfully.
+    const forced = await ok(bg, "tab_close", { session: "u", force: true });
+    assert.strictEqual(forced.closed, 7);
+    assert.strictEqual(forced.session, "u");
+  });
+
+  // MT-15: tab_close on a tabId Chrome does not have must return tab_not_found,
+  // not silently succeed. MT-16 (a tab PolterTab opened, then Chrome closed)
+  // collapses into the same error because we cannot distinguish them without
+  // persisting a "ever-owned" set; both now return tab_not_found.
+  await test("Q18 tab_close on a non-alive tabId returns tab_not_found", async () => {
+    const bg = fresh();
+    const a = await ok(bg, "tab_new");
+
+    // Chrome closes the tab externally (e.g. user closes it).
+    bg.closeTab(a.tabId);
+
+    const r = await call(bg, "tab_close", { tabId: a.tabId });
+    assert.strictEqual(r.success, false, "closed tab should return tab_not_found error");
+    assert.match(r.error, /tab_not_found/);
+
+    // Current tab pointer and other tools must be unaffected.
+    const b = await ok(bg, "tab_new", { url: "http://other.test/" });
+    assert.ok(b.tabId, "tab_new still works after a failed tab_close");
+  });
 }
 
 module.exports = groupQ;

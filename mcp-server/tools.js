@@ -506,7 +506,7 @@ const BROWSER_TOOLS = [
   {
     name: "browser_tab_close",
     description:
-      "Close a tab by tabId or session name (default: the current tab). Only tabs PolterTab opened or bound to a session, unless force: true. Closing the current tab leaves no current tab; untargeted calls then error until you switch or navigate.",
+      "Close a tab by tabId or session name (default: the current tab). Tabs not opened by PolterTab — including ones adopted via browser_session_create({tabId}) — require the user's permission: the tool returns code needs_user_permission with the tab's id, title and url; ask the user, then retry with force: true. A tabId that does not exist in Chrome returns tab_not_found. Closing the current tab leaves no current tab; untargeted calls then error until you switch or navigate.",
     inputSchema: {
       type: "object",
       properties: {

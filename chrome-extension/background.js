@@ -562,16 +562,26 @@
       }
       if (!name) name = this.sessionNameFor(tabId);
 
-      if (tabId != null && (await this.tabAlive(tabId))) {
-        // Everything not opened or bound by PolterTab is the user's own tab.
-        if (!params.force && !this.owned.has(tabId) && !name) {
+      const liveTab = tabId != null ? await this.tabAlive(tabId) : null;
+      if (liveTab) {
+        // Everything not opened by PolterTab belongs to the user — including tabs
+        // adopted via session_create({tabId}). Require explicit permission.
+        if (!params.force && !this.owned.has(tabId)) {
           throw new Error(
-            `Tab ${tabId} was not opened by PolterTab, so it is the user's own tab. Pass force: true only if the user asked to close it.`,
+            `[needs_user_permission] Tab ${tabId} ("${liveTab.title ?? ""}", ${liveTab.url ?? ""}) was not opened by PolterTab. This tab was opened by the user. Ask the user for permission to close it, then retry with force: true.`,
           );
         }
         this.forgetTab(tabId);
         await chrome.tabs.remove(tabId);
+      } else if (tabId != null && !name) {
+        // An explicit tabId that Chrome does not have. We cannot tell if it was
+        // never valid or if it was already closed, so we surface both the same way.
+        throw new Error(
+          `[tab_not_found] Tab ${tabId} not found — it may never have existed or may already be closed. Call browser_tab_list to see open tabs.`,
+        );
       } else if (tabId != null) {
+        // Session's tab was already closed by Chrome before we arrived; clean up
+        // the internal record so the session can be safely deleted below.
         this.forgetTab(tabId);
       }
       if (name) delete this.sessions[name];
