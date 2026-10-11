@@ -46,6 +46,18 @@ function resolvePort(argv = process.argv, env = process.env) {
   return DEFAULT_WS_PORT;
 }
 
+// The v2 Secondary ceiling: POLTERTAB_MAX_SECONDARIES if it is a whole number
+// ≥ 0, else 50. 0 is honoured — it refuses every versioned Secondary (old ones
+// are still accepted, see MAX_SECONDARIES below) — so an explicit 0 must not
+// fall through to the default the way `parseInt(x) || 50` let it.
+const DEFAULT_MAX_SECONDARIES = 50;
+function resolveMaxSecondaries(env = process.env) {
+  const raw = env.POLTERTAB_MAX_SECONDARIES;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_SECONDARIES;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_MAX_SECONDARIES;
+}
+
 module.exports = {
   POLTERTAB_HOME,
   MEMORY_DIR: path.join(POLTERTAB_HOME, "navigation_memory"),
@@ -53,6 +65,7 @@ module.exports = {
 
   DEFAULT_WS_PORT,
   resolvePort,
+  resolveMaxSecondaries,
 
   // See the budget above before changing this.
   COMMAND_TIMEOUT_MS: 35000,
@@ -87,7 +100,7 @@ module.exports = {
   // Secondaries that declare a version count; an old one is always accepted,
   // because the only refusal it understands is a close it answers by trying to
   // promote.
-  MAX_SECONDARIES: parseInt(process.env.POLTERTAB_MAX_SECONDARIES, 10) || 50,
+  MAX_SECONDARIES: resolveMaxSecondaries(),
 
   // Lazy-loaded content arrives after the scroll returns. Long enough for the
   // XHR it triggered to land in the capture buffer, short enough that a
