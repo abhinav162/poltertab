@@ -501,7 +501,7 @@
 
     // --- Tab tools ---
 
-    describe(tab, cur) {
+    describeTab(tab, cur) {
       return {
         tabId: tab.id,
         url: tab.url,
@@ -550,7 +550,7 @@
       const cur = this.pointer(params);
       this.point(cur, tab.id, name);
       await this.persist();
-      const described = this.describe(tab, cur);
+      const described = this.describeTab(tab, cur);
       if (replacedClosedTab !== undefined) {
         described.replacedClosedTab = replacedClosedTab;
         described.hint = `Session "${name}" had a tab (${replacedClosedTab}) that was closed; it now points at this new tab.`;
@@ -574,7 +574,7 @@
 
       const tabs = open
         .filter((t) => params.all || tracked.has(t.id))
-        .map((t) => this.describe(t, cur));
+        .map((t) => this.describeTab(t, cur));
       await this.persist();
       return {
         current: openIds.has(cur.tabId) ? cur.tabId : null,
@@ -599,7 +599,7 @@
       this.point(cur, tab.id);
       if (params.focus) await chrome.tabs.update(tab.id, { active: true });
       await this.persist();
-      return this.describe(tab, cur);
+      return this.describeTab(tab, cur);
     }
 
     async tabClose(params = {}) {
