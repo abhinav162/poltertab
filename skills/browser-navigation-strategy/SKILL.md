@@ -208,6 +208,11 @@ once without switching to it, or name tabs with `session` and pass that. If a
 call says your tab was closed, list and switch — do not assume another tab is
 the same page. Close what you opened.
 
+`browser_tab_close` refuses tabs that PolterTab did not open — including tabs
+adopted via `browser_session_create({tabId})` — and returns `needs_user_permission`
+with the tab's id, title and url. Ask the user for permission, then retry with
+`force: true`. Closing a tabId that Chrome does not have returns `tab_not_found`.
+
 ## Pitfalls
 
 - Do not scrape repeating records field-by-field. Use `browser_extract`, and
