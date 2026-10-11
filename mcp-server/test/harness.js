@@ -380,7 +380,7 @@ function startServer(opts = {}) {
   // the real registry, and the moment this repo's version fell behind the
   // published one, a notice would be appended to every tool response and the
   // assertions below would start failing for a reason unrelated to their point.
-  const proc = spawn(process.execPath, [SERVER, "--port", String(PORT)], {
+  const proc = spawn(process.execPath, [SERVER, "--port", String(opts.port || PORT)], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,

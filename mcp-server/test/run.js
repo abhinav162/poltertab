@@ -15,6 +15,7 @@
 //   P  learned extraction recipes                (path bucketing, merge/cap, corrupt store)
 //   Q  one agent, many tabs                      (per-agent current tab, tab_* tools)
 //   R  bridge envelope construction              (reserved keys, agent identity)
+//   S  connection arbitration                    (rejection loop, promotion, ceiling)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -23,7 +24,7 @@ const path = require("path");
 const { results } = require("./harness.js");
 
 // One file per group, run in order. Adding a group is adding a file.
-const GROUPS = "abcdefghijklmnopqr".split("");
+const GROUPS = "abcdefghijklmnopqrs".split("");
 
 (async () => {
   console.log("PolterTab regression suite");
