@@ -25,7 +25,7 @@ const path = require("path");
 const { results } = require("./harness.js");
 
 // One file per group, run in order. Adding a group is adding a file.
-const GROUPS = "abcdefghijklmnopqrst".split("");
+const GROUPS = "abcdefghijklmnopqrstu".split("");
 
 (async () => {
   console.log("PolterTab regression suite");
