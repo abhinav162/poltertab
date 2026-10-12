@@ -16,6 +16,7 @@
 //   Q  one agent, many tabs                      (per-agent current tab, tab_* tools)
 //   R  bridge envelope construction              (reserved keys, agent identity)
 //   S  connection arbitration                    (rejection loop, promotion, ceiling)
+//   T  idle eviction + lazy reconnect            (4001, slot freed, no promotion)
 //
 // Run: node mcp-server/test/run.js
 // No framework on purpose — plain asserts, one file, real processes.
@@ -24,7 +25,7 @@ const path = require("path");
 const { results } = require("./harness.js");
 
 // One file per group, run in order. Adding a group is adding a file.
-const GROUPS = "abcdefghijklmnopqrs".split("");
+const GROUPS = "abcdefghijklmnopqrst".split("");
 
 (async () => {
   console.log("PolterTab regression suite");

@@ -482,3 +482,5 @@ async function groupS() {
 }
 
 module.exports = groupS;
+// Group T (idle eviction) drives the same wire protocol.
+Object.assign(groupS, { freePort, fakeSecondary, stamped, stop });

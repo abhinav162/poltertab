@@ -58,6 +58,18 @@ function resolveMaxSecondaries(env = process.env) {
   return Number.isInteger(n) && n >= 0 ? n : DEFAULT_MAX_SECONDARIES;
 }
 
+// How long a v2 Secondary may sit idle (no commands) before the Primary sends
+// close code 4001. Only whole-number milliseconds > 0 are accepted; anything
+// else falls back to the default. 0 would mean "evict immediately", which is
+// not a meaningful setting, so it is treated as invalid.
+const DEFAULT_IDLE_EVICTION_MS = 5 * 60 * 1000; // 5 minutes
+function resolveIdleEvictionMs(env = process.env) {
+  const raw = env.POLTERTAB_IDLE_EVICTION_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_EVICTION_MS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_IDLE_EVICTION_MS;
+}
+
 module.exports = {
   POLTERTAB_HOME,
   MEMORY_DIR: path.join(POLTERTAB_HOME, "navigation_memory"),
@@ -66,6 +78,7 @@ module.exports = {
   DEFAULT_WS_PORT,
   resolvePort,
   resolveMaxSecondaries,
+  resolveIdleEvictionMs,
 
   // See the budget above before changing this.
   COMMAND_TIMEOUT_MS: 35000,
@@ -101,6 +114,11 @@ module.exports = {
   // because the only refusal it understands is a close it answers by trying to
   // promote.
   MAX_SECONDARIES: resolveMaxSecondaries(),
+
+  // How long a v2 Secondary may sit idle before the Primary evicts it with
+  // close code 4001. Configurable so tests can use a short value (e.g. 300 ms)
+  // without slowing the suite.
+  IDLE_EVICTION_MS: resolveIdleEvictionMs(),
 
   // Lazy-loaded content arrives after the scroll returns. Long enough for the
   // XHR it triggered to land in the capture buffer, short enough that a
