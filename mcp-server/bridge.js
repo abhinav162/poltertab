@@ -266,15 +266,26 @@ function setupPrimaryServer() {
       httpServer.close();
       httpServer = null;
       startSecondaryMode();
+      // NICE-2 residual race: a legacy (wildcard-binding) PolterTab that starts
+      // in the ms between a successful probe and our listen() call will bind
+      // undetected on macOS — SO_REUSEADDR lets 127.0.0.1 bind over 0.0.0.0,
+      // so the new loopback Primary dual-binds silently.  That window is
+      // milliseconds and requires two simultaneous starts; not worth a retry
+      // loop, but do not remove the probe and rely on this handler alone.
     } else {
       console.error(`[PolterTab MCP] HTTP server error: ${e.message}`);
     }
   });
 
-  // On macOS, SO_REUSEADDR lets 127.0.0.1:port bind even when 0.0.0.0:port
-  // is already occupied, so EADDRINUSE alone does not detect an existing Primary.
-  // Probe before listen; keep the error handler as a fallback for the race window
-  // between a successful probe and the bind call.
+  // Why probe-first (SHOULD-1 narrative, real reason for this change):
+  // PR-3 routes /status to loopback only, so the whole Primary now binds
+  // 127.0.0.1 instead of 0.0.0.0.  On macOS, libuv sets SO_REUSEADDR, and
+  // BSD/macOS lets a specific-address bind succeed silently over a live
+  // wildcard listener — so the new loopback-binding Primary would start beside
+  // a pre-1.8 (wildcard) PolterTab without getting EADDRINUSE, then steal all
+  // loopback traffic.  S11 is the regression test: it places a wildcard fixture
+  // and asserts the bridge-under-test demotes instead of dual-binding.  The
+  // EADDRINUSE handler above remains as the fallback for same-host races.
   probePrimary().then((alive) => {
     if (alive) {
       console.error(
@@ -336,9 +347,11 @@ function setupPrimaryServer() {
         }
         const idleMs = now - ws.lastCommandAt;
         if (idleMs < IDLE_EVICTION_MS) continue;
-        const busy = [...pendingCommands.values()].some(
-          (c) => c.isProxy && c.sourceWs === ws,
-        );
+        // NICE-1: also skip eviction when commands are queued for this source
+        // (spec §3.3: "zero in-flight AND zero queued").
+        const busy =
+          [...pendingCommands.values()].some((c) => c.isProxy && c.sourceWs === ws) ||
+          queuedBySource.has(ws);
         if (busy) continue;
         console.error(
           `[PolterTab MCP] Evicting idle secondary ${ws.nodeId} (idle ${idleMs} ms)`,
