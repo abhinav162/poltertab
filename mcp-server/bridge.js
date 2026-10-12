@@ -138,6 +138,19 @@ function _tryDequeue() {
     if (item.callerWs && item.callerWs.readyState !== WebSocket.OPEN) {
       continue;
     }
+    // Extension disconnected since the item was enqueued: reject to caller
+    // without consuming a slot. This is the guard against the MUST-1 crash:
+    // _dispatchProxyNow calls extensionSocket.send() synchronously, so a null
+    // socket inside a timer callback becomes an uncaughtException that kills
+    // the Primary and every Secondary with it.
+    if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
+      if (item.callerWs && item.callerWs.readyState === WebSocket.OPEN) {
+        item.callerWs.send(
+          JSON.stringify({ id: item.id, success: false, error: "Browser extension not connected to Primary." }),
+        );
+      }
+      continue;
+    }
 
     extensionInFlight++;
     const waitMs = Date.now() - item.ackSentAt;
@@ -697,9 +710,25 @@ function _dispatchProxyNow(callerWs, id, action, params) {
     }
   }, COMMAND_TIMEOUT_MS);
   pendingCommands.set(id, { isProxy: true, sourceWs: callerWs, timer });
-  extensionSocket.send(
-    JSON.stringify({ ..._buildEnvelope(action, params, callerWs.nodeId), id }),
-  );
+  // Belt-and-braces: _tryDequeue's open-check guards the common case; this
+  // catches the narrow race where the extension socket closes between that
+  // check and the actual send (both are synchronous, but the close event is
+  // delivered between event-loop ticks, so the race is real on high-load paths).
+  try {
+    extensionSocket.send(
+      JSON.stringify({ ..._buildEnvelope(action, params, callerWs.nodeId), id }),
+    );
+  } catch (err) {
+    clearTimeout(timer);
+    pendingCommands.delete(id);
+    extensionInFlight--;
+    _tryDequeue();
+    if (callerWs.readyState === WebSocket.OPEN) {
+      callerWs.send(
+        JSON.stringify({ id, success: false, error: "Browser extension not connected to Primary." }),
+      );
+    }
+  }
 }
 
 function setupPrimaryWss(wss) {

@@ -480,38 +480,48 @@ async function groupU() {
   }
 
   // ── MUST-1: Primary survives extension disconnect with a queued command ──
-  // Failure scenario: commands queued under load → extension's MV3 service
-  // worker restarts → extensionSocket = null → in-flight timer fires →
-  // _tryDequeue() → _dispatchProxyNow → extensionSocket.send on null →
-  // TypeError in a bare timer callback → uncaughtException → Primary dies.
+  // Failure scenario (Jim's review): commands queued under load → extension's
+  // MV3 service worker restarts → extensionSocket = null → in-flight command's
+  // 35 s timer fires → extensionInFlight--; _tryDequeue() → dequeues →
+  // onDispatch() → _dispatchProxyNow → extensionSocket.send on null →
+  // TypeError in a bare setTimeout callback → uncaughtException, Primary dies.
+  //
+  // To reproduce the crash the queued item must be FRESH at dequeue time so
+  // the deadline check (elapsed > COMMAND_TIMEOUT_MS − 2000) does not fire
+  // first. We enqueue u17-queued close to the holder's timer-fire point so
+  // its elapsed ≈ 900 ms < COMMAND_TIMEOUT_MS − 2000 = 2000 ms.
   {
+    const CMD_TIMEOUT = 4000;
     const { port, srv } = await primaryWith({
       POLTERTAB_MAX_CONCURRENCY: "1",
-      POLTERTAB_COMMAND_TIMEOUT_MS: "800",
+      POLTERTAB_COMMAND_TIMEOUT_MS: String(CMD_TIMEOUT),
     });
     const all = [];
     let ext = null;
     try {
-      // Extension that holds every command indefinitely so we can kill it first.
+      // Extension holds every command indefinitely; the holder will time out.
       ext = extensionOn(port, () => 60000);
       await waitFor("extension connected", () => srv.stderr.includes("Chrome extension connected"));
       const s = await v2(port);
       all.push(s);
 
       await test("U17 (MUST-1) Primary survives extension disconnect with a command queued; caller gets not-connected error", async () => {
-        // u17-hold fills the one slot (the extension holds it forever).
+        // u17-hold fills the one slot; extension holds it until the 4 s timer.
         proxy(s, "u17-hold");
         await waitFor("slot taken", () => ext.seen.length > 0, 2000);
-        // u17-queued goes into the queue (no slot available).
+        // Wait until 900 ms before the holder times out, then enqueue a fresh
+        // command. At timer fire its elapsed ≈ 900 ms < 4000 − 2000 = 2000 ms,
+        // so the deadline check in _tryDequeue does not fire and the code path
+        // reaches the extension-not-connected guard (the MUST-1 crash site).
+        await sleep(CMD_TIMEOUT - 900);
         proxy(s, "u17-queued");
-        await waitFor("queued ack", () => ofType(s, "queued").some((m) => m.id === "u17-queued"), 1000);
-        // Kill the extension socket. Bridge sets extensionSocket = null on close.
+        await waitFor("queued ack", () => ofType(s, "queued").some((m) => m.id === "u17-queued"), 400);
+        // Kill the extension socket → extensionSocket = null in the bridge.
         ext.ws.terminate();
         ext = null;
-        // The in-flight timer fires at 800 ms → _tryDequeue → (without fix)
-        // extensionSocket.send on null → crash. Wait long enough for that.
-        await waitFor("u17-queued answered", () => replyTo(s, "u17-queued"), 2500).catch(() => {});
-        // Primary must still be reachable after the timer fired.
+        // Give the holder's timer time to fire and attempt the dequeue.
+        await waitFor("u17-queued answered", () => replyTo(s, "u17-queued"), 2000).catch(() => {});
+        // Primary must still be reachable — if it crashed this throws.
         let alive = false;
         try {
           const r = await getStatus(port);
