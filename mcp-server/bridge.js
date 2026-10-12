@@ -54,6 +54,7 @@ let isSecondary = false;
 let nodeId = null;
 let wss = null;
 let httpServer = null;
+let httpServer6 = null; // IPv6 loopback companion; null if host has no IPv6
 
 // Secondary-side retry state. One counter for the whole reconnect/probe/promote
 // cycle, reset only by a Primary's secondary_accepted; `refusal` and
@@ -215,7 +216,7 @@ function allowOrigin(info, cb) {
 
 function setupPrimaryServer() {
   const http = require("http");
-  httpServer = http.createServer((req, res) => {
+  const handleRequest = (req, res) => {
     if (req.method === "GET" && req.url === "/status") {
       const now = Date.now();
       const secondaries = [];
@@ -254,7 +255,8 @@ function setupPrimaryServer() {
     }
     res.writeHead(404);
     res.end();
-  });
+  };
+  httpServer = http.createServer(handleRequest);
 
   httpServer.on("error", (e) => {
     if (e.code === "EADDRINUSE") {
@@ -297,9 +299,6 @@ function setupPrimaryServer() {
       return;
     }
     httpServer.listen(WS_PORT, "127.0.0.1", () => {
-    console.error(
-      `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
-    );
     wss = new WebSocket.WebSocketServer({
       server: httpServer,
       verifyClient: allowOrigin,
@@ -409,6 +408,36 @@ function setupPrimaryServer() {
     }, NETWORK_GC_INTERVAL_MS);
 
     setupPrimaryWss(wss);
+
+    // Also listen on ::1 (IPv6 loopback) so Node 18 clients work: Node 18
+    // resolves 'localhost' to ::1 first with no happy-eyeballs fallback.
+    // Skip cleanly when the host has no IPv6 stack (EADDRNOTAVAIL/EAFNOSUPPORT).
+    // On macOS, SO_REUSEADDR lets a specific-address ::1 bind succeed silently
+    // over a live :: wildcard listener — but we only set up httpServer6 AFTER
+    // probing 127.0.0.1, so a false-primary that owns :: would be caught by that
+    // probe (it also owns 127.0.0.1) and we would have gone Secondary already.
+    //
+    // The "listening" log is delayed until ::1 is ready (or skipped) so that
+    // any client connecting on the log signal can reach both addresses.
+    const SKIP_IPV6 = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT", "EPROTONOSUPPORT"]);
+    const logListening = () =>
+      console.error(
+        `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
+      );
+    httpServer6 = http.createServer(handleRequest);
+    httpServer6.on("error", (e) => {
+      if (SKIP_IPV6.has(e.code)) {
+        httpServer6 = null;
+      } else {
+        console.error(`[PolterTab MCP] IPv6 loopback error: ${e.message}`);
+      }
+      logListening();
+    });
+    httpServer6.once("listening", logListening);
+    httpServer6.on("upgrade", (req, socket, head) => {
+      wss.handleUpgrade(req, socket, head, (client) => wss.emit("connection", client, req));
+    });
+    httpServer6.listen(WS_PORT, "::1");
     });
   });
 }
@@ -488,7 +517,10 @@ function reconnectFailed() {
 // Primary is gone.
 function probePrimary() {
   return new Promise((resolve) => {
-    const sock = net.connect(WS_PORT, "localhost");
+    // Dial 127.0.0.1 explicitly; 'localhost' resolves to ::1 first on Node 18
+    // (no happy-eyeballs), which would give a false ECONNREFUSED when our own
+    // Primary is listening on 127.0.0.1.
+    const sock = net.connect(WS_PORT, "127.0.0.1");
     // A listener with a full accept backlog answers with neither connect nor
     // error, which would park this node with no retry scheduled. Treat silence
     // as "something is there": connectToPrimary's handshake timeout then sorts
@@ -515,7 +547,9 @@ async function promoteOrRejoin() {
 }
 
 function connectToPrimary() {
-  const ws = new WebSocket(`ws://localhost:${WS_PORT}`, {
+  // Dial 127.0.0.1 explicitly so Node 18 (which resolves 'localhost' to ::1
+  // first with no fallback) does not get ECONNREFUSED against the IPv4 Primary.
+  const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}`, {
     perMessageDeflate: true,
     // A Primary that accepts TCP but never answers the upgrade (event loop
     // blocked, SIGSTOP) would otherwise hold this node forever.
@@ -1091,6 +1125,7 @@ function shutdown() {
   console.error("[PolterTab MCP] Shutting down...");
   if (wss) wss.close();
   if (httpServer) httpServer.close();
+  if (httpServer6) httpServer6.close();
   process.exit(0);
 }
 // Helper to wait for WebSocket connection
