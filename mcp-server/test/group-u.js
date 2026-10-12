@@ -478,6 +478,60 @@ async function groupU() {
       await stop(srv);
     }
   }
+
+  // ── MUST-1: Primary survives extension disconnect with a queued command ──
+  // Failure scenario: commands queued under load → extension's MV3 service
+  // worker restarts → extensionSocket = null → in-flight timer fires →
+  // _tryDequeue() → _dispatchProxyNow → extensionSocket.send on null →
+  // TypeError in a bare timer callback → uncaughtException → Primary dies.
+  {
+    const { port, srv } = await primaryWith({
+      POLTERTAB_MAX_CONCURRENCY: "1",
+      POLTERTAB_COMMAND_TIMEOUT_MS: "800",
+    });
+    const all = [];
+    let ext = null;
+    try {
+      // Extension that holds every command indefinitely so we can kill it first.
+      ext = extensionOn(port, () => 60000);
+      await waitFor("extension connected", () => srv.stderr.includes("Chrome extension connected"));
+      const s = await v2(port);
+      all.push(s);
+
+      await test("U17 (MUST-1) Primary survives extension disconnect with a command queued; caller gets not-connected error", async () => {
+        // u17-hold fills the one slot (the extension holds it forever).
+        proxy(s, "u17-hold");
+        await waitFor("slot taken", () => ext.seen.length > 0, 2000);
+        // u17-queued goes into the queue (no slot available).
+        proxy(s, "u17-queued");
+        await waitFor("queued ack", () => ofType(s, "queued").some((m) => m.id === "u17-queued"), 1000);
+        // Kill the extension socket. Bridge sets extensionSocket = null on close.
+        ext.ws.terminate();
+        ext = null;
+        // The in-flight timer fires at 800 ms → _tryDequeue → (without fix)
+        // extensionSocket.send on null → crash. Wait long enough for that.
+        await waitFor("u17-queued answered", () => replyTo(s, "u17-queued"), 2500).catch(() => {});
+        // Primary must still be reachable after the timer fired.
+        let alive = false;
+        try {
+          const r = await getStatus(port);
+          alive = r.status === 200;
+        } catch (_) {}
+        assert.ok(alive, "Primary process crashed after extension disconnect with a non-empty queue");
+        const r = replyTo(s, "u17-queued");
+        assert.ok(r, "queued command was never answered (Primary may have crashed)");
+        assert.strictEqual(r.success, false, JSON.stringify(r));
+        assert.ok(
+          /Browser extension not connected/.test(r.error),
+          `expected not-connected error, got: ${r.error}`,
+        );
+      });
+    } finally {
+      for (const f of all) f.ws.terminate();
+      if (ext) ext.ws.terminate();
+      await stop(srv);
+    }
+  }
 }
 
 module.exports = groupU;
