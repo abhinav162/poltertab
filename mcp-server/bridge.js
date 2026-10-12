@@ -28,6 +28,7 @@ const {
   PROMOTION_BACKOFF_MAX_MS,
   PROMOTION_BACKOFF_JITTER,
   MAX_SECONDARIES,
+  IDLE_EVICTION_MS,
   POLTERTAB_HOME,
 } = require("./config.js");
 const updates = require("./update-check.js");
@@ -59,6 +60,13 @@ let backoffAttempt = 0;
 let retryTimer = null;
 let refusal = null;
 let unreachable = false;
+
+// Idle eviction, Secondary side. A 4001 from the Primary parks this node: no
+// reconnect, no probe, no promotion. The next sendCommand dials again, and
+// `reconnect` is that dial while it is in flight, shared by every caller that
+// arrives meanwhile so they cost one connection, not one each (R-S3).
+let isEvicted = false;
+let reconnect = null; // { promise, resolve, reject, timer }
 
 function broadcastSessionState() {
   if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
@@ -168,8 +176,36 @@ function setupPrimaryServer() {
       });
     }, HEARTBEAT_MS);
 
+    // Idle eviction (4001) for v2 Secondaries silent for IDLE_EVICTION_MS. An
+    // old Secondary is never evicted: it answers any close by trying to
+    // promote. One with a command in flight is skipped (R-S2) — its clock
+    // restarts when the reply goes back. The check runs at half the idle
+    // period, capped at the heartbeat, so an eviction lands at most that late.
+    const evictionInterval = setInterval(() => {
+      const now = Date.now();
+      for (const ws of secondaryClients.values()) {
+        if (!ws.supportsNewCloseCodes || ws.readyState !== WebSocket.OPEN) {
+          continue;
+        }
+        const idleMs = now - ws.lastCommandAt;
+        if (idleMs < IDLE_EVICTION_MS) continue;
+        const busy = [...pendingCommands.values()].some(
+          (c) => c.isProxy && c.sourceWs === ws,
+        );
+        if (busy) continue;
+        console.error(
+          `[PolterTab MCP] Evicting idle secondary ${ws.nodeId} (idle ${idleMs} ms)`,
+        );
+        ws.close(
+          4001,
+          JSON.stringify({ reason: "idle_evicted", idle_ms: idleMs }),
+        );
+      }
+    }, Math.max(100, Math.min(HEARTBEAT_MS, Math.floor(IDLE_EVICTION_MS / 2))));
+
     wss.on("close", () => {
       clearInterval(interval);
+      clearInterval(evictionInterval);
     });
 
     // Network State Garbage Collector (TTL: 5 minutes)
@@ -217,6 +253,46 @@ function _backoffDelay(attempt, rand = Math.random) {
 function scheduleRetry(fn, delay) {
   clearTimeout(retryTimer);
   retryTimer = setTimeout(fn, delay);
+}
+
+// Dial the Primary again after an eviction. Settles on secondary_accepted, not
+// on the socket opening: a command sent before the ACK can land on a Primary
+// that is about to refuse this node. A failed dial rejects at once with the
+// cause (the close handler calls finishReconnect) and leaves the node on PR-1's
+// ordinary schedule — backoff, probe, promote — so the caller is not held for
+// the full command timeout and the port is still taken over if it is free.
+// isEvicted is cleared here rather than on the ACK: from now on the node is
+// reconnecting, and a node that promotes itself must not dial its own port.
+function lazyReconnect() {
+  if (reconnect) return reconnect.promise;
+  isEvicted = false;
+  let settle;
+  const promise = new Promise((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+  reconnect = {
+    promise,
+    ...settle,
+    timer: setTimeout(
+      () => finishReconnect(new Error(reconnectFailed())),
+      COMMAND_TIMEOUT_MS,
+    ),
+  };
+  connectToPrimary();
+  return promise;
+}
+
+function finishReconnect(err) {
+  if (!reconnect) return;
+  const r = reconnect;
+  reconnect = null;
+  clearTimeout(r.timer);
+  if (err) r.reject(err);
+  else r.resolve();
+}
+
+function reconnectFailed() {
+  return `[reconnect_failed port=${WS_PORT}] Could not reconnect to primary.`;
 }
 
 // Is anything listening on the port? Binding to find out is what leaked a
@@ -287,6 +363,7 @@ function connectToPrimary() {
         backoffAttempt = 0;
         refusal = null;
         unreachable = false;
+        finishReconnect();
         return;
       }
       if (msg.id && pendingCommands.has(msg.id)) {
@@ -321,6 +398,36 @@ function connectToPrimary() {
       try {
         info = JSON.parse(reason.toString());
       } catch (_) {}
+    }
+
+    // A lazy reconnect whose dial ended before the ACK fails now, with the
+    // reason when the Primary gave one. The branches below still run, so the
+    // node retries or promotes exactly as it would have without the caller.
+    if (!accepted) {
+      finishReconnect(
+        new Error(
+          info.reason === "capacity_rejected"
+            ? `[capacity_rejected limit=${info.limit}] Primary (pid ${info.pid}) has ${info.limit} secondaries. Retry later.`
+            : reconnectFailed(),
+        ),
+      );
+    }
+
+    // 4001 = idle_evicted. Park: no reconnect, no probe, no promotion — the
+    // next sendCommand dials. A command already on the wire when the Primary
+    // closed is lost, and retrying it could run it twice, so say so (R-S2).
+    if (code === 4001) {
+      isEvicted = true;
+      for (const [, { reject, timer, action }] of pendingCommands) {
+        clearTimeout(timer);
+        reject(
+          new Error(
+            `[evicted_mid_command action=${action || "unknown"}] Session evicted while command was in progress. Not auto-retried.`,
+          ),
+        );
+      }
+      pendingCommands.clear();
+      return;
     }
 
     // Reject all pending commands
@@ -451,6 +558,7 @@ function setupPrimaryWss(wss) {
           ws.version = msg.version || null;
           ws.pid = msg.pid || null;
           ws.parentPid = msg.parentPid || null;
+          ws.lastCommandAt = Date.now();
           console.error(
             `[PolterTab MCP] Secondary node connected: ${msg.nodeId}. Total secondaries: ${secondaryClients.size}`,
           );
@@ -491,6 +599,8 @@ function setupPrimaryWss(wss) {
             }
             return;
           }
+          // Each command restarts this Secondary's idle clock.
+          ws.lastCommandAt = Date.now();
           // Stamp which agent is asking, from the socket rather than the
           // message, so the extension keeps this Secondary's current tab apart
           // from the Primary's and every other Secondary's.
@@ -651,6 +761,9 @@ function setupPrimaryWss(wss) {
           pendingCommands.delete(msg.id);
 
           if (cmd.isProxy) {
+            // Idle time counts from the reply, so a long command cannot leave
+            // its Secondary already due for eviction the moment it finishes.
+            cmd.sourceWs.lastCommandAt = Date.now();
             if (cmd.sourceWs.readyState === WebSocket.OPEN) {
               cmd.sourceWs.send(JSON.stringify(msg));
             }
@@ -714,14 +827,14 @@ async function waitForConnection(timeoutMs = 5000) {
 // over a socket instead of settling a promise, so it stays where it is and
 // shares only the constant.
 function awaitReply(envelope, { timedOut, sendFailed }) {
-  const { id } = envelope;
+  const { id, action } = envelope;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingCommands.delete(id);
       reject(new Error(timedOut));
     }, COMMAND_TIMEOUT_MS);
 
-    pendingCommands.set(id, { resolve, reject, timer });
+    pendingCommands.set(id, { resolve, reject, timer, action });
 
     try {
       extensionSocket.send(JSON.stringify(envelope));
@@ -749,6 +862,10 @@ function _buildEnvelope(action, params, activeNodeId) {
 
 // Helper to send command to the extension
 async function sendCommand(action, params) {
+  // Evicted, or a caller ahead of this one is already reconnecting: wait for
+  // that one dial rather than racing it.
+  if (isEvicted || reconnect) await lazyReconnect();
+
   const isConnected = await waitForConnection(5000);
 
   if (isSecondary) {
@@ -820,6 +937,7 @@ module.exports = {
   readNetworkState,
   noteActiveTab,
   isSecondary: () => isSecondary,
+  isEvicted: () => isEvicted,
   extensionVersion: () => extensionVersion,
   _buildEnvelope,
   _backoffDelay,
