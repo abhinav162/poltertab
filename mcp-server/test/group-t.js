@@ -268,7 +268,8 @@ async function groupT() {
 
       await test("T9 (R-S2) a command cut off by 4001 fails as evicted_mid_command and is not retried", async () => {
         fake.onCommand = (c) => fake.evict(c);
-        const before = fake.conns.length;
+        const sentSoFar = () => fake.conns.reduce((n, c) => n + c.commands.length, 0);
+        const before = sentSoFar();
         const t0 = Date.now();
         const reply = await getUrl(secondary);
         const took = Date.now() - t0;
@@ -278,9 +279,23 @@ async function groupT() {
         assert.ok(/not auto-retried/i.test(errText(reply)), errText(reply));
         assert.ok(took < 2000, `took ${took} ms`);
         await sleep(3000);
-        const sent = fake.conns.slice(before).reduce((n, c) => n + c.commands.length, 0);
+        const sent = sentSoFar() - before;
         assert.strictEqual(sent, 1, `the command was sent ${sent} times`);
         assert.strictEqual(fake.tcp, tcp, `${fake.tcp - tcp} connections after the eviction`);
+      });
+
+      // T9 leaves the node evicted. One reconnect must end the evicted state:
+      // a node that re-dials on every call replaces its own live socket each
+      // time and strands the reply to the call before.
+      await test("T12 calls after a reconnect reuse it; one eviction costs one connection", async () => {
+        fake.onCommand = null;
+        const before = fake.conns.length;
+        for (let i = 0; i < 3; i++) {
+          const reply = await getUrl(secondary);
+          assert.ok(!reply.result.isError, `call ${i + 1}: ${errText(reply)}`);
+        }
+        assert.strictEqual(fake.conns.length - before, 1, `${fake.conns.length - before} new connections for 3 calls`);
+        assert.ok(!fake.conns[fake.conns.length - 1].closed, "the reconnected socket was closed");
       });
     } finally {
       await stop(secondary);
