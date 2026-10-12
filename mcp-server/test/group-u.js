@@ -542,6 +542,27 @@ async function groupU() {
       await stop(srv);
     }
   }
+
+  // U18: Primary must be reachable via ::1 (IPv6 loopback) so that Node 18
+  // clients work. Node 18 resolves 'localhost' to ::1 first (no happy-eyeballs
+  // fallback). Failing before fix: the Primary only listens on 127.0.0.1, so
+  // the connection is refused and an unhandled 'error' event crashes the run.
+  {
+    const { port, srv } = await primaryWith({});
+    try {
+      await test("U18 Primary is reachable via ::1 (Node 18 localhost resolves to ::1)", async () => {
+        const connected = await new Promise((resolve) => {
+          const ws = new WebSocket(`ws://[::1]:${port}`, { handshakeTimeout: 2000 });
+          ws.once("open", () => { ws.terminate(); resolve(true); });
+          // Handled: refused connect must fail the test, not crash the run.
+          ws.once("error", () => resolve(false));
+        });
+        assert.ok(connected, "Primary refused ::1 connection — Node 18 clients dialling localhost would get ECONNREFUSED");
+      });
+    } finally {
+      await stop(srv);
+    }
+  }
 }
 
 module.exports = groupU;
