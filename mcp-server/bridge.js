@@ -1123,7 +1123,14 @@ async function sendCommand(action, params) {
   // that one dial rather than racing it.
   if (isEvicted || reconnect) await lazyReconnect();
 
-  const isConnected = await waitForConnection(5000);
+  let isConnected = await waitForConnection(5000);
+
+  // During the wait the Primary may have evicted us (4001) or a concurrent
+  // dial may have started; take the lazy path rather than erroring immediately.
+  if (!isConnected && (isEvicted || reconnect)) {
+    await lazyReconnect();
+    isConnected = await waitForConnection(5000);
+  }
 
   if (isSecondary) {
     if (!isConnected) {
