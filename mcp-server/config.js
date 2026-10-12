@@ -70,6 +70,46 @@ function resolveIdleEvictionMs(env = process.env) {
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_IDLE_EVICTION_MS;
 }
 
+// The 35 s command budget. Exposed as an env override so tests can shrink it
+// without waiting for real timeouts. Junk or zero fall back to the default.
+const DEFAULT_COMMAND_TIMEOUT_MS = 35000;
+function resolveCommandTimeoutMs(env = process.env) {
+  const raw = env.POLTERTAB_COMMAND_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_COMMAND_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_COMMAND_TIMEOUT_MS;
+}
+
+// How many commands the primary may have in flight to the extension at once.
+// 0 would refuse every command; junk falls back to the default.
+const DEFAULT_MAX_EXTENSION_CONCURRENCY = 6;
+function resolveMaxConcurrency(env = process.env) {
+  const raw = env.POLTERTAB_MAX_CONCURRENCY;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_EXTENSION_CONCURRENCY;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_MAX_EXTENSION_CONCURRENCY;
+}
+
+// Per-secondary command queue depth. A command beyond this is refused at once.
+// 0 would refuse every queue attempt; junk falls back.
+const DEFAULT_PER_SECONDARY_QUEUE_DEPTH = 3;
+function resolveQueueDepth(env = process.env) {
+  const raw = env.POLTERTAB_QUEUE_DEPTH;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_PER_SECONDARY_QUEUE_DEPTH;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_PER_SECONDARY_QUEUE_DEPTH;
+}
+
+// How long a command may sit in the server-side queue before being GC'd.
+// 0 / negative / junk fall back to the default.
+const DEFAULT_QUEUE_TIMEOUT_MS = 60000;
+function resolveQueueTimeoutMs(env = process.env) {
+  const raw = env.POLTERTAB_QUEUE_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_QUEUE_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_QUEUE_TIMEOUT_MS;
+}
+
 module.exports = {
   POLTERTAB_HOME,
   MEMORY_DIR: path.join(POLTERTAB_HOME, "navigation_memory"),
@@ -79,9 +119,13 @@ module.exports = {
   resolvePort,
   resolveMaxSecondaries,
   resolveIdleEvictionMs,
+  resolveCommandTimeoutMs,
+  resolveMaxConcurrency,
+  resolveQueueDepth,
+  resolveQueueTimeoutMs,
 
   // See the budget above before changing this.
-  COMMAND_TIMEOUT_MS: 35000,
+  COMMAND_TIMEOUT_MS: resolveCommandTimeoutMs(),
 
   // Dead-connection detection. A socket that misses a ping/pong round is
   // terminated so the extension's own reconnect can take over.
@@ -119,6 +163,11 @@ module.exports = {
   // close code 4001. Configurable so tests can use a short value (e.g. 300 ms)
   // without slowing the suite.
   IDLE_EVICTION_MS: resolveIdleEvictionMs(),
+
+  // Command queue (PR-3).
+  MAX_EXTENSION_CONCURRENCY: resolveMaxConcurrency(),
+  PER_SECONDARY_QUEUE_DEPTH: resolveQueueDepth(),
+  QUEUE_TIMEOUT_MS: resolveQueueTimeoutMs(),
 
   // Lazy-loaded content arrives after the scroll returns. Long enough for the
   // XHR it triggered to land in the capture buffer, short enough that a

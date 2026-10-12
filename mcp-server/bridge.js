@@ -29,6 +29,9 @@ const {
   PROMOTION_BACKOFF_JITTER,
   MAX_SECONDARIES,
   IDLE_EVICTION_MS,
+  MAX_EXTENSION_CONCURRENCY,
+  PER_SECONDARY_QUEUE_DEPTH,
+  QUEUE_TIMEOUT_MS,
   POLTERTAB_HOME,
 } = require("./config.js");
 const updates = require("./update-check.js");
@@ -67,6 +70,84 @@ let unreachable = false;
 // arrives meanwhile so they cost one connection, not one each (R-S3).
 let isEvicted = false;
 let reconnect = null; // { promise, resolve, reject, timer }
+
+// Command queue, Primary side (PR-3). At most MAX_EXTENSION_CONCURRENCY
+// commands may be in flight to the extension at once. v2 Secondary commands
+// beyond that wait in a per-secondary FIFO, served round-robin across
+// secondaries and the primary itself. Legacy commands bypass the queue.
+//
+// queuedBySource maps sourceId → [{id, action, ackSentAt, callerWs, onDispatch,
+// onTimeout}]. sourceId is the secondary ws for proxy commands, or the symbol
+// PRIMARY_SOURCE for the primary's own commands. roundRobinOrder is the list of
+// active sources in round-robin order; rrCursor is the next position to serve.
+// waitHistory holds completed wait-times (ms) for /status percentiles.
+let extensionInFlight = 0;
+const PRIMARY_SOURCE = Symbol("primary");
+const queuedBySource = new Map();
+const roundRobinOrder = [];
+let rrCursor = 0;
+const waitHistory = [];
+
+// Enqueue an item for a source. If the source has no queue yet, append it to
+// the round-robin order so it gets served on the next dequeue.
+function _rrEnqueue(sourceId, item) {
+  if (!queuedBySource.has(sourceId)) {
+    queuedBySource.set(sourceId, []);
+    roundRobinOrder.push(sourceId);
+  }
+  queuedBySource.get(sourceId).push(item);
+}
+
+// Pop the next item according to the round-robin order. After taking from a
+// source, advance the cursor: if the source is now empty, remove it and leave
+// the cursor where it is (the next source slid into that slot); otherwise move
+// the cursor to the next source.
+function _rrDequeue() {
+  if (roundRobinOrder.length === 0) return null;
+  if (rrCursor >= roundRobinOrder.length) rrCursor = 0;
+  const sourceId = roundRobinOrder[rrCursor];
+  const items = queuedBySource.get(sourceId);
+  const item = items.shift();
+  if (items.length === 0) {
+    queuedBySource.delete(sourceId);
+    roundRobinOrder.splice(rrCursor, 1);
+    if (rrCursor >= roundRobinOrder.length) rrCursor = 0;
+  } else {
+    rrCursor = (rrCursor + 1) % roundRobinOrder.length;
+  }
+  return item;
+}
+
+// Try to dispatch as many queued items as the in-flight cap allows. Skips items
+// whose caller disconnected or whose deadline has passed (both are dropped
+// without consuming a slot).
+function _tryDequeue() {
+  while (extensionInFlight < MAX_EXTENSION_CONCURRENCY) {
+    if (roundRobinOrder.length === 0) break;
+    const item = _rrDequeue();
+    if (!item) break;
+
+    // Deadline check: ackSentAt + budget − 2 s. The −2 s keeps the secondary's
+    // own timeout from firing *after* the drop (the secondary re-arms to budget
+    // on the queued frame, so the margin is budget − (budget − 2 s) = 2 s).
+    if (Date.now() > item.ackSentAt + COMMAND_TIMEOUT_MS - 2000) {
+      item.onTimeout();
+      continue;
+    }
+    // Caller gone: drop silently.
+    if (item.callerWs && item.callerWs.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    extensionInFlight++;
+    const waitMs = Date.now() - item.ackSentAt;
+    waitHistory.push(waitMs);
+    if (waitHistory.length > 1000) waitHistory.shift();
+    item.onDispatch();
+    // onDispatch may or may not keep extensionInFlight++ live (it fires the
+    // extension send); the loop re-checks the cap after each dispatch.
+  }
+}
 
 function broadcastSessionState() {
   if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
@@ -121,7 +202,46 @@ function allowOrigin(info, cb) {
 
 function setupPrimaryServer() {
   const http = require("http");
-  httpServer = http.createServer();
+  httpServer = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/status") {
+      const now = Date.now();
+      const secondaries = [];
+      for (const [nid, ws] of secondaryClients.entries()) {
+        const srcQueue = queuedBySource.get(ws);
+        secondaries.push({
+          nodeId: nid,
+          version: ws.version || null,
+          protocol: ws.supportsNewCloseCodes ? "v2" : "legacy",
+          pid: ws.pid || null,
+          idle_ms: Math.floor(now - ws.lastCommandAt),
+          queued_commands: srcQueue ? srcQueue.length : 0,
+        });
+      }
+      let totalQueued = 0;
+      for (const items of queuedBySource.values()) totalQueued += items.length;
+      const sorted = waitHistory.slice().sort((a, b) => a - b);
+      const pct = (p) => sorted.length ? sorted[Math.floor((sorted.length - 1) * p)] : 0;
+      const body = JSON.stringify({
+        role: "primary",
+        pid: process.pid,
+        port: WS_PORT,
+        version: OWN_VERSION,
+        secondaries,
+        queue: {
+          in_flight: extensionInFlight,
+          max_in_flight: MAX_EXTENSION_CONCURRENCY,
+          queued: totalQueued,
+          max_queued_per_secondary: PER_SECONDARY_QUEUE_DEPTH,
+          wait_percentiles_ms: { p50: pct(0.5), p95: pct(0.95), p99: pct(0.99) },
+        },
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
 
   httpServer.on("error", (e) => {
     if (e.code === "EADDRINUSE") {
@@ -138,7 +258,21 @@ function setupPrimaryServer() {
     }
   });
 
-  httpServer.listen(WS_PORT, () => {
+  // On macOS, SO_REUSEADDR lets 127.0.0.1:port bind even when 0.0.0.0:port
+  // is already occupied, so EADDRINUSE alone does not detect an existing Primary.
+  // Probe before listen; keep the error handler as a fallback for the race window
+  // between a successful probe and the bind call.
+  probePrimary().then((alive) => {
+    if (alive) {
+      console.error(
+        `[PolterTab MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
+      );
+      httpServer.close();
+      httpServer = null;
+      startSecondaryMode();
+      return;
+    }
+    httpServer.listen(WS_PORT, "127.0.0.1", () => {
     console.error(
       `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
     );
@@ -203,9 +337,36 @@ function setupPrimaryServer() {
       }
     }, Math.max(100, Math.min(HEARTBEAT_MS, Math.floor(IDLE_EVICTION_MS / 2))));
 
+    // GC: drop queued commands that have outlived QUEUE_TIMEOUT_MS. The
+    // deadline check at dequeue handles most cases; this is a safety net for
+    // commands in a source that never gets dequeued (e.g. its slot is always
+    // occupied by a slow extension command). It fires the same onTimeout
+    // handler, which sends [queue_timeout] to the caller and removes the item.
+    const queueGcInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [sourceId, items] of queuedBySource.entries()) {
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (now - items[i].ackSentAt > QUEUE_TIMEOUT_MS) {
+            const [expired] = items.splice(i, 1);
+            expired.onTimeout();
+          }
+        }
+        if (items.length === 0) {
+          queuedBySource.delete(sourceId);
+          const idx = roundRobinOrder.indexOf(sourceId);
+          if (idx !== -1) {
+            roundRobinOrder.splice(idx, 1);
+            if (rrCursor > idx) rrCursor--;
+            if (rrCursor >= roundRobinOrder.length) rrCursor = 0;
+          }
+        }
+      }
+    }, Math.min(QUEUE_TIMEOUT_MS, 10000));
+
     wss.on("close", () => {
       clearInterval(interval);
       clearInterval(evictionInterval);
+      clearInterval(queueGcInterval);
     });
 
     // Network State Garbage Collector (TTL: 5 minutes)
@@ -222,6 +383,7 @@ function setupPrimaryServer() {
     }, NETWORK_GC_INTERVAL_MS);
 
     setupPrimaryWss(wss);
+    });
   });
 }
 
@@ -366,6 +528,17 @@ function connectToPrimary() {
         finishReconnect();
         return;
       }
+      // `queued` and `dispatched` frames re-arm the awaitReply timer (U11)
+      // but never settle the command — the reply does that.
+      if (
+        (msg.type === "queued" || msg.type === "dispatched") &&
+        msg.id &&
+        pendingCommands.has(msg.id)
+      ) {
+        const entry = pendingCommands.get(msg.id);
+        if (entry && entry.resetTimer) entry.resetTimer();
+        return;
+      }
       if (msg.id && pendingCommands.has(msg.id)) {
         const { resolve, reject, timer } = pendingCommands.get(msg.id);
         clearTimeout(timer);
@@ -508,6 +681,27 @@ async function readNetworkState(params = {}) {
   return { tabId, capturedRequests: data.length, data };
 }
 
+// Dispatch a proxy command to the extension. Must be called AFTER
+// extensionInFlight has already been incremented by the caller. Arms the
+// command timeout; on either a reply or a timeout, decrements extensionInFlight
+// and drains the queue so the next waiting command gets its turn.
+function _dispatchProxyNow(callerWs, id, action, params) {
+  const timer = setTimeout(() => {
+    pendingCommands.delete(id);
+    extensionInFlight--;
+    _tryDequeue();
+    if (callerWs.readyState === WebSocket.OPEN) {
+      callerWs.send(
+        JSON.stringify({ id, success: false, error: `Command '${action}' timed out.` }),
+      );
+    }
+  }, COMMAND_TIMEOUT_MS);
+  pendingCommands.set(id, { isProxy: true, sourceWs: callerWs, timer });
+  extensionSocket.send(
+    JSON.stringify({ ..._buildEnvelope(action, params, callerWs.nodeId), id }),
+  );
+}
+
 function setupPrimaryWss(wss) {
   wss.on("connection", (ws) => {
     ws.isAlive = true;
@@ -644,29 +838,73 @@ function setupPrimaryWss(wss) {
             return;
           }
 
-          const timer = setTimeout(() => {
-            pendingCommands.delete(id);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(
-                JSON.stringify({
+          // Legacy secondaries bypass the queue: they cannot receive `queued`
+          // or `dispatched` frames, so they go straight to the extension and
+          // keep today's timing contract. They still count toward extensionInFlight
+          // so v2 commands behind them wait their turn.
+          if (!ws.supportsNewCloseCodes) {
+            extensionInFlight++;
+            const timer = setTimeout(() => {
+              pendingCommands.delete(id);
+              extensionInFlight--;
+              _tryDequeue();
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ id, success: false, error: `Command '${action}' timed out.` }));
+              }
+            }, COMMAND_TIMEOUT_MS);
+            pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
+            extensionSocket.send(JSON.stringify({ ..._buildEnvelope(action, msg.params, ws.nodeId), id }));
+            return;
+          }
+
+          // v2 Secondary: use the concurrency cap and queue.
+          if (extensionInFlight < MAX_EXTENSION_CONCURRENCY) {
+            // Free slot: dispatch immediately. No queued frame.
+            extensionInFlight++;
+            _dispatchProxyNow(ws, id, action, msg.params);
+          } else {
+            // Slot full: enqueue if there is room in this secondary's queue.
+            const srcQueue = queuedBySource.get(ws);
+            const depth = srcQueue ? srcQueue.length : 0;
+            if (depth >= PER_SECONDARY_QUEUE_DEPTH) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
                   id,
                   success: false,
-                  error: `Command '${action}' timed out.`,
-                }),
-              );
+                  error: `[queue_full action=${action}] Per-secondary queue depth (${PER_SECONDARY_QUEUE_DEPTH}) reached. Try again shortly.`,
+                }));
+              }
+              return;
             }
-          }, COMMAND_TIMEOUT_MS);
-
-          pendingCommands.set(id, { isProxy: true, sourceWs: ws, timer });
-          // Same envelope construction as the direct path, so a tool argument
-          // named id or action cannot override the routing here either. The
-          // Primary's own id is kept last: pendingCommands is keyed on it.
-          extensionSocket.send(
-            JSON.stringify({
-              ..._buildEnvelope(action, msg.params, ws.nodeId),
+            const ackSentAt = Date.now();
+            const position = depth + 1;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "queued", id, position }));
+            }
+            _rrEnqueue(ws, {
               id,
-            }),
-          );
+              action,
+              params: msg.params,
+              nodeId: ws.nodeId,
+              ackSentAt,
+              callerWs: ws,
+              onDispatch() {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "dispatched", id }));
+                }
+                _dispatchProxyNow(ws, id, action, msg.params);
+              },
+              onTimeout() {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    id,
+                    success: false,
+                    error: `[queue_timeout action=${action}] Command queued too long; dropped to prevent ghost execution.`,
+                  }));
+                }
+              },
+            });
+          }
           return;
         }
 
@@ -760,6 +998,12 @@ function setupPrimaryWss(wss) {
           clearTimeout(cmd.timer);
           pendingCommands.delete(msg.id);
 
+          // Every reply frees a slot; try to drain the queue before doing
+          // anything else so the next command lands on the extension with
+          // minimum latency.
+          extensionInFlight--;
+          _tryDequeue();
+
           if (cmd.isProxy) {
             // Idle time counts from the reply, so a long command cannot leave
             // its Secondary already due for eviction the moment it finishes.
@@ -829,12 +1073,25 @@ async function waitForConnection(timeoutMs = 5000) {
 function awaitReply(envelope, { timedOut, sendFailed }) {
   const { id, action } = envelope;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    let timer = setTimeout(() => {
       pendingCommands.delete(id);
       reject(new Error(timedOut));
     }, COMMAND_TIMEOUT_MS);
 
-    pendingCommands.set(id, { resolve, reject, timer, action });
+    // Re-arm the timer when the Primary sends a `queued` or `dispatched`
+    // frame (U11). The frame means the Primary is actively working on this
+    // command and extends the budget by a full COMMAND_TIMEOUT_MS from now.
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        pendingCommands.delete(id);
+        reject(new Error(timedOut));
+      }, COMMAND_TIMEOUT_MS);
+      const entry = pendingCommands.get(id);
+      if (entry) entry.timer = timer;
+    };
+
+    pendingCommands.set(id, { resolve, reject, timer, action, resetTimer });
 
     try {
       extensionSocket.send(JSON.stringify(envelope));
@@ -906,13 +1163,57 @@ async function sendCommand(action, params) {
     );
   }
 
-  return awaitReply(
-    _buildEnvelope(action, params, nodeId),
-    {
-      timedOut: `Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`,
-      sendFailed: (e) => `Failed to send command over WebSocket: ${e.message}`,
-    },
-  );
+  const envelope = _buildEnvelope(action, params, nodeId);
+  const timedOut = `Command '${action}' timed out after ${COMMAND_TIMEOUT_MS / 1000} seconds.`;
+  const sendFailed = (e) => `Failed to send command over WebSocket: ${e.message}`;
+
+  // Primary's own commands share the concurrency cap and the round-robin
+  // queue with proxy commands. The timer is armed at dispatch, not enqueue,
+  // so the budget does not shrink while the command waits for a free slot.
+  if (extensionInFlight < MAX_EXTENSION_CONCURRENCY) {
+    extensionInFlight++;
+    return _awaitPrimaryReply(envelope, { timedOut, sendFailed });
+  }
+  return new Promise((resolve, reject) => {
+    const ackSentAt = Date.now();
+    _rrEnqueue(PRIMARY_SOURCE, {
+      id: envelope.id,
+      action: envelope.action,
+      ackSentAt,
+      callerWs: null, // no secondary WS — primary commands have no caller socket
+      onDispatch() {
+        // extensionInFlight already incremented by _tryDequeue
+        _awaitPrimaryReply(envelope, { timedOut, sendFailed }).then(resolve, reject);
+      },
+      onTimeout() {
+        reject(new Error(timedOut));
+      },
+    });
+  });
+}
+
+// Register, arm, send, and settle one primary-mode command. Called after
+// extensionInFlight has already been incremented.
+function _awaitPrimaryReply(envelope, { timedOut, sendFailed }) {
+  const { id, action } = envelope;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingCommands.delete(id);
+      extensionInFlight--;
+      _tryDequeue();
+      reject(new Error(timedOut));
+    }, COMMAND_TIMEOUT_MS);
+    pendingCommands.set(id, { resolve, reject, timer, action });
+    try {
+      extensionSocket.send(JSON.stringify(envelope));
+    } catch (err) {
+      clearTimeout(timer);
+      pendingCommands.delete(id);
+      extensionInFlight--;
+      _tryDequeue();
+      reject(new Error(sendFailed(err)));
+    }
+  });
 }
 
 // The Primary's view of which tab the agent is working in, shown in the
