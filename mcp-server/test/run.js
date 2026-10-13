@@ -27,7 +27,8 @@ const { results } = require("./harness.js");
 // One file per group, run in order. Adding a group is adding a file.
 //   U  connection arbitration extras   (::1 reach, idle eviction / lazy reconnect)
 //   V  legacy-bind regression          (macOS SO_REUSEADDR, /status loopback-only)
-const GROUPS = "abcdefghijklmnopqrstuv".split("");
+//   W  extension reconnect + version   (immediate redial, 4002, never-connected vs reconnecting)
+const GROUPS = "abcdefghijklmnopqrstuvw".split("");
 
 (async () => {
   console.log("PolterTab regression suite");

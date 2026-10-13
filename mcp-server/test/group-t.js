@@ -58,7 +58,7 @@ function proxy(f, id, params = {}) {
 function fakePrimary(port) {
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
-  const st = { server, wss, tcp: 0, conns: [], ackDelay: 0, onCommand: null };
+  const st = { server, wss, tcp: 0, conns: [], ackDelay: 0, onCommand: null, onHandshake: null };
   server.on("connection", () => st.tcp++);
   st.reply = (c, m) =>
     c.ws.send(JSON.stringify({ id: m.id, success: true, data: { url: "http://fake-primary/", title: "F", tabId: 7 } }));
@@ -73,6 +73,7 @@ function fakePrimary(port) {
       if (m.type === "secondary_mcp") {
         c.nodeId = m.nodeId;
         c.version = m.version;
+        if (st.onHandshake) return st.onHandshake(c, m);
         const ack = () => {
           if (ws.readyState !== WebSocket.OPEN) return;
           c.ackAt = Date.now();
@@ -362,3 +363,5 @@ async function groupT() {
 }
 
 module.exports = groupT;
+// Group W (extension reconnect + version handshake) scripts its own Primary.
+Object.assign(groupT, { fakePrimary, errText });
