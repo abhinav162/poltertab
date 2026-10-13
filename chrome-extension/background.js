@@ -121,6 +121,7 @@ importScripts(
     };
 
     sock.onmessage = async (event) => {
+      reconnect.up();
       let msg;
       try {
         msg = JSON.parse(event.data);

@@ -76,6 +76,12 @@ let unreachable = false;
 let isEvicted = false;
 let reconnect = null; // { promise, resolve, reject, timer }
 
+// Set once a Primary has accepted this node. If it later promotes, the
+// extension was almost certainly on the Primary that died and is on its way
+// here, so "reconnecting" is the honest answer, not "never connected". A node
+// never accepted has no reason to believe an extension exists.
+let everAccepted = false;
+
 // A 4002 from the Primary: this node's major version cannot talk to it.
 // Retrying cannot help until one side is upgraded, which means a restart, so
 // the node stops here — no redial, no promotion — and every command says why.
@@ -191,6 +197,18 @@ function incompatibleError() {
     `[version_incompatible] The Primary on port ${WS_PORT} requires PolterTab ${incompatible.required || "another major version"}; ` +
     `this server is ${incompatible.got || OWN_VERSION}. Run: npm update -g poltertab, then restart every session using this browser.`
   );
+}
+
+// The 4002 close reason. RFC 6455 caps it at 123 bytes and ws throws past
+// that — which used to leave the peer unclosed and retrying forever. `got`
+// is peer-supplied, so it is cut to printable ASCII and shortened until the
+// encoded reason fits.
+function versionReason(ours, theirs) {
+  let got = String(theirs).replace(/[^\x20-\x7e]/g, "?").slice(0, 32);
+  const build = () =>
+    JSON.stringify({ reason: "version_incompatible", required: `${ours}.x`, got });
+  while (Buffer.byteLength(build()) > 123) got = got.slice(0, -1);
+  return build();
 }
 
 // "1.7.0" -> 1. Anything else (a label like "test", a missing field) has no
@@ -571,6 +589,7 @@ async function promoteOrRejoin() {
     return;
   }
   isSecondary = false;
+  if (everAccepted && extensionLostAt === null) extensionLostAt = Date.now();
   setupPrimaryServer();
 }
 
@@ -610,6 +629,7 @@ function connectToPrimary() {
       // are handled before the id branch so none can settle a pending command.
       if (msg.type === "secondary_accepted") {
         accepted = true;
+        everAccepted = true;
         backoffAttempt = 0;
         refusal = null;
         unreachable = false;
@@ -847,15 +867,7 @@ function setupPrimaryWss(wss) {
             console.error(
               `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - version ${msg.version} is incompatible with ${OWN_VERSION}.`,
             );
-            ws.close(
-              4002,
-              JSON.stringify({
-                reason: "version_incompatible",
-                required: `${ours}.x`,
-                // A close reason is capped at 123 bytes (RFC 6455).
-                got: msg.version.slice(0, 32),
-              }),
-            );
+            ws.close(4002, versionReason(ours, msg.version));
             return;
           }
           if (ws.supportsNewCloseCodes) {

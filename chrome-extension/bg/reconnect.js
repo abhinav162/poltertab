@@ -9,29 +9,49 @@
 //
 // One timer at a time, cleared on every connect, so the alarm and this loop
 // can both call connect() without opening two sockets — connect() itself
-// refuses while a socket is CONNECTING or OPEN. Loaded by background.js with
-// importScripts; exports one factory and registers no listeners.
+// refuses while a socket is CONNECTING or OPEN.
+//
+// Opening is not enough to reset the back-off: a listener that accepts and
+// closes at once would otherwise be redialled in a tight loop. A connection
+// counts as up once it delivers a message (a PolterTab bridge answers
+// extension_ready straight away) or stays open STABLE_MS.
+//
+// Loaded by background.js with importScripts; exports one factory and
+// registers no listeners.
 
 self.PT = self.PT || {};
 
 self.PT.makeReconnect = ({ connect }) => {
   const FIRST_DELAY_MS = 1000;
   const MAX_DELAY_MS = 30000;
+  const STABLE_MS = 5000;
   // 0 means the next failure is redialled immediately.
   let failures = 0;
   let timer = null;
+  let stableTimer = null;
 
   function cancel() {
     clearTimeout(timer);
     timer = null;
+    clearTimeout(stableTimer);
+    stableTimer = null;
+  }
+
+  // The connection works: the next outage starts the schedule from the top.
+  function up() {
+    clearTimeout(stableTimer);
+    stableTimer = null;
+    failures = 0;
   }
 
   return {
-    // A socket opened: the next outage starts the schedule from the top.
+    // A socket opened. Stop retrying, but keep the count until it proves up.
     connected() {
       cancel();
-      failures = 0;
+      stableTimer = setTimeout(up, STABLE_MS);
     },
+    // A message arrived on the open socket.
+    up,
     // A socket closed, whether or not it ever opened.
     disconnected() {
       cancel();
