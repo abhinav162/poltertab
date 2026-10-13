@@ -250,6 +250,16 @@ limit). A secondary refused for capacity is told why and retries with backoff
 secondary promotes itself to replace it and the others reconnect to it. The
 extension popup lists whichever agents are connected.
 
+A secondary that sends no command for 5 minutes gives up its slot and
+reconnects on its next tool call (`POLTERTAB_IDLE_EVICTION_MS`). The primary
+sends at most 6 commands to the extension at once
+(`POLTERTAB_MAX_CONCURRENCY`) and queues up to 3 more per secondary
+(`POLTERTAB_QUEUE_DEPTH`), taking turns between secondaries. A command beyond
+that fails at once with `[queue_full]`; one that waits longer than 60s fails
+with `[queue_timeout]` and never runs (`POLTERTAB_QUEUE_TIMEOUT_MS`).
+`curl http://127.0.0.1:7822/status` shows the primary's secondaries and queue.
+It answers on this machine only.
+
 **Changing the WebSocket Port:**
 Only needed when something that *isn't* PolterTab already holds `7822` —
 PolterTab servers share that port by design (see above). Both sides must move:
