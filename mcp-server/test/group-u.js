@@ -458,19 +458,33 @@ async function groupU() {
         assert.strictEqual(res.headers["access-control-allow-origin"], undefined);
       });
 
-      await test("U16 the Primary listens on loopback only", async () => {
+      await test("U16 from a non-loopback address /status is refused and the bridge rejects a foreign origin", async () => {
         const lan = Object.values(os.networkInterfaces()).flat()
           .find((i) => i && i.family === "IPv4" && !i.internal);
-        if (!lan) return console.log("          (no non-loopback IPv4 address here; checked loopback only)");
-        let reachable = true;
-        try {
-          await getStatus(port, { host: lan.address });
-        } catch (e) {
-          reachable = !/ECONNREFUSED/.test(e.message);
-        }
-        assert.ok(!reachable, `reachable from the network at ${lan.address}:${port}`);
+        if (!lan) return console.log("          (no non-loopback IPv4 address; skipped)");
+
+        // /status from LAN IP: refused at the application layer (wildcard TCP
+        // bind is intentional — it makes legacy servers get EADDRINUSE — but
+        // /status data must never leak to pages on the network).
+        const statusRes = await getStatus(port, { host: lan.address });
+        assert.strictEqual(statusRes.status, 404, `/status from ${lan.address} must be 404`);
+        assert.strictEqual(statusRes.body, "", "no body leaked to non-loopback caller");
+
+        // WebSocket upgrade from LAN with a foreign page origin must be rejected
+        // (allowOrigin guard), so LAN reachability cannot drive the bridge.
+        const rejected = await new Promise((resolve) => {
+          const ws = new WebSocket(`ws://${lan.address}:${port}`, {
+            headers: { Origin: "http://evil.example.com" },
+            handshakeTimeout: 3000,
+          });
+          ws.once("open", () => { ws.terminate(); resolve(false); });
+          ws.once("error", () => resolve(true));
+        });
+        assert.ok(rejected, "WebSocket with foreign origin from LAN must be rejected");
+
+        // Loopback /status still works.
         const local = await getStatus(port, { host: "127.0.0.1" });
-        assert.strictEqual(local.status, 200, "and not on 127.0.0.1");
+        assert.strictEqual(local.status, 200, "/status from 127.0.0.1 must still be 200");
       });
     } finally {
       for (const f of all) f.ws.terminate();
