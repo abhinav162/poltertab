@@ -54,7 +54,7 @@ let isSecondary = false;
 let nodeId = null;
 let wss = null;
 let httpServer = null;
-let httpServer6 = null; // IPv6 loopback companion; null if host has no IPv6
+// (httpServer6 removed — wildcard bind covers ::1; see fix/legacy-bind)
 
 // Secondary-side retry state. One counter for the whole reconnect/probe/promote
 // cycle, reset only by a Primary's secondary_accepted; `refusal` and
@@ -216,8 +216,14 @@ function allowOrigin(info, cb) {
 
 function setupPrimaryServer() {
   const http = require("http");
+  const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
   const handleRequest = (req, res) => {
     if (req.method === "GET" && req.url === "/status") {
+      if (!LOOPBACK.has(req.socket.remoteAddress)) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       const now = Date.now();
       const secondaries = [];
       for (const [nid, ws] of secondaryClients.entries()) {
@@ -268,26 +274,20 @@ function setupPrimaryServer() {
       httpServer.close();
       httpServer = null;
       startSecondaryMode();
-      // NICE-2 residual race: a legacy (wildcard-binding) PolterTab that starts
-      // in the ms between a successful probe and our listen() call will bind
-      // undetected on macOS — SO_REUSEADDR lets 127.0.0.1 bind over 0.0.0.0,
-      // so the new loopback Primary dual-binds silently.  That window is
-      // milliseconds and requires two simultaneous starts; not worth a retry
-      // loop, but do not remove the probe and rely on this handler alone.
     } else {
       console.error(`[PolterTab MCP] HTTP server error: ${e.message}`);
     }
   });
 
-  // Why probe-first (SHOULD-1 narrative, real reason for this change):
-  // PR-3 routes /status to loopback only, so the whole Primary now binds
-  // 127.0.0.1 instead of 0.0.0.0.  On macOS, libuv sets SO_REUSEADDR, and
-  // BSD/macOS lets a specific-address bind succeed silently over a live
-  // wildcard listener — so the new loopback-binding Primary would start beside
-  // a pre-1.8 (wildcard) PolterTab without getting EADDRINUSE, then steal all
-  // loopback traffic.  S11 is the regression test: it places a wildcard fixture
-  // and asserts the bridge-under-test demotes instead of dual-binding.  The
-  // EADDRINUSE handler above remains as the fallback for same-host races.
+  // Why probe-first (SHOULD-1 narrative):
+  // We bind :: (IPv6 wildcard, dual-stack) so a second wildcard bind from a
+  // legacy 1.7.x/beta.1 server gets EADDRINUSE on every platform.  But on
+  // macOS SO_REUSEADDR, a wildcard bind does NOT give EADDRINUSE when the
+  // existing listener is a specific-address bind (127.0.0.1/::1) — the old
+  // regression this PR fixes.  The probe detects a real primary already
+  // serving 127.0.0.1 and demotes us before we call listen(), avoiding a
+  // race in the milliseconds between a successful probe and our own bind.
+  // The EADDRINUSE handler above covers the symmetric case.
   probePrimary().then((alive) => {
     if (alive) {
       console.error(
@@ -298,7 +298,7 @@ function setupPrimaryServer() {
       startSecondaryMode();
       return;
     }
-    httpServer.listen(WS_PORT, "127.0.0.1", () => {
+    httpServer.listen(WS_PORT, () => {
     wss = new WebSocket.WebSocketServer({
       server: httpServer,
       verifyClient: allowOrigin,
@@ -409,35 +409,13 @@ function setupPrimaryServer() {
 
     setupPrimaryWss(wss);
 
-    // Also listen on ::1 (IPv6 loopback) so Node 18 clients work: Node 18
-    // resolves 'localhost' to ::1 first with no happy-eyeballs fallback.
-    // Skip cleanly when the host has no IPv6 stack (EADDRNOTAVAIL/EAFNOSUPPORT).
-    // On macOS, SO_REUSEADDR lets a specific-address ::1 bind succeed silently
-    // over a live :: wildcard listener — but we only set up httpServer6 AFTER
-    // probing 127.0.0.1, so a false-primary that owns :: would be caught by that
-    // probe (it also owns 127.0.0.1) and we would have gone Secondary already.
-    //
-    // The "listening" log is delayed until ::1 is ready (or skipped) so that
-    // any client connecting on the log signal can reach both addresses.
-    const SKIP_IPV6 = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT", "EPROTONOSUPPORT"]);
-    const logListening = () =>
-      console.error(
-        `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
-      );
-    httpServer6 = http.createServer(handleRequest);
-    httpServer6.on("error", (e) => {
-      if (SKIP_IPV6.has(e.code)) {
-        httpServer6 = null;
-      } else {
-        console.error(`[PolterTab MCP] IPv6 loopback error: ${e.message}`);
-      }
-      logListening();
-    });
-    httpServer6.once("listening", logListening);
-    httpServer6.on("upgrade", (req, socket, head) => {
-      wss.handleUpgrade(req, socket, head, (client) => wss.emit("connection", client, req));
-    });
-    httpServer6.listen(WS_PORT, "::1");
+    // Wildcard bind (:: dual-stack) covers both 127.0.0.1 and ::1, so Node 18
+    // clients that resolve localhost → ::1 reach the primary without a separate
+    // httpServer6.  A legacy server attempting listen(port) with no host gets
+    // EADDRINUSE because two wildcard binds on the same port always collide.
+    console.error(
+      `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
+    );
     });
   });
 }
@@ -1125,7 +1103,6 @@ function shutdown() {
   console.error("[PolterTab MCP] Shutting down...");
   if (wss) wss.close();
   if (httpServer) httpServer.close();
-  if (httpServer6) httpServer6.close();
   process.exit(0);
 }
 // Helper to wait for WebSocket connection
