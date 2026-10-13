@@ -39,6 +39,9 @@ const { fakePrimary, errText } = require("./group-t.js");
 // W9–W12 version handshake: 4002 for a major mismatch, nothing for the rest
 // W13    the Secondary's side of 4002: one clear error, no retry storm
 // W14–15 /status Host allowlist (DNS rebinding); bad Origin over ::1
+// W16–17 a connection must prove itself before the back-off resets
+// W18–19 a promoted Primary says reconnecting, unless it was never accepted
+// W20    4002 reason stays within 123 bytes whatever the version string
 
 const OWN_MAJOR = Number(require(path.join(REPO, "package.json")).version.split(".")[0]);
 
@@ -251,7 +254,7 @@ async function groupW() {
     assert.deepStrictEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   });
 
-  await test("W2 a successful connection resets the back-off", () => {
+  await test("W2 a connection that stays up resets the back-off", () => {
     const w = extensionWorker();
     w.open();
     w.drop();
@@ -260,6 +263,7 @@ async function groupW() {
     w.drop();
     w.advance(2000);
     w.open(); // back
+    w.advance(5000); // and stays up
     assert.strictEqual(w.pending().length, 0, "a retry timer survived the connection");
     const before = w.sockets.length;
     w.drop();
@@ -312,6 +316,36 @@ async function groupW() {
     return sleep(50).then(() =>
       assert.ok(b.sent.some((m) => m.id === "w5"), "the live socket no longer carries replies"),
     );
+  });
+
+  await test("W16 a listener that accepts then closes at once is backed off, not redialled in a loop", () => {
+    const w = extensionWorker();
+    w.open();
+    w.drop(); // first outage: immediate redial
+    const delays = [];
+    for (let i = 0; i < 3; i++) {
+      w.open(); // accepted ...
+      w.drop(); // ... and closed straight away, no message
+      const p = w.pending().filter((t) => t.delay > 0 && t.delay <= 30000 && t.delay !== 5000);
+      assert.strictEqual(p.length, 1, `flap ${i + 1}: redialled with no back-off`);
+      delays.push(p[0].delay);
+      w.advance(p[0].delay);
+    }
+    assert.deepStrictEqual(delays, [1000, 2000, 4000]);
+  });
+
+  await test("W17 a connection that delivers a message counts as up: the next outage redials at once", () => {
+    const w = extensionWorker();
+    w.open();
+    w.drop();
+    w.open();
+    w.drop(); // flapping: back-off armed
+    w.advance(1000);
+    w.open();
+    w.last().onmessage({ data: JSON.stringify({ type: "state_update", sessions: [] }) });
+    const before = w.sockets.length;
+    w.drop();
+    assert.strictEqual(w.sockets.length, before + 1, "a working connection did not reset the back-off");
   });
 
   // ── W6–W8: why the extension is missing ──
@@ -429,6 +463,77 @@ async function groupW() {
     } finally {
       await stop(node);
       await primary.close();
+    }
+  }
+
+  // ── W18–W19: a promoted Primary knows the extension is on its way ──
+  {
+    const port = await freePort();
+    const first = startServer({ port });
+    let node = null;
+    try {
+      await waitFor("primary listening", () => first.stderr.includes("WebSocket server listening"));
+      node = startServer({ port });
+      await waitFor("node accepted", () => node.stderr.includes("Connected to Primary MCP Server"), 10000);
+      await sleep(300);
+      await initialize(node);
+      first.proc.kill("SIGKILL");
+      await waitFor("node promoted", () => node.stderr.includes("WebSocket server listening"), 15000);
+      await test("W18 a Secondary that promotes after its Primary died says extension_reconnecting", async () => {
+        const text = errText(await rpc(node, "tools/call", { name: "browser_get_url", arguments: {} }));
+        assert.ok(new RegExp(`\\[extension_reconnecting port=${port} elapsed=\\d+s\\]`).test(text), text);
+      });
+    } finally {
+      await stop(first, node);
+    }
+  }
+  {
+    // Never accepted: the thing on the port never answered the handshake, so
+    // this node has no reason to think an extension exists.
+    const port = await freePort();
+    const silent = fakePrimary(port);
+    silent.onHandshake = () => {};
+    await silent.listen();
+    const node = startServer({ port });
+    try {
+      await waitFor("node dialled", () => silent.conns.length >= 1, 10000);
+      await initialize(node);
+      await silent.close();
+      await waitFor("node promoted", () => node.stderr.includes("WebSocket server listening"), 20000);
+      await test("W19 a node that promotes without ever being accepted still says extension_never_connected", async () => {
+        const text = errText(await rpc(node, "tools/call", { name: "browser_get_url", arguments: {} }));
+        assert.ok(text.includes(`[extension_never_connected port=${port}]`), text);
+      });
+    } finally {
+      await stop(node);
+    }
+  }
+
+  // ── W20: a hostile version string still gets a valid 4002 ──
+  {
+    const { port, srv } = await primaryOn();
+    const fakes = [];
+    try {
+      const hostile = [
+        `${OWN_MAJOR + 1}.` + "\u0001".repeat(30),
+        `${OWN_MAJOR + 1}.` + "\u00e9".repeat(60),
+        `${OWN_MAJOR + 1}.` + '"\\'.repeat(40),
+      ];
+      for (const v of hostile) fakes.push(fakeSecondary(port, { version: v }));
+      await waitFor("all closed", () => fakes.every((f) => f.closed), 5000).catch(() => {});
+      await test("W20 a version full of control, non-ASCII or escaped characters is still closed 4002 within 123 bytes", () => {
+        fakes.forEach((f, i) => {
+          assert.strictEqual(f.code, 4002, `hostile version ${i}: closed with ${f.code}`);
+          assert.ok(Buffer.byteLength(f.reason) <= 123, `hostile version ${i}: ${Buffer.byteLength(f.reason)}-byte reason`);
+          const info = JSON.parse(f.reason);
+          assert.strictEqual(info.reason, "version_incompatible");
+          assert.ok(/^[\x20-\x7e]*$/.test(info.got), `got is not printable ASCII: ${JSON.stringify(info.got)}`);
+        });
+        assert.ok(!srv.stderr.includes("Failed to parse message"), "close failure was logged as a parse error");
+      });
+    } finally {
+      for (const f of fakes) f.ws.terminate();
+      await stop(srv);
     }
   }
 
