@@ -2,11 +2,13 @@
 
 All notable changes to PolterTab are documented here.
 
-## 1.8.0 (beta — beta.1…beta.3 on npm `beta`; extension reconnect and version handshake not yet in any beta)
+## 1.8.0 — 2026-10-14
 
-Builds on 1.7.0. 1.8.0-beta.1 through beta.3 are published (`npm install -g poltertab@beta`)
-and contain PR-1 (#22), PR-2 (#23), PR-3 (#24), and the macOS legacy-bind fix (#25).
-Only PR-4 (extension reconnect + version handshake, #26) is not yet in any beta.
+Builds on 1.7.0. Contains PR-1 (#22), PR-2 (#23), PR-3 (#24), the macOS legacy-bind
+fix (#25), PR-4 (extension reconnect + version handshake, #26) and the docs (#27).
+1.8.0-beta.1 through beta.3 carried everything except PR-4.
+Update **both** the npm package and the Chrome extension: the extension reconnect
+needs the 1.8.0 extension.
 All changes are in the MCP server (`mcp-server/bridge.js`, `mcp-server/config.js`)
 and the Chrome extension (`chrome-extension/`). No breaking changes to MCP tool names or parameters.
 
