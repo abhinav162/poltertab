@@ -53,6 +53,7 @@ jobs:
             poltertab-*.tgz
             poltertab-extension-*.zip
           retention-days: 14
+          overwrite: true
 
   release-meta:
     # Cheap guard so a version mismatch surfaces on the PR that introduced it,

@@ -32,11 +32,11 @@ Dwight runs registry smoke test
 On a release-please PR, CI uploads the tarball and extension zip.  Download them:
 
 ```bash
-# List recent runs on the PR branch to find the run ID:
+# Find the CI run for the release-please PR:
 gh run list --branch release-please--node--main --repo abhinav162/poltertab
 
-# Download artifacts from a specific run:
-gh run download <run-id> --name release-artifacts-<sha> --repo abhinav162/poltertab
+# Download all artifacts from that run (no --name needed):
+gh run download <run-id> --repo abhinav162/poltertab
 ```
 
 ## PR title rules
