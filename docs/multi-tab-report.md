@@ -10,7 +10,7 @@ Tabs were tied to sessions, and the session state had several real bugs.
 
 1. **One global pointer for every agent.** `chrome-extension/background.js:52`
    (`activeSession`) and `:57` (`lastNavigatedTabId`) were single values in the
-   extension. One extension serves the primary server and up to 5 secondaries,
+   extension. One extension serves the primary server and up to 50 v2 secondaries (as of 1.8; was 5 in 1.7),
    and `resolve()` set `activeSession` on any call that named a session
    (`:222`, `:232`). So a secondary's call moved the primary's pointer, and the
    primary's next untargeted click landed in the secondary's tab.

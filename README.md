@@ -244,8 +244,82 @@ themselves into **secondary** mode, proxying their commands through the primary,
 so concurrent agents share one browser with no extra configuration. The
 primary tags each secondary's commands with its id, and the extension keeps a
 separate current tab per agent, so agents get their own tabs. Up to
-5 secondaries are accepted, and if the primary exits one of them promotes itself
-to replace it. The extension popup lists whichever agents are connected.
+`POLTERTAB_MAX_SECONDARIES` v2 secondaries are accepted (default 50); if the
+primary exits, one secondary promotes itself to replace it. The extension popup
+lists whichever agents are connected.
+
+**How many agents can share one browser:**
+Up to 50 v2 secondaries (one process each) plus the primary can share one
+browser. Raise or lower the ceiling with `POLTERTAB_MAX_SECONDARIES`. An agent
+that is idle for `POLTERTAB_IDLE_EVICTION_MS` (default 5 minutes) is evicted
+with close code 4001 to free the slot; it reconnects automatically the next time
+it sends a command, so eviction is transparent to the agent. An agent whose
+major version does not match the primary's is refused with close code 4002 —
+see [Upgrade path](#upgrade-path-1x--18) below.
+
+**Command queue:**
+The primary limits how many commands it sends to the extension at once
+(`POLTERTAB_MAX_CONCURRENCY`, default 6). When that limit is reached, a v2
+secondary's command is queued per-secondary (up to `POLTERTAB_QUEUE_DEPTH`
+slots, default 3). The queued command is acknowledged immediately with
+`{"type":"queued","id":"...","position":N}` so the caller knows its command is
+pending, not lost. A v2 secondary re-arms its 35 s timeout on this
+acknowledgement and again on `{"type":"dispatched","id":"..."}` when the command
+leaves the queue, so queue wait never consumes the execution budget. A command
+that arrives when the per-secondary queue is already full is refused immediately
+with `[queue_full action=X]`. The primary itself queues its own direct commands
+under the same ceiling. A queued command is dropped with `[queue_timeout action=X]`
+when the caller's 35 s budget is nearly spent (a 2 s margin keeps the drop ahead
+of the caller's own timer). `POLTERTAB_QUEUE_TIMEOUT_MS` (default 60 s) is a
+separate GC backstop for commands in a queue that never gets dequeued; it does
+not extend queue wait time.
+
+**`/status` endpoint:**
+`GET http://127.0.0.1:7822/status` returns a JSON snapshot of the primary's
+queue state, connected agents, and wait-time percentiles (p50/p95/p99). It is
+restricted to loopback callers (`127.0.0.1`, `::1`, or `::ffff:127.0.0.1`) and
+to requests whose `Host` header names `localhost` or a loopback address; all
+others receive 404.
+
+**Extension reconnection:**
+The Chrome extension reconnects automatically when the bridge server restarts or
+the WebSocket drops. It dials immediately on disconnect, then backs off 1 s,
+2 s, 4 s … up to 30 s, with an alarm that wakes the service worker if it was
+suspended mid-schedule. While reconnecting, commands return:
+
+- `[extension_reconnecting port=7822 elapsed=Xs]` — the extension disconnected
+  and is on its way back. Retry shortly.
+- `[extension_never_connected port=7822]` — the extension has never connected to
+  this server instance. Check that the extension is installed, enabled, and
+  pointed at the right port.
+
+**Close codes:**
+
+| Code | Meaning | Agent behaviour |
+|------|---------|-----------------|
+| 4001 | Idle eviction — the agent was silent for `POLTERTAB_IDLE_EVICTION_MS` | Secondary dials again lazily on next command; no action needed |
+| 4002 | Version mismatch — major version incompatible with the primary | Secondary stops retrying until restarted; update the npm package so every session runs the same major |
+
+**Upgrade path (1.x → 1.8):**
+PolterTab 1.8 introduces a version handshake. A secondary whose major version
+does not match the primary's receives close code 4002 and stops retrying; updating
+the npm package (so all sessions run the same major) resolves it. The Chrome
+extension should also be updated at the same time to get the PR-4 reconnect
+behaviour. Run `poltertab doctor` to check for skew before upgrading. A 1.7.x
+secondary that has not upgraded does not receive 4002 (it does not speak the
+handshake) and continues to work as an unversioned legacy secondary; it bypasses
+the command queue and is never idle-evicted.
+
+**Env vars:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POLTERTAB_MAX_SECONDARIES` | `50` | Maximum v2 secondaries accepted |
+| `POLTERTAB_IDLE_EVICTION_MS` | `300000` (5 min) | Idle before a v2 secondary is evicted with 4001 |
+| `POLTERTAB_MAX_CONCURRENCY` | `6` | Extension command concurrency limit |
+| `POLTERTAB_QUEUE_DEPTH` | `3` | Per-secondary queue depth before `[queue_full]` |
+| `POLTERTAB_QUEUE_TIMEOUT_MS` | `60000` (60 s) | GC backstop for stuck queued commands (does not extend queue wait) |
+| `POLTERTAB_COMMAND_TIMEOUT_MS` | `35000` (35 s) | Per-command budget. Must exceed the extension's 30 s navigation wait + 500 ms settle; tune for tests only |
 
 **Changing the WebSocket Port:**
 Only needed when something that *isn't* PolterTab already holds `7822` —
