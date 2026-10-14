@@ -1,11 +1,17 @@
 // PolterTab Background Service Worker — WebSocket client + command router
 // Connects to bridge-server at ws://localhost:7822 and routes commands to content scripts or Chrome APIs.
 //
-// MV3 service workers get suspended after ~30s of inactivity.
-// We use chrome.alarms (which persist across suspensions) to ensure reconnection
-// whenever the bridge server restarts.
+// MV3 service workers get suspended after ~30s of inactivity. A dropped
+// connection is redialled at once and then on a back-off (bg/reconnect.js)
+// while the worker is awake; chrome.alarms (which persist across suspensions)
+// are the backstop that reconnects a worker suspended mid-schedule.
 
-importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
+importScripts(
+  "bg/tab-state.js",
+  "bg/frames.js",
+  "bg/screenshot.js",
+  "bg/reconnect.js",
+);
 
 (() => {
   // Mirrors mcp-server/config.js. It cannot be required from here — this runs
@@ -72,6 +78,7 @@ importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
   // the table is evaluated.
   const { forwardToContentScript } = self.PT.makeFrames({ sessionManager });
   const { screenshot } = self.PT.makeScreenshot({ sessionManager });
+  const reconnect = self.PT.makeReconnect({ connect });
 
   // --- WebSocket connection management ---
 
@@ -84,17 +91,21 @@ importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
       return;
     }
 
+    let sock;
     try {
-      ws = new WebSocket(WS_URL);
+      sock = new WebSocket(WS_URL);
     } catch (err) {
       console.error("[PolterTab] WebSocket creation failed:", err.message);
       ensureReconnectAlarm();
+      reconnect.disconnected();
       return;
     }
+    ws = sock;
 
-    ws.onopen = () => {
+    sock.onopen = () => {
       console.log("[PolterTab] Connected to bridge server");
       isConnected = true;
+      reconnect.connected();
       // Stop reconnect polling — we're connected
       chrome.alarms.clear(RECONNECT_ALARM);
       // Start keep-alive to prevent service worker suspension while connected
@@ -109,7 +120,8 @@ importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
       broadcastState();
     };
 
-    ws.onmessage = async (event) => {
+    sock.onmessage = async (event) => {
+      reconnect.up();
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -141,23 +153,29 @@ importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
       }
     };
 
-    ws.onerror = (err) => {
+    sock.onerror = (err) => {
       console.error(
         "[PolterTab] WebSocket error:",
         err.message || "connection error",
       );
     };
 
-    ws.onclose = () => {
+    sock.onclose = () => {
+      // connect() replaces a socket that is already CLOSING, so this close can
+      // arrive after a newer socket took over. Acting on it would orphan that
+      // one and dial a second beside it.
+      if (ws !== sock) return;
       console.log("[PolterTab] Disconnected from bridge server");
       ws = null;
       isConnected = false;
       activeSessions = [];
       serverVersion = null;
       broadcastState();
-      // Stop keep-alive, start reconnect polling
+      // Stop keep-alive; redial now and on a back-off, with the alarm as the
+      // backstop if the worker is suspended before that succeeds.
       chrome.alarms.clear(KEEPALIVE_ALARM);
       ensureReconnectAlarm();
+      reconnect.disconnected();
     };
   }
 
@@ -513,6 +531,7 @@ importScripts("bg/tab-state.js", "bg/frames.js", "bg/screenshot.js");
       }
       chrome.alarms.clear(KEEPALIVE_ALARM);
       chrome.alarms.clear(RECONNECT_ALARM);
+      reconnect.reset();
       connect();
     }
   });

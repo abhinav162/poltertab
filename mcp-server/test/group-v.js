@@ -134,16 +134,29 @@ async function groupV() {
           );
         });
       } else {
-        // No external interface — unit-test the loopback predicate directly.
-        await test("V2b /status address check: non-loopback is refused", () => {
-          const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-          const isLoopback = (a) => LOOPBACK.has(a);
-          assert.ok(isLoopback("127.0.0.1"), "127.0.0.1 must be allowed");
-          assert.ok(isLoopback("::1"), "::1 must be allowed");
-          assert.ok(isLoopback("::ffff:127.0.0.1"), "::ffff:127.0.0.1 must be allowed");
-          assert.ok(!isLoopback("192.168.1.50"), "LAN IP must be refused");
-          assert.ok(!isLoopback("10.0.0.1"), "10.x must be refused");
+        // No external interface. Ask the real server from another source
+        // address: 127.0.0.2 is not on the allowlist, and Linux routes all of
+        // 127/8 to lo. macOS has only 127.0.0.1 on lo0, so there the bind
+        // fails and the case is skipped out loud rather than passed on a copy
+        // of the predicate (NICE-2).
+        const r = await new Promise((resolve) => {
+          const req = http.get(
+            { host: "127.0.0.1", port, path: "/status", localAddress: "127.0.0.2", timeout: 2000 },
+            (res) => {
+              res.resume();
+              resolve({ status: res.statusCode });
+            },
+          );
+          req.on("timeout", () => req.destroy(new Error("timeout")));
+          req.on("error", (e) => resolve({ error: e.code || e.message }));
         });
+        if (r.error === "EADDRNOTAVAIL") {
+          console.log("  SKIP  V2b no LAN interface and no second loopback address to ask from");
+        } else {
+          await test("V2b /status from 127.0.0.2 (not on the allowlist) is refused (404)", () => {
+            assert.strictEqual(r.status, 404, JSON.stringify(r));
+          });
+        }
       }
     } finally {
       await stop(primary);

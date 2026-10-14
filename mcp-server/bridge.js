@@ -15,7 +15,6 @@ const crypto = require("crypto");
 const net = require("net");
 const {
   resolvePort,
-  DEFAULT_WS_PORT,
   COMMAND_TIMEOUT_MS,
   HEARTBEAT_MS,
   NETWORK_TTL_MS,
@@ -45,6 +44,11 @@ let extensionVersion = null;
 
 // Global state
 let extensionSocket = null;
+// When the extension last left this Primary; null if it never connected. A
+// missing extension is either on its way back (a Primary handover, a worker
+// restart: retry shortly) or was never here (Chrome closed, extension off,
+// wrong port: go and look). The agent needs to know which.
+let extensionLostAt = null;
 const pendingCommands = new Map();
 const networkState = new Map(); // tabId -> { lastUpdated: number, requests: array }
 const secondaryClients = new Map();
@@ -71,6 +75,17 @@ let unreachable = false;
 // arrives meanwhile so they cost one connection, not one each (R-S3).
 let isEvicted = false;
 let reconnect = null; // { promise, resolve, reject, timer }
+
+// Set once a Primary has accepted this node. If it later promotes, the
+// extension was almost certainly on the Primary that died and is on its way
+// here, so "reconnecting" is the honest answer, not "never connected". A node
+// never accepted has no reason to believe an extension exists.
+let everAccepted = false;
+
+// A 4002 from the Primary: this node's major version cannot talk to it.
+// Retrying cannot help until one side is upgraded, which means a restart, so
+// the node stops here — no redial, no promotion — and every command says why.
+let incompatible = null; // the Primary's close reason
 
 // Command queue, Primary side (PR-3). At most MAX_EXTENSION_CONCURRENCY
 // commands may be in flight to the extension at once. v2 Secondary commands
@@ -147,7 +162,7 @@ function _tryDequeue() {
     if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
       if (item.callerWs && item.callerWs.readyState === WebSocket.OPEN) {
         item.callerWs.send(
-          JSON.stringify({ id: item.id, success: false, error: "Browser extension not connected to Primary." }),
+          JSON.stringify({ id: item.id, success: false, error: extensionMissing() }),
         );
       }
       continue;
@@ -161,6 +176,46 @@ function _tryDequeue() {
     // onDispatch may or may not keep extensionInFlight++ live (it fires the
     // extension send); the loop re-checks the cap after each dispatch.
   }
+}
+
+function extensionMissing() {
+  if (extensionLostAt === null) {
+    return (
+      `[extension_never_connected port=${WS_PORT}] Browser extension not connected: it has never connected to this server. ` +
+      `Check that Chrome is open and the PolterTab extension is installed, enabled, and set to port ${WS_PORT}.`
+    );
+  }
+  const s = Math.round((Date.now() - extensionLostAt) / 1000);
+  return (
+    `[extension_reconnecting port=${WS_PORT} elapsed=${s}s] Browser extension not connected: ` +
+    `it disconnected ${s}s ago and reconnects on its own. Retry shortly.`
+  );
+}
+
+function incompatibleError() {
+  return (
+    `[version_incompatible] The Primary on port ${WS_PORT} requires PolterTab ${incompatible.required || "another major version"}; ` +
+    `this server is ${incompatible.got || OWN_VERSION}. Run: npm update -g poltertab, then restart every session using this browser.`
+  );
+}
+
+// The 4002 close reason. RFC 6455 caps it at 123 bytes and ws throws past
+// that — which used to leave the peer unclosed and retrying forever. `got`
+// is peer-supplied, so it is cut to printable ASCII and shortened until the
+// encoded reason fits.
+function versionReason(ours, theirs) {
+  let got = String(theirs).replace(/[^\x20-\x7e]/g, "?").slice(0, 32);
+  const build = () =>
+    JSON.stringify({ reason: "version_incompatible", required: `${ours}.x`, got });
+  while (Buffer.byteLength(build()) > 123) got = got.slice(0, -1);
+  return build();
+}
+
+// "1.7.0" -> 1. Anything else (a label like "test", a missing field) has no
+// major to disagree with, so it never triggers a 4002.
+function majorOf(version) {
+  const m = /^(\d+)\./.exec(String(version));
+  return m ? Number(m[1]) : null;
 }
 
 function broadcastSessionState() {
@@ -217,9 +272,17 @@ function allowOrigin(info, cb) {
 function setupPrimaryServer() {
   const http = require("http");
   const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+  // The source address alone does not stop DNS rebinding: a page at
+  // http://evil.example:P whose name then resolves to 127.0.0.1 fetches
+  // /status same-origin, from loopback. Its Host header still names
+  // evil.example, so only a loopback name (any port, or none) is answered.
+  const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
   const handleRequest = (req, res) => {
     if (req.method === "GET" && req.url === "/status") {
-      if (!LOOPBACK.has(req.socket.remoteAddress)) {
+      if (
+        !LOOPBACK.has(req.socket.remoteAddress) ||
+        !LOOPBACK_HOST.test(req.headers.host || "")
+      ) {
         res.writeHead(404);
         res.end();
         return;
@@ -288,6 +351,11 @@ function setupPrimaryServer() {
   // serving 127.0.0.1 and demotes us before we call listen(), avoiding a
   // race in the milliseconds between a successful probe and our own bind.
   // The EADDRINUSE handler above covers the symmetric case.
+  // The one window left: on macOS, a beta.2-style server binding 127.0.0.1/::1
+  // specifically *between* our probe and our listen. Our wildcard listen then
+  // succeeds beside it and its specific bind wins loopback traffic, leaving us
+  // a silent Primary. It needs two starts within milliseconds, one of them
+  // the superseded beta.2, whose own probe-first makes it lose that race.
   probePrimary().then((alive) => {
     if (alive) {
       console.error(
@@ -521,6 +589,7 @@ async function promoteOrRejoin() {
     return;
   }
   isSecondary = false;
+  if (everAccepted && extensionLostAt === null) extensionLostAt = Date.now();
   setupPrimaryServer();
 }
 
@@ -560,6 +629,7 @@ function connectToPrimary() {
       // are handled before the id branch so none can settle a pending command.
       if (msg.type === "secondary_accepted") {
         accepted = true;
+        everAccepted = true;
         backoffAttempt = 0;
         refusal = null;
         unreachable = false;
@@ -614,12 +684,21 @@ function connectToPrimary() {
     // A lazy reconnect whose dial ended before the ACK fails now, with the
     // reason when the Primary gave one. The branches below still run, so the
     // node retries or promotes exactly as it would have without the caller.
+    if (code === 4002) {
+      incompatible = { required: info.required, got: info.got };
+      console.error(
+        `[PolterTab MCP] Primary refused this node: version ${incompatible.got || OWN_VERSION} is incompatible (requires ${incompatible.required || "unknown"}). Not retrying.`,
+      );
+    }
+
     if (!accepted) {
       finishReconnect(
         new Error(
           info.reason === "capacity_rejected"
             ? `[capacity_rejected limit=${info.limit}] Primary (pid ${info.pid}) has ${info.limit} secondaries. Retry later.`
-            : reconnectFailed(),
+            : incompatible
+              ? incompatibleError()
+              : reconnectFailed(),
         ),
       );
     }
@@ -645,12 +724,17 @@ function connectToPrimary() {
     const aborted =
       info.reason === "capacity_rejected"
         ? `[capacity_rejected limit=${info.limit}] Primary (pid ${info.pid}) refused this node. Command aborted.`
-        : "Primary node disconnected. Command aborted.";
+        : incompatible
+          ? incompatibleError()
+          : "Primary node disconnected. Command aborted.";
     for (const [id, { reject, timer }] of pendingCommands) {
       clearTimeout(timer);
       reject(new Error(aborted));
       pendingCommands.delete(id);
     }
+
+    // Stop: neither a retry nor a promotion can fix a version mismatch.
+    if (incompatible) return;
 
     // Refused by a live Primary: it is not dying, so promoting can only fail.
     if (refused) {
@@ -750,7 +834,7 @@ function _dispatchProxyNow(callerWs, id, action, params) {
     _tryDequeue();
     if (callerWs.readyState === WebSocket.OPEN) {
       callerWs.send(
-        JSON.stringify({ id, success: false, error: "Browser extension not connected to Primary." }),
+        JSON.stringify({ id, success: false, error: extensionMissing() }),
       );
     }
   }
@@ -774,6 +858,18 @@ function setupPrimaryWss(wss) {
           // limit used to trigger — so it is never refused and never counted.
           ws.supportsNewCloseCodes =
             typeof msg.version === "string" && msg.version !== "";
+          // A different major speaks a different protocol; a v2 node is told
+          // so with 4002 and stops. Only a node that sent a version gets this,
+          // like every other 4xxx (§3.2).
+          const theirs = ws.supportsNewCloseCodes ? majorOf(msg.version) : null;
+          const ours = majorOf(OWN_VERSION);
+          if (theirs !== null && ours !== null && theirs !== ours) {
+            console.error(
+              `[PolterTab MCP] Rejecting secondary node ${msg.nodeId} - version ${msg.version} is incompatible with ${OWN_VERSION}.`,
+            );
+            ws.close(4002, versionReason(ours, msg.version));
+            return;
+          }
           if (ws.supportsNewCloseCodes) {
             let v2 = 0;
             for (const [id, c] of secondaryClients) {
@@ -885,7 +981,7 @@ function setupPrimaryWss(wss) {
                 JSON.stringify({
                   id,
                   success: false,
-                  error: "Browser extension not connected to Primary.",
+                  error: extensionMissing(),
                 }),
               );
             }
@@ -1090,6 +1186,7 @@ function setupPrimaryWss(wss) {
       } else if (extensionSocket === ws) {
         console.error("[PolterTab MCP] Chrome extension disconnected.");
         extensionSocket = null;
+        extensionLostAt = Date.now();
       }
     });
 
@@ -1173,6 +1270,7 @@ function _buildEnvelope(action, params, activeNodeId) {
 
 // Helper to send command to the extension
 async function sendCommand(action, params) {
+  if (incompatible) throw new Error(incompatibleError());
   // Evicted, or a caller ahead of this one is already reconnecting: wait for
   // that one dial rather than racing it.
   if (isEvicted || reconnect) await lazyReconnect();
@@ -1219,9 +1317,7 @@ async function sendCommand(action, params) {
   }
 
   if (!isConnected) {
-    throw new Error(
-      `Browser extension not connected. Please ensure the extension is installed, enabled, and pointing to the correct port (default: ${DEFAULT_WS_PORT}).`,
-    );
+    throw new Error(extensionMissing());
   }
 
   const envelope = _buildEnvelope(action, params, nodeId);
