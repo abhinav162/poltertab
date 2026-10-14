@@ -9,7 +9,7 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
-  pull-requests: read
+  pull-requests: write   # action needs write to post status checks and labels
 
 jobs:
   pr-title:
