@@ -195,6 +195,21 @@ lookups do not miss.
 A note saying "this page is tricky" helps nobody. Save what you would need to
 skip the discovery entirely next time.
 
+## Extension reconnection
+
+The Chrome extension reconnects automatically when the bridge server restarts.
+While it is reconnecting, commands return one of two error strings:
+
+- `[extension_reconnecting port=7822 elapsed=Xs]` — the extension disconnected
+  and is on its way back. **Retry the command after a short pause** (1–5 s).
+  The elapsed time tells you how long it has been gone; if it keeps climbing
+  past 30 s, check that the extension is loaded and the port matches.
+- `[extension_never_connected port=7822]` — the extension has never connected to
+  this server instance at all. Check that the extension is installed, enabled,
+  and pointed at the correct port.
+
+Never treat these as final failures without retrying at least once.
+
 ## Multiple tabs
 
 You have a **current tab**; every page-facing tool without `tabId`/`session`
