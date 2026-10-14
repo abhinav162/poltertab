@@ -267,9 +267,12 @@ pending, not lost. A v2 secondary re-arms its 35 s timeout on this
 acknowledgement and again on `{"type":"dispatched","id":"..."}` when the command
 leaves the queue, so queue wait never consumes the execution budget. A command
 that arrives when the per-secondary queue is already full is refused immediately
-with `[queue_full action=X]`. A command that has been queued for more than
-`POLTERTAB_QUEUE_TIMEOUT_MS` (default 60 s) is dropped with
-`[queue_timeout action=X]`.
+with `[queue_full action=X]`. The primary itself queues its own direct commands
+under the same ceiling. A queued command is dropped with `[queue_timeout action=X]`
+when the caller's 35 s budget is nearly spent (a 2 s margin keeps the drop ahead
+of the caller's own timer). `POLTERTAB_QUEUE_TIMEOUT_MS` (default 60 s) is a
+separate GC backstop for commands in a queue that never gets dequeued; it does
+not extend queue wait time.
 
 **`/status` endpoint:**
 `GET http://127.0.0.1:7822/status` returns a JSON snapshot of the primary's
@@ -295,16 +298,17 @@ suspended mid-schedule. While reconnecting, commands return:
 | Code | Meaning | Agent behaviour |
 |------|---------|-----------------|
 | 4001 | Idle eviction — the agent was silent for `POLTERTAB_IDLE_EVICTION_MS` | Secondary dials again lazily on next command; no action needed |
-| 4002 | Version mismatch — major version incompatible with the primary | Secondary stops retrying; update both the npm package and the extension |
+| 4002 | Version mismatch — major version incompatible with the primary | Secondary stops retrying until restarted; update the npm package so every session runs the same major |
 
 **Upgrade path (1.x → 1.8):**
 PolterTab 1.8 introduces a version handshake. A secondary whose major version
-does not match the primary's receives close code 4002 and stops retrying. Mixed
-1.7.x / 1.8 deployments therefore need **both** the npm package and the Chrome
-extension updated together. Run `poltertab doctor` to check for skew before
-upgrading. A 1.7.x secondary that has not upgraded does not receive 4002 (it
-does not speak the handshake) and continues to work as an unversioned legacy
-secondary; it bypasses the command queue and is never idle-evicted.
+does not match the primary's receives close code 4002 and stops retrying; updating
+the npm package (so all sessions run the same major) resolves it. The Chrome
+extension should also be updated at the same time to get the PR-4 reconnect
+behaviour. Run `poltertab doctor` to check for skew before upgrading. A 1.7.x
+secondary that has not upgraded does not receive 4002 (it does not speak the
+handshake) and continues to work as an unversioned legacy secondary; it bypasses
+the command queue and is never idle-evicted.
 
 **Env vars:**
 
@@ -314,7 +318,8 @@ secondary; it bypasses the command queue and is never idle-evicted.
 | `POLTERTAB_IDLE_EVICTION_MS` | `300000` (5 min) | Idle before a v2 secondary is evicted with 4001 |
 | `POLTERTAB_MAX_CONCURRENCY` | `6` | Extension command concurrency limit |
 | `POLTERTAB_QUEUE_DEPTH` | `3` | Per-secondary queue depth before `[queue_full]` |
-| `POLTERTAB_QUEUE_TIMEOUT_MS` | `60000` (60 s) | Max time a command waits in queue before `[queue_timeout]` |
+| `POLTERTAB_QUEUE_TIMEOUT_MS` | `60000` (60 s) | GC backstop for stuck queued commands (does not extend queue wait) |
+| `POLTERTAB_COMMAND_TIMEOUT_MS` | `35000` (35 s) | Per-command budget. Must exceed the extension's 30 s navigation wait + 500 ms settle; tune for tests only |
 
 **Changing the WebSocket Port:**
 Only needed when something that *isn't* PolterTab already holds `7822` —
