@@ -2,6 +2,10 @@ name: Publish
 
 # Publishing is driven by GitHub Releases: cut a release, this ships it.
 # The version string decides the npm channel — see scripts/release-meta.js.
+#
+# workflow_call: called by release-please.yml when release_created is true.
+# GITHUB_TOKEN-created releases do NOT fire the `release: published` event,
+# so we must call this workflow explicitly from release-please.yml.
 on:
   release:
     types: [published]
@@ -14,6 +18,23 @@ on:
         description: "Run every check and pack the tarball, but do not publish"
         type: boolean
         default: true
+  workflow_call:
+    inputs:
+      tag:
+        description: "Git tag to publish (e.g. v1.9.0-beta.1)"
+        type: string
+        required: true
+      dry_run:
+        description: "Pack but do not publish"
+        type: boolean
+        default: false
+      prerelease:
+        description: "Whether this is a prerelease (passed through to release-meta.js)"
+        type: boolean
+        default: false
+    secrets:
+      NPM_TOKEN:
+        required: true
 
 permissions:
   contents: write # attach the extension zip to the release
@@ -47,7 +68,7 @@ jobs:
         run: |
           node scripts/release-meta.js \
             "${{ github.event.release.tag_name || inputs.tag }}" \
-            "${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+            "${{ github.event.release.prerelease || inputs.prerelease }}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
         run: npm pack
