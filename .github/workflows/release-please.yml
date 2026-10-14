@@ -73,6 +73,13 @@ jobs:
   publish:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
+    # A called workflow can only downgrade the caller's permissions, never raise
+    # them.  The workflow-level block grants contents: write + pull-requests: write;
+    # id-token is not listed there, so it defaults to none for every job.
+    # Override at the job level so npm provenance attestation gets the OIDC token.
+    permissions:
+      contents: write    # attach extension zip to the GitHub release
+      id-token: write    # npm --provenance
     uses: ./.github/workflows/publish.yml
     with:
       tag:      ${{ needs.release-please.outputs.tag_name }}
