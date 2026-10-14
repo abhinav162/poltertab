@@ -77,21 +77,38 @@ npm does not allow unpublish after 72 hours. For a bad publish:
 3. If `latest` was poisoned, move it: `npm dist-tag add poltertab@<good-version> latest`.
 4. File a GitHub issue describing what shipped and what callers should do.
 
-## Branch-protection settings (human applies)
+## Creating the RELEASE_PLEASE_TOKEN secret
 
-Apply these to `main` in **Settings → Branches → Add branch protection rule**:
+The release-please workflow needs a fine-grained PAT so that release PRs it
+opens trigger CI under the main branch ruleset (GITHUB_TOKEN-opened PRs do not).
 
-| Setting | Value |
-|---------|-------|
-| Require a pull request before merging | ✅ |
-| Required approvals | 1 |
-| Require status checks to pass before merging | ✅ |
-| Required status checks | `test (node 18)`, `test (node 22)`, `version consistency`, `Conventional Commit title` |
-| Require branches to be up to date before merging | ☐ (not required yet) |
-| Do not allow bypassing the above settings | ✅ |
-| Allow force pushes | ☐ |
-| Allow deletions | ☐ |
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**.
+2. Set **Resource owner** to this repo's owner.
+3. Set **Repository access** to _Only select repositories_ → `poltertab`.
+4. Under **Repository permissions**, grant:
+   - **Contents**: Read and write
+   - **Pull requests**: Read and write
+5. Name it `poltertab-release-please` and set an expiry (1 year is reasonable).
+6. Copy the token value.
+7. Go to **repo → Settings → Secrets and variables → Actions → New repository
+   secret**.  Name: `RELEASE_PLEASE_TOKEN`, value: the copied token.
 
-> **Note:** `Conventional Commit title` comes from the `pr-title-check.yml`
-> workflow job named `Conventional Commit title`.  Add it after the first PR
-> runs the check so GitHub has seen the check name.
+If the secret is absent the workflow falls back to `GITHUB_TOKEN` with a comment
+in the run log, but CI will not run on the release PR.
+
+## Branch-protection / ruleset settings (human applies)
+
+The ruleset already in place: PRs only, squash only, required checks listed
+below, up-to-date not required.  Add or confirm these required status checks:
+
+| Check name (exact) | Source |
+|--------------------|--------|
+| `test (node 18)` | `ci.yml` |
+| `test (node 22)` | `ci.yml` |
+| `version consistency` | `ci.yml` |
+| `pr title` | `pr-title-check.yml` |
+
+> Add `pr title` to the ruleset **after the first PR runs the check** so GitHub
+> has seen the check name.  The job id is `pr-title`; the display name (what
+> appears in the ruleset picker) is `pr title`.

@@ -6,6 +6,11 @@ name: Release Please
 #
 # GITHUB_TOKEN-created releases do NOT trigger the `release: published` event
 # in publish.yml, so we call publish.yml directly via workflow_call.
+#
+# RELEASE_PLEASE_TOKEN must be a fine-grained PAT (Contents + Pull-requests
+# read/write on this repo).  Without it the release-please PR is opened by
+# GITHUB_TOKEN, which the ruleset on main blocks from getting CI.  See
+# RELEASING.md → "Creating the RELEASE_PLEASE_TOKEN secret".
 
 on:
   push:
@@ -28,6 +33,10 @@ jobs:
         with:
           config-file:   release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Use the PAT so the release PR gets CI under the main ruleset.
+          # Falls back to GITHUB_TOKEN when the secret is absent (e.g. forks),
+          # but CI will not run on the PR in that case.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
 
   # Sync chrome-extension/manifest.json on every release PR update.
   # release-please edits package.json directly (no npm lifecycle hooks), so we
@@ -42,7 +51,7 @@ jobs:
         with:
           # Check out the release-please PR branch so we can push back to it.
           ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
-          token: ${{ github.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
 
       - uses: actions/setup-node@v4
         with:
