@@ -9,7 +9,9 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
-  pull-requests: write   # action needs write to post status checks and labels
+  contents: read
+  pull-requests: read
+  statuses: write   # action posts a commit status; write to pull-requests is not needed
 
 jobs:
   pr-title:
