@@ -18,6 +18,8 @@
     { "type": "ci",       "hidden": true }
   ],
   "packages": {
-    ".": {}
+    ".": {
+      "release-as": "1.9.0"
+    }
   }
 }
