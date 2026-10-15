@@ -11,7 +11,8 @@
     "webNavigation",
     "activeTab",
     "alarms",
-    "tabGroups"
+    "tabGroups",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

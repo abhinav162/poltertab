@@ -35,7 +35,11 @@ const {
 } = require("./recipes.js");
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
+const { validateUploadPaths, MAX_BYTES } = require("./upload-paths.js");
 const OWN_VERSION = require("./../package.json").version;
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
 let updateState = { latest: null, updateAvailable: false };
 let noticeDelivered = false;
@@ -179,6 +183,91 @@ const handleToolCall = async (request) => {
   const action = name.replace("browser_", "");
 
   try {
+    // Custom handling for file upload: path allowlist validation + byte reading for drop method
+    if (action === "upload_file") {
+      const opts = args || {};
+      const filePaths = opts.paths || [];
+      const method = opts.method || "picker";
+
+      // Reject unknown methods explicitly (schema enums aren't enforced by every MCP client)
+      if (method !== "drop" && method !== "picker") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Unknown upload method: "${method}". Use "picker" or "drop".`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Load allowlist from config.json
+      const configFile = path.join(POLTERTAB_HOME, "config.json");
+      let allowedPaths;
+      try {
+        const raw = fs.readFileSync(configFile, "utf8");
+        const cfg = JSON.parse(raw);
+        allowedPaths = Array.isArray(cfg.upload_allowed_paths)
+          ? cfg.upload_allowed_paths
+          : null;
+      } catch (_) {
+        allowedPaths = null;
+      }
+
+      // Validate all paths through the shared module (handles disabled check,
+      // symlink resolution, always-blocked, dotfile, allowlist, and size cap).
+      const validation = validateUploadPaths(filePaths, {
+        allowedPaths,
+        checkSize: method === "drop",
+      });
+      if (!validation.ok) {
+        return {
+          content: [{ type: "text", text: validation.errorText }],
+          isError: true,
+        };
+      }
+
+      // Use the realpathSync'd paths that validation already resolved — what was
+      // checked is what is sent (avoids a TOCTOU window between validate and read).
+      const { resolvedPaths } = validation;
+
+      let bridgeParams;
+      if (method === "drop") {
+        // Read file bytes and base64-encode for DataTransfer injection.
+        const files = [];
+        for (let i = 0; i < resolvedPaths.length; i++) {
+          const resolved = resolvedPaths[i];
+          const buf = fs.readFileSync(resolved);
+          const ext = path.extname(resolved).slice(1).toLowerCase();
+          const mimeMap = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+            pdf: "application/pdf", txt: "text/plain", csv: "text/csv",
+            json: "application/json", zip: "application/zip",
+          };
+          const type = mimeMap[ext] || "application/octet-stream";
+          // Use the caller's original path for the file name so a symlink keeps its link name,
+          // not the target's name; bytes are still read from the realpathSync'd resolved path.
+          files.push({ name: path.basename(filePaths[i]), type, data: buf.toString("base64") });
+        }
+        bridgeParams = { selector: opts.selector, files, method: "drop", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
+      } else {
+        // picker method: send the realpathSync'd paths so CDP receives absolute real paths
+        bridgeParams = { selector: opts.selector, paths: resolvedPaths, method: "picker", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
+      }
+
+      process.stderr.write(
+        `[poltertab] upload_file method=${method} files=${filePaths.join(", ")}\n`,
+      );
+
+      const result = await bridge.sendCommand("upload_file", bridgeParams);
+      bridge.noteActiveTab(result && result.tabId);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+
     // Custom handling for network state tool
     if (action === "get_network_state") {
       const opts = args || {};

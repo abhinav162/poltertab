@@ -84,7 +84,7 @@ Running from a clone instead of npm? Point the client at the file directly:
 
 ## Supported MCP Tools
 
-The server exposes 27 tools to the LLM (all prefixed with `browser_`). Every
+The server exposes 28 tools to the LLM (all prefixed with `browser_`). Every
 page-facing tool also takes optional `tabId` and `session` to target a specific
 tab — omit both and PolterTab uses the agent's current tab: the last one it
 navigated, opened or switched to. The first `browser_navigate` (and the first
@@ -215,6 +215,22 @@ tab instead of quietly acting on another one.
 | `browser_tab_switch` | `tabId` or `session`, `focus` | Make another tab current. A tab that does not exist in Chrome returns `tab_not_found`. |
 | `browser_tab_close` | `tabId` or `session`, `force` | Close a tab (default: current). Tabs not opened by PolterTab (including ones adopted via `browser_session_create({tabId})`) return `needs_user_permission` — ask the user, then retry with `force: true`. A tab that does not exist in Chrome returns `tab_not_found`. |
 
+### File upload
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_upload_file` | `selector` (required), `paths` (required), `method` (`"picker"` or `"drop"`), `tabId`, `session` | Upload local files to a page. `method: "picker"` (default) clicks `selector` and intercepts the OS file chooser via CDP — works for any `<input type="file">` or button that opens one. `method: "drop"` dispatches a DataTransfer drag-and-drop event — use for drop zones. Paths must be within directories listed in `upload_allowed_paths` in `~/.poltertab/config.json`. A brief debugging banner appears during picker uploads (CDP requirement). |
+
+**Configuration** — add `upload_allowed_paths` to `~/.poltertab/config.json` before using `browser_upload_file`:
+
+```json
+{
+  "upload_allowed_paths": ["/Users/you/Documents", "/Users/you/Downloads"]
+}
+```
+
+Always-blocked regardless of the allowlist: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `/etc`, `/private/etc`, `/System`, `/private/System`, `/Library`, `/private/Library`, `/proc`, home dotfiles. Note: `/tmp` (and its macOS realpath `/private/tmp`) is **not** blocked and can be added to `upload_allowed_paths` normally.
+
 ### Site memory
 
 | Action | Parameters | Description |
@@ -232,8 +248,7 @@ Selectors are resolved in order:
 3. **XPath** — `//div[@class="foo"]`
 4. **Text match** — exact text content of an element
 
-A miss on all four is retried with shadow-root piercing, so a selector that only
-exists inside a web component still resolves.
+A miss on all four is retried with shadow-root piercing (open roots, one level deep) and top-level same-origin iframe search. Nested iframes (iframe inside iframe) and cross-origin iframes are not supported; the tool returns a clear error in those cases.
 
 ## Troubleshooting & Options
 
@@ -336,6 +351,12 @@ PolterTab servers share that port by design (see above). Both sides must move:
    ```json
    "args": ["/absolute/path/to/poltertab/mcp-server/index.js", "--port", "7824"]
    ```
+
+**Picker uploads fail while DevTools is open:**
+Chrome allows only one debugger at a time per tab. When DevTools is open on the target tab, `browser_upload_file` (method `"picker"`) fails with "Another debugger is already attached". Close DevTools on that tab before running a picker upload.
+
+**Adding `debugger` permission requires re-approving the extension:**
+Loading or reloading the `chrome-extension/` folder after the `debugger` permission was added prompts Chrome to ask for re-approval — the extension is disabled until you click **Keep** or **Allow** on the warning dialog in `chrome://extensions/`. Unpack-loaded extensions do not auto-update, so this only happens when you explicitly reload or update the folder.
 
 **Extension not connecting:**
 

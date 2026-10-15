@@ -563,6 +563,35 @@ const BROWSER_TOOLS = [
       required: ["obstacle", "solution"],
     },
   },
+  {
+    name: "browser_upload_file",
+    description:
+      "Upload one or more local files to the current page. Works with plain file inputs (visible or hidden), custom upload buttons, shadow-DOM inputs (open roots only, one level deep), top-level same-origin iframes, and drag-and-drop zones. For file inputs and upload buttons, uses CDP (Chrome DevTools Protocol) to intercept the OS file picker — a brief debugging banner appears during the upload. For drop zones, dispatches a DataTransfer drag-and-drop event. Paths must be within directories configured in upload_allowed_paths in ~/.poltertab/config.json. Nested iframes (iframe inside iframe) and cross-origin (out-of-process) iframes are not supported and return a clear error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selector: {
+          type: "string",
+          description:
+            "CSS selector for the upload trigger — the visible button, label, or file input itself. For drop zones (method: 'drop'), the selector of the drop target element.",
+        },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Absolute paths to local files to upload. Each must be within a directory listed in upload_allowed_paths in ~/.poltertab/config.json.",
+        },
+        method: {
+          type: "string",
+          enum: ["picker", "drop"],
+          description:
+            "'picker' (default): click the selector and intercept the OS file chooser via CDP — works for any file input or button that opens one. 'drop': dispatch drag-and-drop events with the file bytes — use for drop zones that do not open an OS picker.",
+        },
+        ...TARGET,
+      },
+      required: ["selector", "paths"],
+    },
+  },
 ];
 
 module.exports = { BROWSER_TOOLS, TARGET, SINK };

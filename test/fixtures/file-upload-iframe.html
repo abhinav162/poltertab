@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>File Upload — Iframe</title></head>
+<body>
+  <h1>File input inside an iframe</h1>
+  <!-- border and padding are intentional: they test that the offset calc
+       uses the content-box start (clientLeft/clientTop + padding), not the border-box edge -->
+  <iframe id="upload-frame" src="file-upload-plain.html" width="600" height="200"
+    style="border:4px solid #666; padding:8px; display:block;"></iframe>
+</body>
+</html>

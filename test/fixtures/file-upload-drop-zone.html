@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>File Upload — Drop Zone</title>
+  <style>
+    #drop-zone {
+      width: 300px; height: 150px; border: 2px dashed #999;
+      display: flex; align-items: center; justify-content: center;
+      font-family: sans-serif; color: #555;
+    }
+    #drop-zone.drag-over { border-color: #0070f3; background: #e6f0ff; }
+  </style>
+</head>
+<body>
+  <h1>Drag-and-drop zone</h1>
+  <div id="drop-zone">Drop files here</div>
+  <div id="result">No files dropped</div>
+  <script>
+    var zone = document.getElementById('drop-zone');
+    zone.addEventListener('dragenter', function (e) { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragover',  function (e) { e.preventDefault(); });
+    zone.addEventListener('dragleave', function ()  { zone.classList.remove('drag-over'); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      var names = Array.from(e.dataTransfer.files).map(function (f) { return f.name; });
+      document.getElementById('result').textContent = names.length ? names.join(', ') : 'No files dropped';
+    });
+  </script>
+</body>
+</html>
