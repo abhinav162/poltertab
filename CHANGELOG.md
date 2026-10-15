@@ -2,6 +2,18 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.9.0-beta.1](https://github.com/abhinav162/poltertab/compare/v1.8.1-beta.1...v1.9.0-beta.1) (2026-10-15)
+
+
+### Features
+
+* **extension,mcp:** file upload via browser_upload_file ([#35](https://github.com/abhinav162/poltertab/issues/35)) ([568eedc](https://github.com/abhinav162/poltertab/commit/568eedcb437f175e0da013bf70139fc6ad8a0789))
+
+
+### Bug Fixes
+
+* **ci:** single publish path and drop last-release-sha ([#33](https://github.com/abhinav162/poltertab/issues/33)) ([a872613](https://github.com/abhinav162/poltertab/commit/a872613f64c053c279b6f09ed7b997c1d995d8ca))
+
 ## [1.8.1-beta.1](https://github.com/abhinav162/poltertab/compare/v1.8.0...v1.8.1-beta.1) (2026-10-15)
 
 
