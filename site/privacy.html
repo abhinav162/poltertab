@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Privacy — PolterTab</title>
+  <title>PolterTab Privacy</title>
   <meta name="description" content="PolterTab runs entirely on your computer. No servers, no accounts, no analytics. Nothing about your browsing ever leaves your machine." />
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#FAF9F6" media="(prefers-color-scheme: light)" />
@@ -65,7 +65,7 @@
           <li><strong>All websites (<code>&lt;all_urls&gt;</code>)</strong>: the content script must be able to read and act on whatever page you direct the agent to. It does nothing on pages the agent isn&rsquo;t working with.</li>
           <li><strong>Tabs and tab groups</strong>: to open, switch, and track tabs, and to gather agent tabs into a visible &ldquo;PolterTab&rdquo; group so you can see what&rsquo;s being touched.</li>
           <li><strong>Debugger</strong>: used for one feature only, intercepting a page&rsquo;s file-picker dialog during <code>browser_upload_file</code>. Attached to the one tab for the duration of the upload, then detached; Chrome shows a banner the whole time.</li>
-          <li><strong>File uploads</strong> are refused unless the file is inside a folder you listed in <code>config.json</code> (<code>upload_allowed_paths</code>). <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, <code>~/.config</code>, and system directories are blocked regardless.</li>
+          <li><strong>File uploads</strong> are refused unless the file is inside a folder you listed in <code>config.json</code> (<code>upload_allowed_paths</code>). <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, <code>~/.config</code>, home dotfiles, and system directories are blocked regardless.</li>
         </ul>
         <p>PolterTab cannot interact with <code>chrome://</code> pages or the Chrome Web Store; Chrome forbids it, and the server reports that cleanly instead of trying.</p>
 
