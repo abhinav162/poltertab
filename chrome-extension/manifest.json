@@ -9,7 +9,6 @@
     "scripting",
     "storage",
     "webNavigation",
-    "activeTab",
     "alarms",
     "tabGroups",
     "debugger"
