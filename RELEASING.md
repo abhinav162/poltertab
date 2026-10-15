@@ -86,6 +86,12 @@ package entry (restoring `"packages": { ".": {} }`) and commits as
 `chore: remove release-as after 1.9.0 final`.  Without this cleanup every
 subsequent release PR will propose 1.9.0 again.
 
+> **One-time bootstrap note:** `last-release-sha` (top-level in the config) is a
+> temporary anchor that tells release-please where to stop the commit walk on main
+> (the v1.8.0 tag is on the 1.8-release branch, not in main's history).  After the
+> first release is tagged on main (v1.8.1-beta.1 or later), remove `last-release-sha`
+> in a follow-up chore PR — release-please will find subsequent tags itself.
+
 > **Alternative — commit footer:** A commit body containing `Release-As: 1.9.0`
 > also works, but **only** when the repo's squash-commit template is set to
 > "PR title **and description**" (not "PR title only", which drops the body and

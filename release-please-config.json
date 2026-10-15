@@ -5,6 +5,7 @@
   "prerelease-type": "beta.1",
   "versioning": "prerelease",
   "include-component-in-tag": false,
+  "last-release-sha": "ec4799b37dbdfc51d1d9a207d61af076f5c08a61",
   "changelog-sections": [
     { "type": "feat",     "section": "Features" },
     { "type": "fix",      "section": "Bug Fixes" },
@@ -18,8 +19,6 @@
     { "type": "ci",       "hidden": true }
   ],
   "packages": {
-    ".": {
-      "bootstrap-sha": "ec4799b"
-    }
+    ".": {}
   }
 }
