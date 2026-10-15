@@ -180,7 +180,7 @@ section { padding-block: clamp(3rem, 2rem + 5vw, 5.5rem); }
   max-width: 34rem;
 }
 .cmd .prompt { color: var(--text-subtle); user-select: none; }
-.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; }
+.cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; } /* min-width:0 lets a long command scroll instead of widening the page */
 .copy-btn {
   font: inherit; font-family: var(--mono); font-size: .8rem;
   background: var(--surface); color: var(--text-muted);
@@ -261,8 +261,8 @@ section { padding-block: clamp(3rem, 2rem + 5vw, 5.5rem); }
 
 /* ---------- Security ---------- */
 .security { background: var(--bg-2); border-block: 1px solid var(--border); }
-.sec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; margin-top: 1.5rem; }
-@media (max-width: 820px) { .sec-grid { grid-template-columns: 1fr; } }
+.sec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.2rem; margin-top: 1.5rem; }
+@media (max-width: 560px) { .sec-grid { grid-template-columns: 1fr; } }
 .sec-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.3rem; }
 .sec-card .ic { width: 28px; height: 28px; color: var(--green); margin-bottom: .6rem; }
 .sec-card h3 { font-size: 1.05rem; }
