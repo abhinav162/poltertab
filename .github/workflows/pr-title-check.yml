@@ -1,0 +1,45 @@
+name: PR Title Check
+
+# release-please derives CHANGELOG entries from the squash-merge commit
+# messages, which GitHub sets to the PR title. Enforce Conventional Commits
+# on every PR title so those entries are meaningful.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write   # action posts a commit status; write to pull-requests is not needed
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    # The ruleset on main requires this exact check name: "pr title"
+    name: pr title
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Types recognised by release-please (see release-please-config.json).
+          types: |
+            feat
+            fix
+            perf
+            revert
+            docs
+            chore
+            refactor
+            test
+            build
+            ci
+          # Allow breaking-change marker: feat!: or feat(scope)!:
+          requireScope: false
+          subjectPattern: ^(?!\s).+(?<!\s)$
+          subjectPatternError: |
+            The subject "{subject}" found in the pull-request title "{title}" does
+            not match the pattern. Please make sure it is not empty or surrounded
+            by whitespace.
+          wip: true

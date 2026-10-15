@@ -1,0 +1,110 @@
+name: Release Please
+
+# release-please watches commits on main and keeps one open PR that proposes
+# the next version bump and CHANGELOG entries.  Merging that PR creates the
+# tag and GitHub (pre-)release; this workflow then publishes to npm.
+#
+# GITHUB_TOKEN-created releases do NOT trigger the `release: published` event
+# in publish.yml, so we call publish.yml directly via workflow_call.
+#
+# RELEASE_PLEASE_TOKEN must be a fine-grained PAT (Contents + Pull-requests
+# read/write on this repo).  Without it the release-please PR is opened by
+# GITHUB_TOKEN, which the ruleset on main blocks from getting CI.  See
+# RELEASING.md → "Creating the RELEASE_PLEASE_TOKEN secret".
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write        # create releases and push manifest-sync commits
+  pull-requests: write   # open and update release PRs
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name:        ${{ steps.release.outputs.tag_name }}
+      pr:              ${{ steps.release.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file:   release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Use the PAT so the release PR gets CI under the main ruleset.
+          # Falls back to GITHUB_TOKEN when the secret is absent (e.g. forks),
+          # but CI will not run on the PR in that case.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+  # Sync chrome-extension/manifest.json on every release PR update.
+  # release-please edits package.json directly (no npm lifecycle hooks), so we
+  # run sync-manifest-version.js ourselves and push the result back to the PR
+  # branch before anyone reviews.
+  sync-manifest:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the release-please PR branch so we can push back to it.
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync manifest version
+        run: |
+          node scripts/sync-manifest-version.js
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add chrome-extension/manifest.json
+          git diff --staged --quiet && echo "manifest already in sync" || \
+            git commit -m "chore: sync chrome manifest version"
+
+      - name: Push manifest update
+        run: git push origin HEAD
+
+  # Called only when the release PR is merged and a tag+release were created.
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    # A called workflow can only downgrade the caller's permissions, never raise
+    # them.  The workflow-level block grants contents: write + pull-requests: write;
+    # id-token is not listed there, so it defaults to none for every job.
+    # Override at the job level so npm provenance attestation gets the OIDC token.
+    permissions:
+      contents: write    # attach extension zip to the GitHub release
+      id-token: write    # npm --provenance
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag:      ${{ needs.release-please.outputs.tag_name }}
+      dry_run:  false
+      # The tag name carries the prerelease identifier; derive the flag from it.
+      prerelease: ${{ contains(needs.release-please.outputs.tag_name, '-') }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # After a *final* release, move the `beta` dist-tag so `@beta` always
+  # resolves to the latest stable version.
+  move-beta-tag:
+    needs: [release-please, publish]
+    if: ${{ needs.release-please.outputs.release_created && !contains(needs.release-please.outputs.tag_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Move beta dist-tag to final
+        run: |
+          VERSION="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          npm dist-tag add "poltertab@${VERSION}" beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

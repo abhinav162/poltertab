@@ -24,6 +24,37 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  lab-check:
+    # Build the tarball + extension zip on release-please PRs so Dwight can
+    # download and smoke-test them before the PR merges.  Runs only on PRs
+    # whose head branch starts with `release-please--` (the naming convention
+    # googleapis/release-please-action uses).
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.head_ref, 'release-please--') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build tarball
+        run: npm pack
+      - name: Build extension zip
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          zip -rq "poltertab-extension-v${VERSION}.zip" \
+            chrome-extension -x '*.DS_Store'
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-${{ github.sha }}
+          path: |
+            poltertab-*.tgz
+            poltertab-extension-*.zip
+          retention-days: 14
+          overwrite: true
+
   release-meta:
     # Cheap guard so a version mismatch surfaces on the PR that introduced it,
     # not at publish time when the tag already exists.
