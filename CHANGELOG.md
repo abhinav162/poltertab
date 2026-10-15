@@ -2,6 +2,19 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.9.0-beta.2](https://github.com/abhinav162/poltertab/compare/v1.9.0-beta.1...v1.9.0-beta.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **extension:** Chrome Web Store readiness — zip root + remove redundant activeTab ([#36](https://github.com/abhinav162/poltertab/issues/36)) ([f7b0476](https://github.com/abhinav162/poltertab/commit/f7b04769c79c894261d822110b72b025282f43a4))
+
+
+### Miscellaneous Chores
+
+* **site:** add demo stills ([#39](https://github.com/abhinav162/poltertab/issues/39)) ([12fa8c7](https://github.com/abhinav162/poltertab/commit/12fa8c7020fb663a641f851a976ae6b7d1298ab2))
+* **site:** add PolterTab landing page and GitHub Pages workflow ([#37](https://github.com/abhinav162/poltertab/issues/37)) ([c082580](https://github.com/abhinav162/poltertab/commit/c0825808a82054ee45eace14eca2d32309665aee))
+
 ## [1.9.0-beta.1](https://github.com/abhinav162/poltertab/compare/v1.8.1-beta.1...v1.9.0-beta.1) (2026-10-15)
 
 
