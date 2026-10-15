@@ -156,11 +156,14 @@ self.PT.makeUpload = ({ sessionManager, forwardToContentScript }) => {
       } catch (_) {
         // Shadow-DOM or iframe element not reachable from the main frame DOM:
         // evaluate in-page JS to obtain its viewport-relative center.
+        // getBoundingClientRect() is already viewport-relative; no scroll adjustment needed.
         const sel = params.selector;
         const ev = await cdp(tabId, "Runtime.evaluate", {
           expression: `(function() {
+            // 1. Main frame direct lookup
             var el = document.querySelector(${JSON.stringify(sel)});
             if (!el) {
+              // 2. Open shadow roots (one level deep)
               var w = document.createTreeWalker(document.body, 1);
               var n;
               while ((n = w.nextNode())) {
@@ -170,17 +173,38 @@ self.PT.makeUpload = ({ sessionManager, forwardToContentScript }) => {
                 }
               }
             }
-            if (!el) return null;
+            if (!el) {
+              // 3. Same-origin iframes; cross-origin frames throw SecurityError — skip them
+              var frames = document.querySelectorAll('iframe');
+              var hasOopif = false;
+              for (var i = 0; i < frames.length; i++) {
+                try {
+                  var fd = frames[i].contentDocument;
+                  if (!fd) { hasOopif = true; continue; }
+                  var fe = fd.querySelector(${JSON.stringify(sel)});
+                  if (!fe) continue;
+                  // Combine iframe viewport offset with element offset within iframe viewport
+                  var ir = frames[i].getBoundingClientRect();
+                  var er = fe.getBoundingClientRect();
+                  return { coords: [ir.left + er.left + er.width / 2,
+                                    ir.top  + er.top  + er.height / 2] };
+                } catch (_) { hasOopif = true; }
+              }
+              return { notFound: true, hasOopif: hasOopif };
+            }
             var r = el.getBoundingClientRect();
-            return [r.left + r.width / 2 + window.scrollX,
-                    r.top  + r.height / 2 + window.scrollY];
+            return { coords: [r.left + r.width / 2, r.top + r.height / 2] };
           })()`,
           returnByValue: true,
         });
-        if (!ev.result || ev.result.value == null) {
-          throw new Error(`Element not found: "${params.selector}"`);
+        const val = ev.result && ev.result.value;
+        if (!val || val.notFound) {
+          const oopifNote = val && val.hasOopif
+            ? " Cross-origin (out-of-process) iframes are not supported; only same-origin iframes are searched."
+            : "";
+          throw new Error(`Element not found: "${params.selector}".${oopifNote}`);
         }
-        [cx, cy] = ev.result.value;
+        [cx, cy] = val.coords;
       }
 
       // Trusted click — Input.dispatchMouseEvent earns user activation,

@@ -12,6 +12,7 @@
 //   X7  drop method: files exceeding 10 MB are rejected (real sparse file)
 //   X8  no config: uploads are refused with a helpful error
 //   X9  positive case: an allowed file in an allowed dir passes validation
+//   X10 symlink pointing outside the allowlist is rejected (symlink regression)
 
 const { EXT, REPO, SERVER, TOOLS, assert, fs, path, test } = require("./harness.js");
 const os = require("os");
@@ -159,6 +160,28 @@ async function groupX() {
       checkSize: false,
     });
     assert.strictEqual(passed.ok, true, `expected ok:true with checkSize:false, got: ${JSON.stringify(passed)}`);
+  });
+
+  // ── X10: symlink regression — symlink into allowedDir pointing outside is rejected ─
+  await test("X10 symlink from allowedDir pointing outside allowlist is rejected", () => {
+    const outsideSym = path.join(fakeHome, "outside-sym");
+    fs.mkdirSync(outsideSym, { recursive: true });
+    const outsideFile = path.join(outsideSym, "secret.pdf");
+    fs.writeFileSync(outsideFile, "x");
+    const linkPath = path.join(allowedDir, "link.pdf");
+    // Symlink inside allowedDir → file outside it. realpathSync resolves through
+    // the symlink so the allowlist check sees the real path and rejects it.
+    try { fs.unlinkSync(linkPath); } catch (_) {}
+    fs.symlinkSync(outsideFile, linkPath);
+    const result = validateUploadPaths([linkPath], {
+      allowedPaths: [allowedDir],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, false, "expected rejection for symlink pointing outside allowlist");
+    assert.ok(
+      result.errorText.includes("not within any configured upload_allowed_paths"),
+      `unexpected errorText: ${result.errorText}`,
+    );
   });
 
   // ── X8: no config → uploads disabled ────────────────────────────────────

@@ -566,7 +566,7 @@ const BROWSER_TOOLS = [
   {
     name: "browser_upload_file",
     description:
-      "Upload one or more local files to the current page. Works with plain file inputs (visible or hidden), custom upload buttons, and drag-and-drop zones. For file inputs and upload buttons, uses CDP (Chrome DevTools Protocol) to intercept the OS file picker — a brief debugging banner appears during the upload. For drop zones, dispatches a DataTransfer drag-and-drop event. Paths must be within directories configured in upload_allowed_paths in ~/.poltertab/config.json.",
+      "Upload one or more local files to the current page. Works with plain file inputs (visible or hidden), custom upload buttons, shadow-DOM inputs (open roots only, one level deep), same-origin iframes, and drag-and-drop zones. For file inputs and upload buttons, uses CDP (Chrome DevTools Protocol) to intercept the OS file picker — a brief debugging banner appears during the upload. For drop zones, dispatches a DataTransfer drag-and-drop event. Paths must be within directories configured in upload_allowed_paths in ~/.poltertab/config.json. Cross-origin (out-of-process) iframes are not supported and return a clear error.",
     inputSchema: {
       type: "object",
       properties: {

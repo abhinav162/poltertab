@@ -229,7 +229,7 @@ tab instead of quietly acting on another one.
 }
 ```
 
-Always-blocked regardless of the allowlist: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `/etc`, `/private/etc`, `/System`, `/Library`, `/proc`, home dotfiles. Note: `/tmp` (and its macOS realpath `/private/tmp`) is **not** blocked and can be added to `upload_allowed_paths` normally.
+Always-blocked regardless of the allowlist: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `/etc`, `/private/etc`, `/System`, `/private/System`, `/Library`, `/private/Library`, `/proc`, home dotfiles. Note: `/tmp` (and its macOS realpath `/private/tmp`) is **not** blocked and can be added to `upload_allowed_paths` normally.
 
 ### Site memory
 

@@ -78,6 +78,7 @@ function validateUploadPaths(filePaths, config) {
 
   const expandedAllowed = allowedPaths.map(expandAllowlistEntry);
   const alwaysBlocked = buildAlwaysBlocked(homeDir);
+  const resolvedPaths = [];
 
   for (const p of filePaths) {
     // Resolve symlinks so a symlink pointing outside the allowlist cannot
@@ -129,9 +130,13 @@ function validateUploadPaths(filePaths, config) {
         };
       }
     }
+
+    resolvedPaths.push(resolved);
   }
 
-  return { ok: true };
+  // resolvedPaths contains the realpathSync'd path for each input — use these
+  // for subsequent reads and CDP calls so what was checked is what is sent.
+  return { ok: true, resolvedPaths };
 }
 
 module.exports = { validateUploadPaths, MAX_BYTES };

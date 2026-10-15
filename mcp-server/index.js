@@ -228,16 +228,18 @@ const handleToolCall = async (request) => {
         };
       }
 
+      // Use the realpathSync'd paths that validation already resolved — what was
+      // checked is what is sent (avoids a TOCTOU window between validate and read).
+      const { resolvedPaths } = validation;
+
       let bridgeParams;
       if (method === "drop") {
         // Read file bytes and base64-encode for DataTransfer injection.
-        // Paths are already validated; realpathSync here matches what the
-        // module verified against.
         const files = [];
-        for (const p of filePaths) {
-          const resolved = fs.realpathSync(path.resolve(p));
+        for (let i = 0; i < resolvedPaths.length; i++) {
+          const resolved = resolvedPaths[i];
           const buf = fs.readFileSync(resolved);
-          const ext = path.extname(p).slice(1).toLowerCase();
+          const ext = path.extname(resolved).slice(1).toLowerCase();
           const mimeMap = {
             png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
             gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
@@ -245,12 +247,12 @@ const handleToolCall = async (request) => {
             json: "application/json", zip: "application/zip",
           };
           const type = mimeMap[ext] || "application/octet-stream";
-          files.push({ name: path.basename(p), type, data: buf.toString("base64") });
+          files.push({ name: path.basename(resolved), type, data: buf.toString("base64") });
         }
         bridgeParams = { selector: opts.selector, files, method: "drop", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
       } else {
-        // picker method: paths go straight to the extension (CDP handles them)
-        bridgeParams = { selector: opts.selector, paths: filePaths, method: "picker", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
+        // picker method: send the realpathSync'd paths so CDP receives absolute real paths
+        bridgeParams = { selector: opts.selector, paths: resolvedPaths, method: "picker", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
       }
 
       process.stderr.write(
