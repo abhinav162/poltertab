@@ -2,9 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "node",
   "prerelease": true,
-  "prerelease-type": "beta",
-  "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
+  "prerelease-type": "beta.1",
+  "versioning": "prerelease",
+  "include-component-in-tag": false,
   "changelog-sections": [
     { "type": "feat",     "section": "Features" },
     { "type": "fix",      "section": "Bug Fixes" },
@@ -18,6 +18,8 @@
     { "type": "ci",       "hidden": true }
   ],
   "packages": {
-    ".": {}
+    ".": {
+      "bootstrap-sha": "ec4799b"
+    }
   }
 }
