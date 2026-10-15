@@ -63,8 +63,11 @@ jobs:
 
       - name: Build extension zip
         run: |
-          zip -rq "poltertab-extension-v${{ steps.meta.outputs.version }}.zip" \
-            chrome-extension -x '*.DS_Store'
+          # cd into chrome-extension so manifest.json lands at the zip root,
+          # as required by the Chrome Web Store uploader.
+          (cd chrome-extension && zip -rq \
+            "../poltertab-extension-v${{ steps.meta.outputs.version }}.zip" \
+            . -x '*.DS_Store')
 
       # Also runs for a manual re-run, not just the release event. Gating this on
       # `event_name == 'release'` meant a re-run could publish to npm and still
