@@ -113,36 +113,40 @@
         </div>
         <div class="demo-grid">
           <article class="demo-card">
-            <div class="media-frame" role="img" aria-label="Demo placeholder: reading a login-gated dashboard. Clip coming soon.">
+            <div class="media-frame">
               <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">dashboard</span></div>
-              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+              <img class="demo-img" src="assets/demo/dashboard.png" width="1280" height="800" loading="lazy" decoding="async" alt="PolterTab reading a login-gated analytics dashboard — KPI cards, a bar chart, and an events table." />
             </div>
             <h3>Gated dashboard</h3>
             <p>Read a dashboard that lives behind your company login. No credentials shared with the agent — it uses the session already in your browser.</p>
+            <p class="demo-tool"><code>browser_click #login-btn</code> → dashboard with live KPIs</p>
           </article>
           <article class="demo-card">
-            <div class="media-frame" role="img" aria-label="Demo placeholder: filling a form and uploading a file. Clip coming soon.">
+            <div class="media-frame">
               <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">form · upload</span></div>
-              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+              <img class="demo-img" src="assets/demo/form-upload.png" width="1280" height="800" loading="lazy" decoding="async" alt="A support-ticket form with every field filled, and a confirmation line below the upload zone showing upload-test.csv attached." />
             </div>
             <h3>Form + file upload</h3>
             <p>Fill a form and attach a file. Uploads only work from folders you've explicitly allowlisted — everything else is refused.</p>
+            <p class="demo-tool"><code>browser_upload_file</code> → CSV attached from an allowlisted folder</p>
           </article>
           <article class="demo-card">
-            <div class="media-frame" role="img" aria-label="Demo placeholder: scraping an infinite-scroll feed. Clip coming soon.">
+            <div class="media-frame">
               <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">infinite-scroll</span></div>
-              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+              <img class="demo-img" src="assets/demo/feed.png" width="1280" height="800" loading="lazy" decoding="async" alt="A news feed mid-scroll as lazy-loading adds more stories." />
             </div>
             <h3>Infinite scroll scrape</h3>
             <p>Scrape a feed that fights back. <code>browser_smart_scroll</code> walks virtualized lists; network capture reads the API responses behind the DOM.</p>
+            <p class="demo-tool"><code>browser_smart_scroll + browser_scroll + browser_scrape</code> → more stories lazy-loaded, titles scraped</p>
           </article>
           <article class="demo-card">
-            <div class="media-frame" role="img" aria-label="Demo placeholder: two agents sharing one browser. Clip coming soon.">
+            <div class="media-frame">
               <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">two agents</span></div>
-              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+              <img class="demo-img" src="assets/demo/two-agents.png" width="1280" height="800" loading="lazy" decoding="async" alt="A split-pane campaign manager with two agent sessions running at once, each pane showing live browser tool calls." />
             </div>
             <h3>Two agents, one browser</h3>
             <p>Run Claude Code and Cursor against the same Chrome at once. Each agent gets its own tab; the first server coordinates, the rest proxy through it.</p>
+            <p class="demo-tool"><code>browser_session_create</code> → two agents live in one browser</p>
           </article>
         </div>
       </div>

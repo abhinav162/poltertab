@@ -163,6 +163,7 @@ section { padding-block: clamp(3rem, 2rem + 5vw, 5.5rem); }
 /* ---------- Hero ---------- */
 .hero { padding-top: clamp(2.5rem, 2rem + 4vw, 4.5rem); padding-bottom: clamp(2.5rem, 2rem + 4vw, 4rem); }
 .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: clamp(2rem, 1rem + 4vw, 4rem); align-items: center; }
+.hero-grid > * { min-width: 0; } /* let tracks shrink below content so the long install command scrolls instead of widening the page */
 @media (max-width: 880px) { .hero-grid { grid-template-columns: 1fr; } }
 .hero h1 { font-size: clamp(2.1rem, 1.4rem + 3.4vw, 3.4rem); margin: 0 0 1rem; }
 .hero .lede { font-size: clamp(1.05rem, 1rem + .4vw, 1.25rem); color: var(--text-muted); max-width: 34rem; }
@@ -238,6 +239,9 @@ section { padding-block: clamp(3rem, 2rem + 5vw, 5.5rem); }
 @media (max-width: 760px) { .demo-grid { grid-template-columns: 1fr; } }
 .demo-card h3 { margin-top: .9rem; }
 .demo-card p { margin-bottom: 0; font-size: .95rem; }
+.demo-img { display: block; width: 100%; height: auto; } /* width/height attrs reserve space → no layout shift */
+.demo-tool { margin: .5rem 0 0; font-family: var(--mono); font-size: .8rem; color: var(--text-subtle); }
+.demo-tool code { color: var(--accent); overflow-wrap: anywhere; }
 
 /* ---------- How it works ---------- */
 .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin-top: 1rem; }
