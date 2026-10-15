@@ -3,9 +3,8 @@ name: Publish
 # Publishing is driven by GitHub Releases: cut a release, this ships it.
 # The version string decides the npm channel — see scripts/release-meta.js.
 #
-# workflow_call: called by release-please.yml when release_created is true.
-# GITHUB_TOKEN-created releases do NOT fire the `release: published` event,
-# so we must call this workflow explicitly from release-please.yml.
+# release-please uses RELEASE_PLEASE_TOKEN (a PAT) to create releases, which
+# fires `release: published` here — no explicit workflow_call needed.
 on:
   release:
     types: [published]
@@ -18,23 +17,6 @@ on:
         description: "Run every check and pack the tarball, but do not publish"
         type: boolean
         default: true
-  workflow_call:
-    inputs:
-      tag:
-        description: "Git tag to publish (e.g. v1.9.0-beta.1)"
-        type: string
-        required: true
-      dry_run:
-        description: "Pack but do not publish"
-        type: boolean
-        default: false
-      prerelease:
-        description: "Whether this is a prerelease (passed through to release-meta.js)"
-        type: boolean
-        default: false
-    secrets:
-      NPM_TOKEN:
-        required: true
 
 permissions:
   contents: write # attach the extension zip to the release
@@ -115,3 +97,23 @@ jobs:
             echo "| install | \`npm install -g poltertab@${{ steps.meta.outputs.dist_tag }}\` |"
             echo "| dry run | ${{ inputs.dry_run && 'yes — nothing published' || 'no' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # After a *final* release, move the `beta` dist-tag so `@beta` always
+  # resolves to the latest stable version.
+  move-beta-tag:
+    needs: publish
+    if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Move beta dist-tag to final
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          VERSION="${TAG#v}"
+          npm dist-tag add "poltertab@${VERSION}" beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -86,12 +86,6 @@ package entry (restoring `"packages": { ".": {} }`) and commits as
 `chore: remove release-as after 1.9.0 final`.  Without this cleanup every
 subsequent release PR will propose 1.9.0 again.
 
-> **One-time bootstrap note:** `last-release-sha` (top-level in the config) is a
-> temporary anchor that tells release-please where to stop the commit walk on main
-> (the v1.8.0 tag is on the 1.8-release branch, not in main's history).  After the
-> first release is tagged on main (v1.8.1-beta.1 or later), remove `last-release-sha`
-> in a follow-up chore PR — release-please will find subsequent tags itself.
-
 > **Alternative — commit footer:** A commit body containing `Release-As: 1.9.0`
 > also works, but **only** when the repo's squash-commit template is set to
 > "PR title **and description**" (not "PR title only", which drops the body and
@@ -105,10 +99,10 @@ containing `-` (betas) are marked Pre-release; tags without `-` (finals) are
 marked as regular releases.  No manual checkbox is needed.
 
 The guard in `scripts/release-meta.js` that rejects a stable version marked
-Pre-release on GitHub is intentional — it cannot fire on the automated
-`workflow_call` path (where the `prerelease` input always matches the tag string),
-but it catches mistakes on the manual `release: published` path.  Do not remove
-it as dead code.
+Pre-release on GitHub is intentional — it catches the case where someone manually
+creates a GitHub release, marks it Pre-release, but the tag has no prerelease
+identifier (which would otherwise publish to `@latest`).  Do not remove it as
+dead code.
 
 ## Dry-run command
 
