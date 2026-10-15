@@ -530,6 +530,35 @@ const BROWSER_TOOLS = [
     },
   },
   {
+    name: "browser_upload_file",
+    description:
+      "Upload one or more local files to the current page. Works with plain file inputs, hidden inputs triggered by a button, custom upload buttons, and drag-and-drop zones. For drop zones, pass method: \"drop\". File paths must be listed in upload_allowed_paths in ~/.poltertab/config.json. Uses the Chrome debugger API (a brief yellow debug banner appears during the picker upload). Error codes: needs_user_permission (tab not PolterTab-owned), tab_not_found.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selector: {
+          type: "string",
+          description:
+            "CSS selector for the upload trigger — the visible button, label, or the input itself. For drop zones, the selector of the drop target element.",
+        },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Absolute paths to local files on the machine running the MCP server. Must be within the directories listed in upload_allowed_paths in ~/.poltertab/config.json.",
+        },
+        method: {
+          type: "string",
+          enum: ["picker", "drop"],
+          description:
+            "'picker' (default): click the selector and intercept the OS file chooser — works for plain inputs, hidden inputs, and custom upload buttons. 'drop': dispatch a drag-and-drop event — use for drop zones with no file input.",
+        },
+        ...TARGET,
+      },
+      required: ["selector", "paths"],
+    },
+  },
+  {
     name: "browser_get_site_memory",
     description:
       "Get navigation memory for a website domain: the obstacles and fixes saved for it, plus any extraction recipes learned there — their fields, their variants, and the steps that were observed before each one worked. The steps are observations, not a script: reissue one only if it still fits the page.",
@@ -561,6 +590,35 @@ const BROWSER_TOOLS = [
         solution: { type: "string", description: "How did you solve it?" },
       },
       required: ["obstacle", "solution"],
+    },
+  },
+  {
+    name: "browser_upload_file",
+    description:
+      "Upload one or more local files to the current page. Works with plain file inputs (visible or hidden), custom upload buttons, and drag-and-drop zones. For file inputs and upload buttons, uses CDP (Chrome DevTools Protocol) to intercept the OS file picker — a brief debugging banner appears during the upload. For drop zones, dispatches a DataTransfer drag-and-drop event. Paths must be within directories configured in upload_allowed_paths in ~/.poltertab/config.json.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        selector: {
+          type: "string",
+          description:
+            "CSS selector for the upload trigger — the visible button, label, or file input itself. For drop zones (method: 'drop'), the selector of the drop target element.",
+        },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Absolute paths to local files to upload. Each must be within a directory listed in upload_allowed_paths in ~/.poltertab/config.json.",
+        },
+        method: {
+          type: "string",
+          enum: ["picker", "drop"],
+          description:
+            "'picker' (default): click the selector and intercept the OS file chooser via CDP — works for any file input or button that opens one. 'drop': dispatch drag-and-drop events with the file bytes — use for drop zones that do not open an OS picker.",
+        },
+        ...TARGET,
+      },
+      required: ["selector", "paths"],
     },
   },
 ];

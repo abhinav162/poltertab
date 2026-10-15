@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const {
   StdioServerTransport,
@@ -36,6 +40,9 @@ const {
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
 const OWN_VERSION = require("./../package.json").version;
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
 let updateState = { latest: null, updateAvailable: false };
 let noticeDelivered = false;
@@ -179,6 +186,148 @@ const handleToolCall = async (request) => {
   const action = name.replace("browser_", "");
 
   try {
+    // Custom handling for file upload: path allowlist validation + byte reading for drop method
+    if (action === "upload_file") {
+      const opts = args || {};
+      const filePaths = opts.paths || [];
+      const method = opts.method || "picker";
+
+      // Load allowlist from config.json
+      const configFile = path.join(POLTERTAB_HOME, "config.json");
+      let allowedPaths;
+      try {
+        const raw = fs.readFileSync(configFile, "utf8");
+        const cfg = JSON.parse(raw);
+        allowedPaths = Array.isArray(cfg.upload_allowed_paths)
+          ? cfg.upload_allowed_paths
+          : null;
+      } catch (_) {
+        allowedPaths = null;
+      }
+
+      if (!allowedPaths || allowedPaths.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "File uploads are disabled. To enable them, add an upload_allowed_paths array to ~/.poltertab/config.json listing the directories Claude may read files from.\n\nExample:\n{\n  \"upload_allowed_paths\": [\"/Users/you/Documents\", \"/Users/you/Downloads\"]\n}",
+            },
+          ],
+        };
+      }
+
+      // Expand ~ in allowlist entries
+      const expandedAllowed = allowedPaths.map((p) =>
+        p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p,
+      );
+
+      // Paths that are never allowed regardless of the allowlist
+      const homeDir = os.homedir();
+      const alwaysBlocked = [
+        path.join(homeDir, ".ssh"),
+        path.join(homeDir, ".aws"),
+        path.join(homeDir, ".gnupg"),
+        path.join(homeDir, ".config"),
+        "/etc",
+        "/System",
+        "/Library",
+        "/private",
+        "/proc",
+      ];
+
+      const MAX_BYTES = 10 * 1024 * 1024; // 10 MB per file
+
+      // Validate each path
+      for (const p of filePaths) {
+        const resolved = path.resolve(p);
+
+        // Always-blocked check
+        for (const blocked of alwaysBlocked) {
+          if (resolved === blocked || resolved.startsWith(blocked + path.sep)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Access denied: "${p}" is in a protected system directory.`,
+                },
+              ],
+            };
+          }
+        }
+        // Deny home dotfiles (direct children of ~/ starting with .)
+        const rel = path.relative(homeDir, resolved);
+        if (!rel.startsWith("..") && rel.startsWith(".") && !rel.includes(path.sep)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Access denied: "${p}" is a home directory dotfile.`,
+              },
+            ],
+          };
+        }
+
+        // Allowlist check
+        const allowed = expandedAllowed.some(
+          (a) => resolved === a || resolved.startsWith(a + path.sep),
+        );
+        if (!allowed) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Access denied: "${p}" is not within any configured upload_allowed_paths directory. Check ~/.poltertab/config.json.`,
+              },
+            ],
+          };
+        }
+      }
+
+      let bridgeParams;
+      if (method === "drop") {
+        // Read file bytes and base64-encode for DataTransfer injection
+        const files = [];
+        for (const p of filePaths) {
+          const resolved = path.resolve(p);
+          const stat = fs.statSync(resolved);
+          if (stat.size > MAX_BYTES) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `File too large: "${path.basename(p)}" is ${(stat.size / 1024 / 1024).toFixed(1)} MB. The drop method supports files up to 10 MB.`,
+                },
+              ],
+            };
+          }
+          const buf = fs.readFileSync(resolved);
+          const ext = path.extname(p).slice(1).toLowerCase();
+          const mimeMap = {
+            png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+            gif: "image/gif", webp: "image/webp", svg: "image/svg+xml",
+            pdf: "application/pdf", txt: "text/plain", csv: "text/csv",
+            json: "application/json", zip: "application/zip",
+          };
+          const type = mimeMap[ext] || "application/octet-stream";
+          files.push({ name: path.basename(p), type, data: buf.toString("base64") });
+        }
+        bridgeParams = { selector: opts.selector, files, method: "drop", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
+      } else {
+        // picker method: paths go straight to the extension (CDP handles them)
+        bridgeParams = { selector: opts.selector, paths: filePaths, method: "picker", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
+      }
+
+      process.stderr.write(
+        `[poltertab] upload_file method=${method} files=${filePaths.join(", ")}\n`,
+      );
+
+      const result = await bridge.sendCommand("upload_file", bridgeParams);
+      bridge.noteActiveTab(result && result.tabId);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+
     // Custom handling for network state tool
     if (action === "get_network_state") {
       const opts = args || {};

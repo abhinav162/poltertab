@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>File Upload — Hidden Input</title></head>
+<body>
+  <h1>Hidden file input triggered by button</h1>
+  <button id="upload-btn">Choose File</button>
+  <input id="file-input" type="file" style="display:none" accept="*/*">
+  <div id="result">No file selected</div>
+  <script>
+    document.getElementById('upload-btn').addEventListener('click', function () {
+      document.getElementById('file-input').click();
+    });
+    document.getElementById('file-input').addEventListener('change', function () {
+      const f = this.files[0];
+      document.getElementById('result').textContent = f ? f.name : 'No file selected';
+    });
+  </script>
+</body>
+</html>

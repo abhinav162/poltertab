@@ -215,6 +215,22 @@ tab instead of quietly acting on another one.
 | `browser_tab_switch` | `tabId` or `session`, `focus` | Make another tab current. A tab that does not exist in Chrome returns `tab_not_found`. |
 | `browser_tab_close` | `tabId` or `session`, `force` | Close a tab (default: current). Tabs not opened by PolterTab (including ones adopted via `browser_session_create({tabId})`) return `needs_user_permission` — ask the user, then retry with `force: true`. A tab that does not exist in Chrome returns `tab_not_found`. |
 
+### File upload
+
+| Action | Parameters | Description |
+| -------- | ----------- | ------------- |
+| `browser_upload_file` | `selector` (required), `paths` (required), `method` (`"picker"` or `"drop"`), `tabId`, `session` | Upload local files to a page. `method: "picker"` (default) clicks `selector` and intercepts the OS file chooser via CDP — works for any `<input type="file">` or button that opens one. `method: "drop"` dispatches a DataTransfer drag-and-drop event — use for drop zones. Paths must be within directories listed in `upload_allowed_paths` in `~/.poltertab/config.json`. A brief debugging banner appears during picker uploads (CDP requirement). |
+
+**Configuration** — add `upload_allowed_paths` to `~/.poltertab/config.json` before using `browser_upload_file`:
+
+```json
+{
+  "upload_allowed_paths": ["/Users/you/Documents", "/Users/you/Downloads"]
+}
+```
+
+Always-blocked regardless of the allowlist: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `/etc`, `/System`, `/Library`, `/private`, `/proc`, home dotfiles.
+
 ### Site memory
 
 | Action | Parameters | Description |

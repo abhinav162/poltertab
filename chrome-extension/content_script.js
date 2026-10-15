@@ -951,6 +951,32 @@
     return { title: document.title, url: location.href };
   }
 
+  // Option B: DataTransfer injection for drop zones.
+  // Called when method="drop". The MCP server reads file bytes, base64-encodes
+  // them, and sends them here. No CDP / debugger permission needed for this path.
+  async function uploadFile(params) {
+    const el = await waitForElement(params.selector);
+    if (!el) throw new Error(`Element not found: ${params.selector}`);
+
+    const fileObjects = (params.files || []).map(({ name, type, data }) => {
+      const bytes = atob(data);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      return new File([arr], name, { type: type || "application/octet-stream" });
+    });
+
+    const dt = new DataTransfer();
+    for (const f of fileObjects) dt.items.add(f);
+
+    for (const type of ["dragenter", "dragover", "drop"]) {
+      el.dispatchEvent(
+        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }),
+      );
+    }
+
+    return { dropped: fileObjects.length };
+  }
+
   // Message handler — receives commands from background.js
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.source !== "poltertab") return false;
@@ -976,6 +1002,7 @@
       hover,
       get_text: getText,
       get_title: getTitle,
+      upload_file: uploadFile,
     };
 
     const handler = handlers[action];

@@ -11,6 +11,7 @@ importScripts(
   "bg/frames.js",
   "bg/screenshot.js",
   "bg/reconnect.js",
+  "bg/upload.js",
 );
 
 (() => {
@@ -78,6 +79,8 @@ importScripts(
   // the table is evaluated.
   const { forwardToContentScript } = self.PT.makeFrames({ sessionManager });
   const { screenshot } = self.PT.makeScreenshot({ sessionManager });
+  const upload = self.PT.makeUpload({ sessionManager, forwardToContentScript });
+  const { uploadFile } = upload;
   const reconnect = self.PT.makeReconnect({ connect });
 
   // --- WebSocket connection management ---
@@ -357,6 +360,9 @@ importScripts(
     tab_list: (p) => sessionManager.tabList(p),
     tab_switch: (p) => sessionManager.tabSwitch(p),
     tab_close: (p) => sessionManager.tabClose(p),
+
+    // File upload: picker (CDP intercept) or drop (DataTransfer injection).
+    upload_file: (p) => uploadFile(p),
   };
 
   async function handleCommand(action, params) {
@@ -499,6 +505,14 @@ importScripts(
   async function getUrl(params) {
     const tab = await resolveAndGet(params);
     return { url: tab.url, title: tab.title, tabId: tab.id };
+  }
+
+  // File upload: route CDP events to the upload module (A16 — listeners live here).
+  // Guard for test environments where chrome.debugger may not be stubbed.
+  if (chrome.debugger && chrome.debugger.onEvent) {
+    chrome.debugger.onEvent.addListener((source, method, params) => {
+      upload._handleDebuggerEvent(source, method, params);
+    });
   }
 
   // --- Startup ---
