@@ -18,8 +18,7 @@ const MAX_BYTES = 10 * 1024 * 1024; // 10 MB per file
 // /private is NOT listed here because /private/tmp and /private/var/folders
 // are legitimate writable locations on macOS (they are the realpaths of /tmp
 // and the system temp dir). Sensitive subdirectories ARE listed instead.
-function buildAlwaysBlocked() {
-  const homeDir = os.homedir();
+function buildAlwaysBlocked(homeDir) {
   return [
     path.join(homeDir, ".ssh"),
     path.join(homeDir, ".aws"),
@@ -54,16 +53,31 @@ function expandAllowlistEntry(p) {
  *
  * @param {string[]} filePaths   - Raw paths as supplied by the caller.
  * @param {object}   config
- * @param {string[]} config.allowedPaths  - Raw allowlist entries from config.json.
+ * @param {string[]|null} config.allowedPaths  - Raw allowlist entries from config.json;
+ *   null or empty array means uploads are disabled.
  * @param {boolean}  [config.checkSize]   - When true, also enforce MAX_BYTES.
+ * @param {string}   [config.homeDir]     - Override os.homedir() (tests only).
  * @returns {{ ok: true } | { ok: false, errorText: string }}
  */
 function validateUploadPaths(filePaths, config) {
-  const { allowedPaths = [], checkSize = false } = config;
+  const {
+    allowedPaths = null,
+    checkSize = false,
+    homeDir = os.homedir(),
+  } = config;
 
-  const homeDir = os.homedir();
+  if (!allowedPaths || allowedPaths.length === 0) {
+    return {
+      ok: false,
+      errorText:
+        "File uploads are disabled. To enable them, add an upload_allowed_paths array " +
+        "to ~/.poltertab/config.json listing the directories Claude may read files from.\n\n" +
+        "Example:\n{\n  \"upload_allowed_paths\": [\"/Users/you/Documents\", \"/Users/you/Downloads\"]\n}",
+    };
+  }
+
   const expandedAllowed = allowedPaths.map(expandAllowlistEntry);
-  const alwaysBlocked = buildAlwaysBlocked();
+  const alwaysBlocked = buildAlwaysBlocked(homeDir);
 
   for (const p of filePaths) {
     // Resolve symlinks so a symlink pointing outside the allowlist cannot
@@ -85,7 +99,7 @@ function validateUploadPaths(filePaths, config) {
       }
     }
 
-    // Deny home dotfiles (direct children of ~/ starting with .)
+    // Deny home dotfiles (direct children of homeDir starting with .)
     const rel = path.relative(homeDir, resolved);
     if (!rel.startsWith("..") && rel.startsWith(".") && !rel.includes(path.sep)) {
       return {

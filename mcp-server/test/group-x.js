@@ -9,11 +9,13 @@
 //   X4  path validation: paths outside allowlist are rejected
 //   X5  path validation: always-blocked paths are rejected regardless of allowlist
 //   X6  path validation: home dotfiles are rejected
-//   X7  drop method: files exceeding 10 MB are rejected
+//   X7  drop method: files exceeding 10 MB are rejected (real sparse file)
 //   X8  no config: uploads are refused with a helpful error
+//   X9  positive case: an allowed file in an allowed dir passes validation
 
 const { EXT, REPO, SERVER, TOOLS, assert, fs, path, test } = require("./harness.js");
 const os = require("os");
+const { validateUploadPaths } = require("../upload-paths.js");
 
 async function groupX() {
   console.log("\nX. file upload feature");
@@ -39,10 +41,8 @@ async function groupX() {
   // ── X3: content-script handler present ──────────────────────────────────
   await test("X3 upload_file is in the content-script handlers map", () => {
     const src = fs.readFileSync(path.join(EXT, "content_script.js"), "utf8");
-    // Find the handlers block and confirm upload_file appears in it.
     const idx = src.indexOf("const handlers = {");
     assert.notStrictEqual(idx, -1, "handlers map not found in content_script.js");
-    // Walk to the closing brace
     let depth = 0, i = idx + "const handlers = {".length - 1;
     for (; i < src.length; i++) {
       if (src[i] === "{") depth++;
@@ -55,120 +55,132 @@ async function groupX() {
     );
   });
 
-  // ── X4-X8: MCP-side path validation ─────────────────────────────────────
-  // We exercise the validation logic by spinning up a minimal node context
-  // that replicates exactly what index.js does, without starting the server.
+  // ── X4-X9: path validation via the real shared module ────────────────────
+  // Each test creates real files in an isolated mkdtemp directory so
+  // validateUploadPaths can realpathSync them. Never touches the real home dir.
 
-  // Helper: simulate what the index.js upload_file handler does for a given
-  // set of paths, an allowlist (or null for no config), and a method.
-  // Returns the error text string, or null if it would proceed to bridge.sendCommand.
-  function simulateValidation(filePaths, allowedPaths, method) {
-    const expandedAllowed = allowedPaths
-      ? allowedPaths.map((p) =>
-          p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p,
-        )
-      : null;
+  // Shared fake-home base for all tests
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-test-home-"));
+  // On macOS, mkdtemp returns /var/folders/… which realpaths to /private/var/folders/…
+  // The module allows /private/var/folders (not in the always-blocked list), so it works.
+  const realFakeHome = (() => { try { return fs.realpathSync(fakeHome); } catch(_) { return fakeHome; } })();
 
-    // No config / empty allowlist
-    if (!expandedAllowed || expandedAllowed.length === 0) {
-      return "File uploads are disabled";
-    }
+  // An isolated allowed directory (under fakeHome so realpaths agree)
+  const allowedDir = path.join(fakeHome, "allowed");
+  fs.mkdirSync(allowedDir, { recursive: true });
 
-    const homeDir = os.homedir();
-    const alwaysBlocked = [
-      path.join(homeDir, ".ssh"),
-      path.join(homeDir, ".aws"),
-      path.join(homeDir, ".gnupg"),
-      path.join(homeDir, ".config"),
-      "/etc",
-      "/System",
-      "/Library",
-      "/private",
-      "/proc",
-    ];
+  // ── X9 (positive case first so a function that rejects everything can't pass) ─
+  await test("X9 an allowed file in an allowed dir passes validation", () => {
+    const file = path.join(allowedDir, "ok.txt");
+    fs.writeFileSync(file, "content");
+    const result = validateUploadPaths([file], {
+      allowedPaths: [allowedDir],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, true, `expected ok:true, got: ${JSON.stringify(result)}`);
+  });
 
-    for (const p of filePaths) {
-      const resolved = path.resolve(p);
-
-      // Always-blocked
-      for (const blocked of alwaysBlocked) {
-        if (resolved === blocked || resolved.startsWith(blocked + path.sep)) {
-          return `Access denied: "${p}" is in a protected system directory.`;
-        }
-      }
-
-      // Home dotfiles
-      const rel = path.relative(homeDir, resolved);
-      if (!rel.startsWith("..") && rel.startsWith(".") && !rel.includes(path.sep)) {
-        return `Access denied: "${p}" is a home directory dotfile.`;
-      }
-
-      // Allowlist
-      const allowed = expandedAllowed.some(
-        (a) => resolved === a || resolved.startsWith(a + path.sep),
-      );
-      if (!allowed) {
-        return `Access denied: "${p}" is not within any configured upload_allowed_paths directory.`;
-      }
-    }
-
-    return null; // would proceed to bridge
-  }
-
+  // ── X4: path outside allowlist rejected ─────────────────────────────────
   await test("X4 paths outside the allowlist are rejected", () => {
-    const home = os.homedir();
-    const allowedDir = path.join(home, "Documents");
-    const blockedFile = path.join(home, "Desktop", "secret.pdf");
-    const result = simulateValidation([blockedFile], [allowedDir], "picker");
-    assert.ok(result !== null, "expected rejection but got null (would proceed)");
+    const outsideDir = path.join(fakeHome, "outside");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    const file = path.join(outsideDir, "secret.pdf");
+    fs.writeFileSync(file, "x");
+    const result = validateUploadPaths([file], {
+      allowedPaths: [allowedDir],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, false, "expected rejection but got ok:true");
     assert.ok(
-      result.includes("not within any configured upload_allowed_paths"),
-      `unexpected error: ${result}`,
+      result.errorText.includes("not within any configured upload_allowed_paths"),
+      `unexpected errorText: ${result.errorText}`,
     );
   });
 
+  // ── X5: always-blocked paths rejected even if allowlisted ───────────────
   await test("X5 always-blocked paths are rejected even if inside the allowlist", () => {
-    const home = os.homedir();
-    // Attacker sets allowlist to include ~/.ssh — still blocked.
-    const sshKey = path.join(home, ".ssh", "id_rsa");
-    const result = simulateValidation([sshKey], [path.join(home, ".ssh")], "picker");
-    assert.ok(result !== null, "expected rejection but got null (would proceed)");
+    // Create a fake .ssh dir and file under fakeHome
+    const fakeSsh = path.join(fakeHome, ".ssh");
+    fs.mkdirSync(fakeSsh, { recursive: true });
+    const keyFile = path.join(fakeSsh, "id_rsa");
+    fs.writeFileSync(keyFile, "fake key");
+    // Attacker tries to allow ~/.ssh — still blocked
+    const result = validateUploadPaths([keyFile], {
+      allowedPaths: [fakeSsh],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, false, "expected rejection but got ok:true");
     assert.ok(
-      result.includes("protected system directory"),
-      `unexpected error: ${result}`,
+      result.errorText.includes("protected system directory"),
+      `unexpected errorText: ${result.errorText}`,
     );
   });
 
+  // ── X6: home dotfiles rejected even if parent is allowlisted ────────────
   await test("X6 home dotfiles are rejected even if parent is in the allowlist", () => {
-    const home = os.homedir();
-    const bashrc = path.join(home, ".bashrc");
-    const result = simulateValidation([bashrc], [home], "picker");
-    assert.ok(result !== null, "expected rejection but got null (would proceed)");
+    // Create a fake .bashrc directly under fakeHome
+    const fakeDotfile = path.join(fakeHome, ".bashrc");
+    fs.writeFileSync(fakeDotfile, "# fake bashrc");
+    // Allow fakeHome itself — the dotfile inside is still blocked
+    const result = validateUploadPaths([fakeDotfile], {
+      allowedPaths: [fakeHome],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, false, "expected rejection but got ok:true");
     assert.ok(
-      result.includes("dotfile"),
-      `unexpected error: ${result}`,
+      result.errorText.includes("dotfile"),
+      `unexpected errorText: ${result.errorText}`,
     );
   });
 
-  await test("X7 drop method: files > 10 MB trigger the size cap error in index.js", () => {
-    // Read the server source and confirm the MAX_BYTES cap and size check exist.
-    const src = fs.readFileSync(SERVER, "utf8");
+  // ── X7: size cap via real sparse file ───────────────────────────────────
+  await test("X7 drop method: files > 10 MB trigger the size cap error", () => {
+    const bigFile = path.join(allowedDir, "big.bin");
+    // Create an 11 MB sparse file using truncate (no actual disk space needed)
+    fs.writeFileSync(bigFile, "");
+    fs.truncateSync(bigFile, 11 * 1024 * 1024);
+
+    // With checkSize:true → rejected
+    const rejected = validateUploadPaths([bigFile], {
+      allowedPaths: [allowedDir],
+      homeDir: realFakeHome,
+      checkSize: true,
+    });
+    assert.strictEqual(rejected.ok, false, "expected rejection for 11 MB file with checkSize:true");
     assert.ok(
-      /10 \* 1024 \* 1024/.test(src),
-      "10 MB cap constant not found in index.js",
+      rejected.errorText.includes("File too large"),
+      `unexpected errorText: ${rejected.errorText}`,
     );
-    assert.ok(
-      /stat\.size > MAX_BYTES/.test(src),
-      "size cap check not found in index.js upload handler",
-    );
+
+    // With checkSize:false (picker method) → passes
+    const passed = validateUploadPaths([bigFile], {
+      allowedPaths: [allowedDir],
+      homeDir: realFakeHome,
+      checkSize: false,
+    });
+    assert.strictEqual(passed.ok, true, `expected ok:true with checkSize:false, got: ${JSON.stringify(passed)}`);
   });
 
+  // ── X8: no config → uploads disabled ────────────────────────────────────
   await test("X8 no config file → uploads refused with helpful message", () => {
-    const result = simulateValidation(["/tmp/test.txt"], null, "picker");
-    assert.ok(result !== null, "expected refusal when no config is present");
+    const result = validateUploadPaths([path.join(allowedDir, "ok.txt")], {
+      allowedPaths: null,
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result.ok, false, "expected refusal when no config is present");
     assert.ok(
-      result.includes("File uploads are disabled"),
-      `unexpected message: ${result}`,
+      result.errorText.includes("File uploads are disabled"),
+      `unexpected errorText: ${result.errorText}`,
+    );
+    // Also empty array
+    const result2 = validateUploadPaths([path.join(allowedDir, "ok.txt")], {
+      allowedPaths: [],
+      homeDir: realFakeHome,
+    });
+    assert.strictEqual(result2.ok, false, "expected refusal for empty allowedPaths array");
+    assert.ok(
+      result2.errorText.includes("File uploads are disabled"),
+      `unexpected errorText: ${result2.errorText}`,
     );
   });
 }

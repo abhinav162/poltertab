@@ -35,6 +35,7 @@ const {
 } = require("./recipes.js");
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
+const { validateUploadPaths, MAX_BYTES } = require("./upload-paths.js");
 const OWN_VERSION = require("./../package.json").version;
 const fs = require("fs");
 const path = require("path");
@@ -188,129 +189,6 @@ const handleToolCall = async (request) => {
       const filePaths = opts.paths || [];
       const method = opts.method || "picker";
 
-      // Load allowlist from config.json
-      const configFile = path.join(POLTERTAB_HOME, "config.json");
-      let allowedPaths;
-      try {
-        const raw = fs.readFileSync(configFile, "utf8");
-        const cfg = JSON.parse(raw);
-        allowedPaths = Array.isArray(cfg.upload_allowed_paths)
-          ? cfg.upload_allowed_paths
-          : null;
-      } catch (_) {
-        allowedPaths = null;
-      }
-
-      if (!allowedPaths || allowedPaths.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "File uploads are disabled. To enable them, add an upload_allowed_paths array to ~/.poltertab/config.json listing the directories Claude may read files from.\n\nExample:\n{\n  \"upload_allowed_paths\": [\"/Users/you/Documents\", \"/Users/you/Downloads\"]\n}",
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // Expand ~ and resolve symlinks in allowlist entries so that an allowlist
-      // entry of "/tmp" (which on macOS is a symlink to /private/tmp) matches the
-      // realpathSync'd request paths correctly.
-      const homeDir = os.homedir();
-      const expandedAllowed = allowedPaths.map((p) => {
-        const expanded = p.startsWith("~/") ? path.join(homeDir, p.slice(2)) : p;
-        try {
-          return fs.realpathSync(path.resolve(expanded));
-        } catch (_) {
-          return path.resolve(expanded);
-        }
-      });
-
-      // Paths that are never allowed regardless of the allowlist.
-      // NOTE: /private is NOT listed here because /private/tmp and
-      // /private/var/folders are legitimate writable locations on macOS
-      // (they are the realpaths of /tmp and the system temp dir). Sensitive
-      // subdirectories under /private (e.g. /private/etc) ARE listed instead.
-      const alwaysBlocked = [
-        path.join(homeDir, ".ssh"),
-        path.join(homeDir, ".aws"),
-        path.join(homeDir, ".gnupg"),
-        path.join(homeDir, ".config"),
-        "/etc",
-        "/private/etc",
-        "/System",
-        "/private/System",
-        "/Library",
-        "/private/Library",
-        "/proc",
-      ];
-
-      const MAX_BYTES = 10 * 1024 * 1024; // 10 MB per file
-
-      // Validate each path
-      for (const p of filePaths) {
-        // Resolve symlinks so a symlink pointing outside the allowlist cannot
-        // bypass the check (e.g. ~/Downloads/key.pem -> ~/.ssh/id_ed25519).
-        let resolved;
-        try {
-          resolved = fs.realpathSync(path.resolve(p));
-        } catch (_) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `File not found: "${p}"`,
-              },
-            ],
-            isError: true,
-          };
-        }
-
-        // Always-blocked check
-        for (const blocked of alwaysBlocked) {
-          if (resolved === blocked || resolved.startsWith(blocked + path.sep)) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Access denied: "${p}" is in a protected system directory.`,
-                },
-              ],
-              isError: true,
-            };
-          }
-        }
-        // Deny home dotfiles (direct children of ~/ starting with .)
-        const rel = path.relative(homeDir, resolved);
-        if (!rel.startsWith("..") && rel.startsWith(".") && !rel.includes(path.sep)) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Access denied: "${p}" is a home directory dotfile.`,
-              },
-            ],
-            isError: true,
-          };
-        }
-
-        // Allowlist check (both sides are now realpathSync'd)
-        const allowed = expandedAllowed.some(
-          (a) => resolved === a || resolved.startsWith(a + path.sep),
-        );
-        if (!allowed) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Access denied: "${p}" is not within any configured upload_allowed_paths directory. Check ~/.poltertab/config.json.`,
-              },
-            ],
-            isError: true,
-          };
-        }
-      }
-
       // Reject unknown methods explicitly (schema enums aren't enforced by every MCP client)
       if (method !== "drop" && method !== "picker") {
         return {
@@ -324,24 +202,40 @@ const handleToolCall = async (request) => {
         };
       }
 
+      // Load allowlist from config.json
+      const configFile = path.join(POLTERTAB_HOME, "config.json");
+      let allowedPaths;
+      try {
+        const raw = fs.readFileSync(configFile, "utf8");
+        const cfg = JSON.parse(raw);
+        allowedPaths = Array.isArray(cfg.upload_allowed_paths)
+          ? cfg.upload_allowed_paths
+          : null;
+      } catch (_) {
+        allowedPaths = null;
+      }
+
+      // Validate all paths through the shared module (handles disabled check,
+      // symlink resolution, always-blocked, dotfile, allowlist, and size cap).
+      const validation = validateUploadPaths(filePaths, {
+        allowedPaths,
+        checkSize: method === "drop",
+      });
+      if (!validation.ok) {
+        return {
+          content: [{ type: "text", text: validation.errorText }],
+          isError: true,
+        };
+      }
+
       let bridgeParams;
       if (method === "drop") {
-        // Read file bytes and base64-encode for DataTransfer injection
+        // Read file bytes and base64-encode for DataTransfer injection.
+        // Paths are already validated; realpathSync here matches what the
+        // module verified against.
         const files = [];
         for (const p of filePaths) {
           const resolved = fs.realpathSync(path.resolve(p));
-          const stat = fs.statSync(resolved);
-          if (stat.size > MAX_BYTES) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `File too large: "${path.basename(p)}" is ${(stat.size / 1024 / 1024).toFixed(1)} MB. The drop method supports files up to 10 MB.`,
-                },
-              ],
-              isError: true,
-            };
-          }
           const buf = fs.readFileSync(resolved);
           const ext = path.extname(p).slice(1).toLowerCase();
           const mimeMap = {
