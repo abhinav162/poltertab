@@ -57,10 +57,10 @@ Prefer not to install globally? `npx poltertab setup` does the same thing.
 
 The installer prints this link when it finishes:
 
-1. Download the latest [release zip](https://github.com/abhinav162/poltertab/releases/latest) and unzip it
+1. Download the latest [release zip](https://github.com/abhinav162/poltertab/releases/latest) and unzip it into its own folder (e.g. `unzip poltertab-extension-vX.zip -d poltertab-extension`, or double-click on macOS — which creates a folder automatically)
 2. Open Chrome → `chrome://extensions/`
 3. Enable **Developer mode** (top right toggle)
-4. Click **Load unpacked** and select the unzipped `chrome-extension/` directory
+4. Click **Load unpacked** and select that folder (the one containing `manifest.json`)
 
 Then restart your AI tool so it picks up the new tools.
 
@@ -356,7 +356,7 @@ PolterTab servers share that port by design (see above). Both sides must move:
 Chrome allows only one debugger at a time per tab. When DevTools is open on the target tab, `browser_upload_file` (method `"picker"`) fails with "Another debugger is already attached". Close DevTools on that tab before running a picker upload.
 
 **Adding `debugger` permission requires re-approving the extension:**
-Loading or reloading the `chrome-extension/` folder after the `debugger` permission was added prompts Chrome to ask for re-approval — the extension is disabled until you click **Keep** or **Allow** on the warning dialog in `chrome://extensions/`. Unpack-loaded extensions do not auto-update, so this only happens when you explicitly reload or update the folder.
+Loading or reloading the extension folder after the `debugger` permission was added prompts Chrome to ask for re-approval — the extension is disabled until you click **Keep** or **Allow** on the warning dialog in `chrome://extensions/`. Unpack-loaded extensions do not auto-update, so this only happens when you explicitly reload or update the extension folder.
 
 **Extension not connecting:**
 
