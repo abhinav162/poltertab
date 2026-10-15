@@ -248,8 +248,7 @@ Selectors are resolved in order:
 3. **XPath** — `//div[@class="foo"]`
 4. **Text match** — exact text content of an element
 
-A miss on all four is retried with shadow-root piercing, so a selector that only
-exists inside a web component still resolves.
+A miss on all four is retried with shadow-root piercing (open roots, one level deep) and top-level same-origin iframe search. Nested iframes (iframe inside iframe) and cross-origin iframes are not supported; the tool returns a clear error in those cases.
 
 ## Troubleshooting & Options
 

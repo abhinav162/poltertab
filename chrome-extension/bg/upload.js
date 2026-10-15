@@ -174,7 +174,9 @@ self.PT.makeUpload = ({ sessionManager, forwardToContentScript }) => {
               }
             }
             if (!el) {
-              // 3. Same-origin iframes; cross-origin frames throw SecurityError — skip them
+              // 3. Top-level same-origin iframes; cross-origin frames throw SecurityError — skip them.
+              // The inner document's viewport starts at the iframe content box, not the border box.
+              // Adjust by clientLeft/clientTop (border widths) and computed padding.
               var frames = document.querySelectorAll('iframe');
               var hasOopif = false;
               for (var i = 0; i < frames.length; i++) {
@@ -183,11 +185,15 @@ self.PT.makeUpload = ({ sessionManager, forwardToContentScript }) => {
                   if (!fd) { hasOopif = true; continue; }
                   var fe = fd.querySelector(${JSON.stringify(sel)});
                   if (!fe) continue;
-                  // Combine iframe viewport offset with element offset within iframe viewport
-                  var ir = frames[i].getBoundingClientRect();
+                  var f = frames[i];
+                  var ir = f.getBoundingClientRect();
+                  var cs = getComputedStyle(f);
+                  // clientLeft/clientTop = border widths; add computed padding for the content-box start
+                  var contentLeft = ir.left + f.clientLeft + parseFloat(cs.paddingLeft);
+                  var contentTop  = ir.top  + f.clientTop  + parseFloat(cs.paddingTop);
                   var er = fe.getBoundingClientRect();
-                  return { coords: [ir.left + er.left + er.width / 2,
-                                    ir.top  + er.top  + er.height / 2] };
+                  return { coords: [contentLeft + er.left + er.width / 2,
+                                    contentTop  + er.top  + er.height / 2] };
                 } catch (_) { hasOopif = true; }
               }
               return { notFound: true, hasOopif: hasOopif };

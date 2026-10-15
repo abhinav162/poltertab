@@ -247,7 +247,9 @@ const handleToolCall = async (request) => {
             json: "application/json", zip: "application/zip",
           };
           const type = mimeMap[ext] || "application/octet-stream";
-          files.push({ name: path.basename(resolved), type, data: buf.toString("base64") });
+          // Use the caller's original path for the file name so a symlink keeps its link name,
+          // not the target's name; bytes are still read from the realpathSync'd resolved path.
+          files.push({ name: path.basename(filePaths[i]), type, data: buf.toString("base64") });
         }
         bridgeParams = { selector: opts.selector, files, method: "drop", ...((opts.tabId != null) ? { tabId: opts.tabId } : {}), ...((opts.session != null) ? { session: opts.session } : {}) };
       } else {
