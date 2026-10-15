@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PolterTab — Let any AI agent use the Chrome you're already logged into</title>
+  <meta name="description" content="PolterTab connects any MCP client — Claude Code, Claude Desktop, Cursor, your own agent — to your real browser. Your profile, your cookies, your sessions. No headless browser. Local only, open source." />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#eff1f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1e1e2e" media="(prefers-color-scheme: dark)" />
+
+  <!-- Open Graph / social -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="PolterTab — browser control for any AI agent" />
+  <meta property="og:description" content="Let any AI agent use the Chrome you're already logged into. Your profile, your cookies, your sessions. Local only, open source." />
+  <meta property="og:url" content="https://abhinav162.github.io/poltertab/" />
+  <meta name="twitter:card" content="summary" />
+
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="#top">
+        <img src="assets/logo.svg" alt="" width="30" height="30" />
+        <span>PolterTab</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary">
+        <a class="nav-link" href="#how">How it works</a>
+        <a class="nav-link" href="#security">Security</a>
+        <a class="nav-link" href="#install">Install</a>
+        <a class="nav-link" href="#faq">FAQ</a>
+        <a class="btn btn-ghost" href="https://github.com/abhinav162/poltertab" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.7 5.4-5.28 5.69.42.36.79 1.06.79 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+          GitHub
+        </a>
+        <!-- Chrome Web Store button: hidden until the listing is live. Remove hidden + fill href to enable. -->
+        <a class="btn btn-primary" id="cws-button-header" href="#" hidden aria-hidden="true">Get the Chrome Extension</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <span id="top"></span>
+
+    <!-- 1. Hero -->
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <h1 id="hero-title">Let any AI agent use the Chrome you're already logged into.</h1>
+          <p class="lede">PolterTab connects any MCP client — Claude Code, Claude Desktop, Cursor, your own agent — to your real browser. Your profile, your cookies, your sessions. No headless browser, nothing to re-log into.</p>
+
+          <div class="cmd" role="group" aria-label="Install command">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code id="install-cmd">npm install -g poltertab &amp;&amp; poltertab setup</code>
+            <button class="copy-btn" type="button" data-copy="npm install -g poltertab &amp;&amp; poltertab setup" aria-label="Copy install command">Copy</button>
+          </div>
+
+          <div class="hero-cta">
+            <a class="btn btn-primary" href="https://github.com/abhinav162/poltertab" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.26-1.28-5.26-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.7 5.4-5.28 5.69.42.36.79 1.06.79 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+              View on GitHub
+            </a>
+            <!-- Chrome Web Store button: hidden until the listing is live. Remove hidden + fill href to enable. -->
+            <a class="btn btn-ghost" id="cws-button" href="#" hidden aria-hidden="true">Get the Chrome Extension</a>
+          </div>
+
+          <ul class="hero-trust" aria-label="Key properties">
+            <li><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Runs locally</span></li>
+            <li><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> No PolterTab servers</span></li>
+            <li><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Open source</span></li>
+          </ul>
+        </div>
+
+        <div class="hero-art">
+          <!-- PLACEHOLDER: hero looping demo. Dwight's capture lands via DAG-37; swap this frame for a <video> or GIF. -->
+          <div class="media-frame" role="img" aria-label="Demo placeholder: an AI agent driving a logged-in Chrome tab. Video coming soon.">
+            <div class="media-chrome" aria-hidden="true">
+              <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+              <span class="tab">your-logged-in-tab</span>
+            </div>
+            <div class="placeholder">
+              <img src="assets/logo.svg" alt="" width="96" height="96" style="animation: float 6s ease-in-out infinite;" />
+              <span class="ph-label">Looping demo coming soon</span>
+              <span class="ph-sub">placeholder · DAG-37</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Problem -->
+    <section class="problem" aria-labelledby="problem-title">
+      <div class="wrap">
+        <div class="section-head" style="max-width:46rem">
+          <span class="eyebrow">The problem</span>
+          <h2 id="problem-title">Headless browsers are logged out of everything.</h2>
+          <p>Every browser automation tool starts the same way: a fresh browser with no cookies, no sessions, no history. The first thing your agent hits is a login wall, then a CAPTCHA, then two-factor. PolterTab skips all of it. The agent works inside the Chrome you already use — the dashboards you're signed into, the tools your company runs, the tabs you already have open. If you can see it in your browser, your agent can work with it.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Demo strip -->
+    <section aria-labelledby="demo-title">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">See it work</span>
+          <h2 id="demo-title">Four things a logged-out browser can't do.</h2>
+          <p>Clips are being captured now.</p>
+        </div>
+        <div class="demo-grid">
+          <article class="demo-card">
+            <div class="media-frame" role="img" aria-label="Demo placeholder: reading a login-gated dashboard. Clip coming soon.">
+              <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">dashboard</span></div>
+              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+            </div>
+            <h3>Gated dashboard</h3>
+            <p>Read a dashboard that lives behind your company login. No credentials shared with the agent — it uses the session already in your browser.</p>
+          </article>
+          <article class="demo-card">
+            <div class="media-frame" role="img" aria-label="Demo placeholder: filling a form and uploading a file. Clip coming soon.">
+              <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">form · upload</span></div>
+              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+            </div>
+            <h3>Form + file upload</h3>
+            <p>Fill a form and attach a file. Uploads only work from folders you've explicitly allowlisted — everything else is refused.</p>
+          </article>
+          <article class="demo-card">
+            <div class="media-frame" role="img" aria-label="Demo placeholder: scraping an infinite-scroll feed. Clip coming soon.">
+              <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">infinite-scroll</span></div>
+              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+            </div>
+            <h3>Infinite scroll scrape</h3>
+            <p>Scrape a feed that fights back. <code>browser_smart_scroll</code> walks virtualized lists; network capture reads the API responses behind the DOM.</p>
+          </article>
+          <article class="demo-card">
+            <div class="media-frame" role="img" aria-label="Demo placeholder: two agents sharing one browser. Clip coming soon.">
+              <div class="media-chrome" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="tab">two agents</span></div>
+              <div class="placeholder small"><span class="ph-label">Clip coming soon</span><span class="ph-sub">placeholder · DAG-37</span></div>
+            </div>
+            <h3>Two agents, one browser</h3>
+            <p>Run Claude Code and Cursor against the same Chrome at once. Each agent gets its own tab; the first server coordinates, the rest proxy through it.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. How it works -->
+    <section id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">How it works</span>
+          <h2 id="how-title">Four hops, all on your machine.</h2>
+          <p>The agent speaks MCP (Model Context Protocol — the standard AI tools use to call external tools) to a small Node server on your machine. The server talks to the Chrome extension over a localhost WebSocket. The extension does the clicking, typing, and reading. Nothing leaves your computer.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-step"><div class="n">01</div><h3>Your AI agent</h3><p>Any MCP client. Speaks MCP over stdio.</p></div>
+          <div class="flow-step"><div class="n">02</div><h3>PolterTab MCP server</h3><p>A local Node.js process. Connects over a WebSocket on <code>localhost:7822</code>.</p></div>
+          <div class="flow-step"><div class="n">03</div><h3>PolterTab extension</h3><p>Runs the commands using Chrome APIs and the DOM.</p></div>
+          <div class="flow-step"><div class="n">04</div><h3>Your Chrome profile</h3><p>The browser you already have open, signed in.</p></div>
+        </div>
+        <p class="small muted" style="margin-top:1.4rem;max-width:46rem">Several agents can share one browser with zero configuration: the first server to claim port 7822 serves the extension, later ones proxy through it, and each agent keeps its own current tab.</p>
+      </div>
+    </section>
+
+    <!-- 5. Security & privacy -->
+    <section class="security" id="security" aria-labelledby="sec-title">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Security &amp; privacy</span>
+          <h2 id="sec-title">Your browser stays yours.</h2>
+        </div>
+        <div class="sec-grid">
+          <div class="sec-card">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+            <h3>Local only</h3>
+            <p>The agent, the MCP server, and the extension all run on your machine. Page content travels over a localhost WebSocket — there are no PolterTab servers, and nothing is sent to us. Ever.</p>
+          </div>
+          <div class="sec-card">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0ZM3 12h18"/></svg>
+            <h3>No telemetry</h3>
+            <p>The only outbound call the server makes is a version check to <code>registry.npmjs.org</code>, at most once a day. Set <code>POLTERTAB_NO_UPDATE_CHECK=1</code> to turn even that off.</p>
+          </div>
+          <div class="sec-card">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <h3>Uploads refused by default</h3>
+            <p><code>browser_upload_file</code> only accepts files from folders you've listed in <code>~/.poltertab/config.json</code>. Sensitive paths (<code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, system directories, home dotfiles) are blocked even if you allowlist them.</p>
+          </div>
+          <div class="sec-card">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 18 22 12l-6-6M8 6l-6 6 6 6"/></svg>
+            <h3>Open source</h3>
+            <p>The whole thing — extension and server — is on GitHub. The npm package is published with provenance, so you can verify what you installed is what's in the repo.</p>
+          </div>
+          <div class="sec-card">
+            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <h3>You can see it working</h3>
+            <p>The agent acts in your visible browser, in a "PolterTab" tab group. Close the tab, and it's over.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. Works with -->
+    <section aria-labelledby="clients-title">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Works with</span>
+          <h2 id="clients-title">Any MCP client.</h2>
+          <p>Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP — including agents you build yourself. <code>poltertab setup</code> registers the server with Claude Code automatically; for other clients, add one entry to their MCP config.</p>
+        </div>
+        <div class="clients">
+          <span class="client-chip"><span class="dot"></span>Claude Code</span>
+          <span class="client-chip"><span class="dot"></span>Claude Desktop</span>
+          <span class="client-chip"><span class="dot"></span>Cursor</span>
+          <span class="client-chip"><span class="dot"></span>Your own agent</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. Install -->
+    <section id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Install</span>
+          <h2 id="install-title">Install in two steps.</h2>
+          <p>Requires Node 18 or newer.</p>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <div class="num">1</div>
+            <h3>The server</h3>
+            <pre><code>npm install -g poltertab
+poltertab setup</code></pre>
+            <p class="small" style="margin-top:.8rem">The wizard installs the MCP registration, a browser-navigation skill, and a CLAUDE.md note so your agent knows the tools exist. Safe to re-run.</p>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <h3>The extension</h3>
+            <ol>
+              <li>Download the <a href="https://github.com/abhinav162/poltertab/releases/latest" rel="noopener">latest release zip</a>.</li>
+              <li>Unzip it into its own folder (double-clicking on macOS makes one).</li>
+              <li>Open <code>chrome://extensions/</code> and enable <strong>Developer mode</strong>.</li>
+              <li>Click <strong>Load unpacked</strong> and select that folder — the one containing <code>manifest.json</code>.</li>
+              <li>Restart your AI tool.</li>
+            </ol>
+            <!-- When the Chrome Web Store listing is live, surface: "Or install from the Chrome Web Store in one click." -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. FAQ -->
+    <section id="faq" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="section-head center" style="margin-inline:auto">
+          <span class="eyebrow">FAQ</span>
+          <h2 id="faq-title">Questions</h2>
+        </div>
+        <div class="faq">
+          <details>
+            <summary>Does PolterTab send my browsing data anywhere?</summary>
+            <div class="faq-body"><p>No. Everything runs locally: agent → local server → extension, over stdio and a localhost WebSocket. The one outbound request the server makes is a daily version check to npm's registry, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> disables it. The extension makes no outbound requests at all.</p></div>
+          </details>
+          <details>
+            <summary>Can the agent read my passwords or cookies?</summary>
+            <div class="faq-body"><p>It can't read your password manager or Chrome's cookie store. It sees what a script running in a page can see: the rendered page, and the network responses that page loads. It acts with your session — that's the point — but credentials themselves are never read or transmitted.</p></div>
+          </details>
+          <details>
+            <summary>Can the agent upload any file from my disk?</summary>
+            <div class="faq-body"><p>No. Uploads are refused unless the file lives in a folder you've explicitly listed in <code>~/.poltertab/config.json</code> (<code>upload_allowed_paths</code>). Directories like <code>~/.ssh</code>, <code>~/.aws</code>, and system paths are blocked regardless of the allowlist.</p></div>
+          </details>
+          <details>
+            <summary>What about sites that fight automation?</summary>
+            <div class="faq-body"><p>That's the specialty. <code>browser_smart_scroll</code> handles virtualized and infinite-scroll pages, <code>browser_get_network_state</code> captures the API/GraphQL responses behind an obfuscated DOM, and site memory stores per-domain obstacles and fixes so the agent doesn't re-learn a hostile site every session.</p></div>
+          </details>
+          <details>
+            <summary>Can multiple agents use the same browser?</summary>
+            <div class="faq-body"><p>Yes. The first MCP server to bind the port becomes primary; later ones proxy through it automatically. Each agent gets its own current tab. Up to 50 agents can share one browser.</p></div>
+          </details>
+          <details>
+            <summary>Is it open source?</summary>
+            <div class="faq-body"><p>Yes — extension and server, on GitHub. npm releases are published with provenance. ISC license.</p></div>
+          </details>
+          <details>
+            <summary>Why does the extension need the <code>debugger</code> permission?</summary>
+            <div class="faq-body"><p>Only for file uploads via the OS file picker: Chrome's DevTools Protocol is the only way to intercept a page's file-chooser dialog. The debugger is attached to one tab for the duration of the upload and detached after — Chrome shows a banner while it's attached, so you always know.</p></div>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <a class="brand" href="#top">
+          <img src="assets/logo.svg" alt="" width="28" height="28" />
+          <span>PolterTab</span>
+        </a>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/poltertab" rel="noopener">npm</a>
+          <a href="https://github.com/abhinav162/poltertab/releases/latest" rel="noopener">Releases</a>
+          <a href="privacy.html">Privacy</a>
+        </nav>
+      </div>
+      <p class="footer-note">PolterTab runs locally and drives your own browser. Use it only on sites and accounts you're authorized to access. Demo media on this page is placeholder and clearly marked until captures land.</p>
+    </div>
+  </footer>
+
+  <script>
+    // Copy-to-clipboard for the install command. Progressive: the command is
+    // visible and selectable without JS; this just adds a one-click copy.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.copy-btn');
+      if (!btn) return;
+      var text = btn.getAttribute('data-copy') || '';
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text).then(function () {
+        var prev = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = prev; }, 1600);
+      }).catch(function () {});
+    });
+  </script>
+</body>
+</html>

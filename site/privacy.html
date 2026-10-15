@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy — PolterTab</title>
+  <meta name="description" content="PolterTab runs entirely on your computer. No servers, no accounts, no analytics. Nothing about your browsing ever leaves your machine." />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#eff1f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1e1e2e" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+  <link rel="stylesheet" href="assets/styles.css" />
+  <style>
+    .doc { max-width: 46rem; }
+    .doc h2 { font-size: 1.3rem; margin-top: 2.2rem; }
+    .doc p, .doc li { color: var(--text-muted); }
+    .doc ul { padding-left: 1.2rem; }
+    .doc li { margin-bottom: .5rem; }
+    .doc .lead { color: var(--text); font-size: 1.1rem; }
+    .meta { font-size: .9rem; color: var(--text-subtle); font-family: var(--mono); }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="" width="30" height="30" />
+        <span>PolterTab</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary">
+        <a class="nav-link" href="index.html#how">How it works</a>
+        <a class="nav-link" href="index.html#install">Install</a>
+        <a class="btn btn-ghost" href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section>
+      <div class="wrap doc">
+        <span class="eyebrow">Privacy</span>
+        <h1>Privacy</h1>
+        <p class="meta">Last updated: 15 October 2026. Applies to PolterTab 1.9.0 and later.</p>
+
+        <h2>The short version</h2>
+        <p class="lead">PolterTab runs entirely on your computer. We have no servers, no accounts, no analytics, and no way to see what you browse. Nothing about your browsing — pages, URLs, keystrokes, screenshots — ever leaves your machine.</p>
+
+        <h2>How data moves</h2>
+        <p>PolterTab has two halves: an MCP server (a Node.js process you run) and a Chrome extension. Your AI agent sends commands to the server over stdio; the server relays them to the extension over a WebSocket bound to localhost (port 7822 by default); the extension performs them in your browser and returns the result the same way back. Every hop is on your machine. The server's <code>/status</code> endpoint answers only loopback callers.</p>
+        <p>What the AI agent itself does with page content is governed by that agent's own privacy policy (e.g. Anthropic's for Claude) — PolterTab just hands the content to the client you connected.</p>
+
+        <h2>The one network call, exactly</h2>
+        <p>The MCP server checks <code>registry.npmjs.org</code> for a newer PolterTab version — at most once per day, cached in <code>~/.poltertab/update-check.json</code>, never blocking any operation. The request contains the package name, nothing about you or your browsing. Set <code>POLTERTAB_NO_UPDATE_CHECK=1</code> to disable it entirely; version-skew detection between server and extension is local and keeps working.</p>
+        <p>The Chrome extension makes <strong>no</strong> outbound network requests. Its only connection is the localhost WebSocket to your own server.</p>
+        <p>There is no telemetry, no crash reporting, no analytics of any kind, in either half.</p>
+
+        <h2>What is stored, and where</h2>
+        <p>Everything PolterTab persists lives in <code>~/.poltertab/</code> on your disk (move it with <code>POLTERTAB_HOME</code>):</p>
+        <ul>
+          <li><code>navigation_memory/</code> — per-domain notes the agent saves about how to navigate a site (<code>browser_save_site_memory</code>).</li>
+          <li><code>downloads/</code> — page data you asked a tool to save to a file.</li>
+          <li><code>config.json</code> — your settings, including the upload allowlist.</li>
+          <li><code>update-check.json</code> — the cached version-check result.</li>
+        </ul>
+        <p>The extension stores two things in Chrome's local extension storage: the WebSocket port number and its own tab-to-session bookkeeping — both local, neither leaves Chrome. Delete the folder and remove the extension, and PolterTab is gone.</p>
+
+        <h2>What the extension can access, and why</h2>
+        <p>The extension asks for broad permissions because you may point your agent at any site — it cannot know in advance which ones. Concretely:</p>
+        <ul>
+          <li><strong>All websites (<code>&lt;all_urls&gt;</code>)</strong> — the content script must be able to read and act on whatever page you direct the agent to. It does nothing on pages the agent isn't working with.</li>
+          <li><strong>Tabs and tab groups</strong> — to open, switch, and track tabs, and to gather agent tabs into a visible "PolterTab" group so you can see what's being touched.</li>
+          <li><strong>Debugger</strong> — used for one feature only: intercepting a page's file-picker dialog during <code>browser_upload_file</code>. Attached to the one tab for the duration of the upload, then detached; Chrome shows a banner the whole time.</li>
+          <li><strong>File uploads</strong> are refused unless the file is inside a folder you listed in <code>config.json</code> (<code>upload_allowed_paths</code>). <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, home dotfiles, and system directories are blocked even if listed.</li>
+        </ul>
+        <p>PolterTab cannot interact with <code>chrome://</code> pages or the Chrome Web Store — Chrome forbids it, and the server reports that cleanly instead of trying.</p>
+
+        <h2>Changes</h2>
+        <p>This policy changes only via a commit to the public repo, so the history of every change is in git: <a href="https://github.com/abhinav162/poltertab" rel="noopener">github.com/abhinav162/poltertab</a>.</p>
+        <p>Questions: open an issue on the repo.</p>
+
+        <p style="margin-top:2.2rem"><a href="index.html">← Back to home</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="28" height="28" />
+          <span>PolterTab</span>
+        </a>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+          <a href="index.html">Home</a>
+        </nav>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
