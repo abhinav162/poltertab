@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy — PolterTab</title>
+  <meta name="description" content="How PolterTab handles your data: it runs locally, has no PolterTab servers, and no account." />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#eff1f5" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1e1e2e" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+  <link rel="stylesheet" href="assets/styles.css" />
+  <style>
+    .doc { max-width: 46rem; }
+    .doc h2 { font-size: 1.3rem; margin-top: 2rem; }
+    .doc p, .doc li { color: var(--text-muted); }
+    .draft-note {
+      background: color-mix(in srgb, var(--yellow) 16%, transparent);
+      border: 1px solid var(--yellow); color: var(--text);
+      border-radius: 10px; padding: .9rem 1.1rem; font-size: .92rem; margin-bottom: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html">
+        <img src="assets/logo.svg" alt="" width="30" height="30" />
+        <span>PolterTab</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary">
+        <a class="nav-link" href="index.html#how">How it works</a>
+        <a class="nav-link" href="index.html#install">Install</a>
+        <a class="btn btn-ghost" href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section>
+      <div class="wrap doc">
+        <span class="eyebrow">Privacy</span>
+        <h1>Privacy policy</h1>
+
+        <!-- PLACEHOLDER: final privacy copy is written by Kelly (DAG-35, hive/plans/poltertab-launch-copy.md).
+             Swap the body below for that text, and remove this draft note, before launch. -->
+        <p class="draft-note"><strong>Draft shell.</strong> This is placeholder text matching what is true today. The final wording lands with the launch copy pack and will replace this section.</p>
+
+        <p>PolterTab is a local tool. It runs entirely on your own computer and drives the Chrome browser you already use.</p>
+
+        <h2>What we collect</h2>
+        <p>Nothing. PolterTab has no servers of its own, no account, and no analytics or telemetry. We do not receive your browsing data, your credentials, or anything the agent does in your browser.</p>
+
+        <h2>Where your data lives</h2>
+        <p>On your machine. The MCP server and the Chrome extension communicate over a local connection. Anything the agent reads or does stays between your browser, the local server, and the AI client you connected — none of it passes through PolterTab.</p>
+
+        <h2>Files and uploads</h2>
+        <p>The agent cannot read or upload files from your computer unless you explicitly allowlist the folders they can come from. Uploads are refused by default.</p>
+
+        <h2>Permissions</h2>
+        <p>The extension requests the Chrome permissions it needs to act in your browser on your behalf. Because it drives your real, signed-in profile, use it only on sites and accounts you are authorized to access.</p>
+
+        <h2>Open source</h2>
+        <p>The code is public on <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a> and the package is published to npm with provenance, so you can verify exactly what runs.</p>
+
+        <p style="margin-top:2rem"><a href="index.html">← Back to home</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <a class="brand" href="index.html">
+          <img src="assets/logo.svg" alt="" width="28" height="28" />
+          <span>PolterTab</span>
+        </a>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+          <a href="index.html">Home</a>
+        </nav>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
