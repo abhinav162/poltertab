@@ -2,6 +2,14 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.8.1-beta.1](https://github.com/abhinav162/poltertab/compare/v1.8.0...v1.8.1-beta.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **ci:** beta versioning and v-prefixed tags for release-please ([#30](https://github.com/abhinav162/poltertab/issues/30)) ([dc843c1](https://github.com/abhinav162/poltertab/commit/dc843c14dfe82776f7e0f076c06f81dc041df43d))
+* **ci:** start release-please changelog at v1.8.0 on main ([#32](https://github.com/abhinav162/poltertab/issues/32)) ([087c46d](https://github.com/abhinav162/poltertab/commit/087c46dc7d77d24640837837f66f5795225f483a))
+
 ## 1.8.0 — 2026-10-14
 
 Builds on 1.7.0. Contains PR-1 (#22), PR-2 (#23), PR-3 (#24), the macOS legacy-bind
