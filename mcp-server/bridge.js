@@ -35,7 +35,7 @@ const {
 } = require("./config.js");
 const updates = require("./update-check.js");
 const OWN_VERSION = require("./../package.json").version;
-const { getAllowlist, addAllowlistEntry, removeAllowlistEntry } = require("./uploads-config.js");
+const { getAllowlist, addAllowlistEntry, removeAllowlistEntry, getTrustedExtensionIds } = require("./uploads-config.js");
 const { logUpload, getRecentLog } = require("./uploads-log.js");
 const { buildAlwaysBlocked, validateAllowlistEntry } = require("./upload-paths.js");
 const fs = require("fs");
@@ -51,31 +51,20 @@ const path = require("path");
 // access. The always-blocked list and allowlist are the server-side guards.
 const CWS_EXTENSION_ID = ""; // filled when the Chrome Web Store assigns it
 
-function loadTrustedExtensionIds() {
-  const ids = new Set();
-  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
-  try {
-    const cfgPath = path.join(POLTERTAB_HOME, "config.json");
-    const raw = fs.readFileSync(cfgPath, "utf8");
-    const cfg = JSON.parse(raw);
-    if (Array.isArray(cfg.trusted_extension_ids)) {
-      for (const id of cfg.trusted_extension_ids) {
-        if (typeof id === "string" && id.trim()) ids.add(id.trim());
-      }
-    }
-  } catch (_) { /* ENOENT or parse error — no paired IDs */ }
-  return ids;
-}
-
+// isUploadsAuthorized and isPaired may throw on malformed config.json —
+// callers must catch and send uploads_error.
 function isUploadsAuthorized(origin) {
   if (!origin || !origin.startsWith("chrome-extension://")) return false;
   const id = origin.slice("chrome-extension://".length).replace(/\/$/, "");
-  const trusted = loadTrustedExtensionIds();
-  return trusted.has(id);
+  const ids = new Set(getTrustedExtensionIds());
+  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
+  return ids.has(id);
 }
 
 function isPaired() {
-  return loadTrustedExtensionIds().size > 0;
+  const ids = new Set(getTrustedExtensionIds());
+  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
+  return ids.size > 0;
 }
 
 let WS_PORT = resolvePort();
@@ -1168,7 +1157,16 @@ function setupPrimaryWss(wss) {
 
         // uploads_get_origins — return list of connected extension origins.
         // Used by `poltertab uploads pair` to discover which extension to trust.
+        // Only originless (CLI/local) sockets may request this; chrome-extension://
+        // origins must not be able to enumerate other connected extensions.
         if (msg.type === "uploads_get_origins") {
+          if (ws.handshakeOrigin) {
+            // Extension socket — refuse; only CLI callers (no origin) may enumerate.
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "uploads_error", error: "uploads_get_origins is restricted to local CLI callers" }));
+            }
+            return;
+          }
           const origins = [];
           if (wss) {
             for (const client of wss.clients) {
@@ -1191,7 +1189,21 @@ function setupPrimaryWss(wss) {
           msg.type === "uploads_set_config" ||
           msg.type === "uploads_get_log"
         ) {
-          if (!isPaired()) {
+          let pairedOk, authorizedOk;
+          try {
+            pairedOk = isPaired();
+            authorizedOk = isUploadsAuthorized(ws.handshakeOrigin);
+          } catch (cfgErr) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_error",
+                _replyId: msg._replyId || null,
+                error: "config read error: " + cfgErr.message,
+              }));
+            }
+            return;
+          }
+          if (!pairedOk) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: "uploads_not_paired",
@@ -1201,7 +1213,7 @@ function setupPrimaryWss(wss) {
             }
             return;
           }
-          if (!isUploadsAuthorized(ws.handshakeOrigin)) {
+          if (!authorizedOk) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: "uploads_not_paired",

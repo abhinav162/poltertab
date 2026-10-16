@@ -280,7 +280,7 @@ async function groupY() {
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://anyid" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+      await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
 
       let reply = null;
       ext.on("message", (raw) => {
@@ -311,7 +311,7 @@ async function groupY() {
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+      await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
 
       let reply = null;
       ext.on("message", (raw) => {
@@ -455,7 +455,7 @@ async function groupY() {
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+      await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
 
       // A secondary sends proxy_command navigate with uppercase scheme.
       const secondary = new WebSocket(`ws://localhost:${port}`);
@@ -496,7 +496,7 @@ async function groupY() {
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+      await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
 
       const secondary = new WebSocket(`ws://localhost:${port}`);
       await new Promise((res) => secondary.on("open", res));
@@ -558,6 +558,41 @@ async function groupY() {
       src.includes("poltertab uploads allow"),
       "upload-paths.js disabled error must mention `poltertab uploads allow`",
     );
+  });
+
+  // ── Y21: uploads_set_config refused when sender origin is not trusted ────
+  await test("Y21 uploads_set_config refused when sender origin is not trusted extension", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    // Pair "legit"; "attacker" is not trusted.
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ trusted_extension_ids: ["legit"] }));
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Attacker connects with a chrome-extension:// origin that is NOT in trusted_extension_ids.
+      const attacker = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://attacker" });
+      await new Promise((res) => attacker.on("open", res));
+      // Claim extension_ready so the socket could become extensionSocket — this must not grant access.
+      attacker.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+      let reply = null;
+      attacker.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.type === "uploads_not_paired" || m.type === "uploads_config_result" || m.type === "uploads_error") reply = m;
+      });
+      attacker.send(JSON.stringify({ type: "uploads_set_config", action: "add", dir: "/tmp/evil", _replyId: "evil1" }));
+      await waitFor("attacker refused", () => reply !== null, 3000);
+      assert.ok(
+        reply.type === "uploads_not_paired" || reply.type === "uploads_error",
+        "untrusted origin must be refused, got: " + reply.type,
+      );
+      assert.notStrictEqual(reply.type, "uploads_config_result", "untrusted origin must not receive uploads_config_result");
+      attacker.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
   });
 
   // ── Y20: logUpload called in index.js ────────────────────────────────────

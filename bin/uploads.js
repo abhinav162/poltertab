@@ -159,31 +159,30 @@ async function runPair(argv) {
     extIds.forEach((id, i) => console.log(`  ${i + 1}. ${id}`));
     console.log("\nOpen chrome://extensions to find which ID matches your poltertab extension.");
 
-    if (extIds.length === 1) {
-      extensionId = extIds[0];
-      console.log(`\nAutomatically selecting the only connected extension: ${extensionId}`);
-    } else {
-      const readline = require("readline");
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const choice = await new Promise((resolve) => {
-        rl.question(`\nEnter number (1-${extIds.length}) to pair, or paste the ID directly: `, (ans) => {
+    const readline = require("readline");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const choice = await new Promise((resolve) => {
+      rl.question(
+        `\nCompare the ID(s) above with chrome://extensions to find your poltertab extension.\n` +
+        `Enter number (1-${extIds.length}) to pair, or paste the ID directly: `,
+        (ans) => {
           rl.close();
           resolve(ans.trim());
-        });
-      });
-      const num = parseInt(choice, 10);
-      if (!isNaN(num) && num >= 1 && num <= extIds.length) {
-        extensionId = extIds[num - 1];
-      } else if (/^[a-z]{32}$/.test(choice)) {
-        extensionId = choice;
-      } else {
-        console.error("\nInvalid selection.\n");
-        process.exit(1);
-      }
+        },
+      );
+    });
+    const num = parseInt(choice, 10);
+    if (!isNaN(num) && num >= 1 && num <= extIds.length) {
+      extensionId = extIds[num - 1];
+    } else if (/^[a-p]{32}$/.test(choice)) {
+      extensionId = choice;
+    } else {
+      console.error("\nInvalid selection.\n");
+      process.exit(1);
     }
   }
 
-  if (!/^[a-z]{32}$/.test(extensionId)) {
+  if (!/^[a-p]{32}$/.test(extensionId)) {
     console.error(`\nInvalid extension ID: ${extensionId}`);
     console.error("Chrome extension IDs are 32 lowercase letters.\n");
     process.exit(1);
