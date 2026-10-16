@@ -1,115 +1,132 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="utf-8" />
     <title>PolterTab MCP Sessions</title>
     <style>
-      body {
-        font-family: sans-serif;
-        padding: 15px;
-        min-width: 300px;
-        margin: 0;
-      }
-      h3 {
-        margin-top: 0;
-        margin-bottom: 10px;
-        font-size: 16px;
-      }
-      .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px solid #ccc;
-        padding-bottom: 10px;
-        margin-bottom: 10px;
-      }
-      .status {
-        font-weight: bold;
-        color: #888;
-      }
-      .status.connected {
-        color: green;
-      }
-      .status.disconnected {
-        color: red;
-      }
-      .status.connecting {
-        color: orange;
-      }
+      /* ---- bundled fonts (woff2, no remote loads) ---- */
+      @font-face{font-family:"Bricolage Grotesque";font-style:normal;font-weight:700;font-display:swap;src:url("fonts/Bricolage-700.woff2") format("woff2")}
+      @font-face{font-family:"Bricolage Grotesque";font-style:normal;font-weight:800;font-display:swap;src:url("fonts/Bricolage-800.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/InstrumentSans-400.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:500;font-display:swap;src:url("fonts/InstrumentSans-500.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/InstrumentSans-600.woff2") format("woff2")}
+      @font-face{font-family:"Fragment Mono";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/FragmentMono-400.woff2") format("woff2")}
 
-      .session-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        max-height: 250px;
-        overflow-y: auto;
+      :root{
+        color-scheme: light dark;
+        --paper:#FAF9F6; --ink:#23211C; --ink-soft:#595448; --ink-faint:#8C877A;
+        --ecto:#0E8C7F; --ecto-deep:#0A6B61; --mint:#DCF1EB; --trail-bright:#E8A13D;
+        --surface:#FFFFFF; --hairline:#E2DED4; --bad:#B4451F; --bad-bg:#FBEBE3;
+        --display:"Bricolage Grotesque","Instrument Sans",system-ui,sans-serif;
+        --body:"Instrument Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+        --mono:"Fragment Mono",ui-monospace,"SF Mono",Menlo,monospace;
       }
-      .session-item {
-        background: #f5f5f5;
-        border: 1px solid #e0e0e0;
-        border-radius: 4px;
-        padding: 8px 12px;
-        margin-bottom: 8px;
-        font-size: 13px;
+      @media (prefers-color-scheme: dark){
+        :root{
+          --paper:#1A1814; --ink:#F1EDE3; --ink-soft:#B4AE9F; --ink-faint:#8E887A;
+          --ecto:#2FB7A6; --ecto-deep:#53D3C1; --mint:#15302C; --trail-bright:#F0B056;
+          --surface:#211E18; --hairline:#38342B; --bad:#F0916B; --bad-bg:#3A221A;
+        }
       }
-      .session-name {
-        font-weight: bold;
-        margin-bottom: 4px;
-        display: block;
+      *,*::before,*::after{box-sizing:border-box}
+      *{margin:0}
+      body{
+        width:320px; background:var(--paper); color:var(--ink);
+        font-family:var(--body); font-size:13px; line-height:1.5;
+        -webkit-font-smoothing:antialiased;
       }
-      .session-meta {
-        color: #666;
-        font-size: 11px;
+      :focus-visible{outline:2.5px solid var(--ecto-deep); outline-offset:2px; border-radius:6px}
+      [hidden]{display:none!important}
+
+      .header{display:flex; align-items:center; gap:10px; padding:14px 16px 12px; border-bottom:1px solid var(--hairline)}
+      .brand{display:flex; align-items:center; gap:9px; margin-right:auto}
+      .brand .mark{width:26px; height:26px; display:block; flex:none; color:var(--ecto)}
+      .brand b{font-family:var(--display); font-weight:800; font-size:16px; letter-spacing:-0.02em; color:var(--ink)}
+
+      /* connection pill = #conn-status (.status connected|disconnected|connecting) */
+      .status{font-weight:600; font-size:11px; padding:4px 9px 4px 20px; border-radius:999px; position:relative; white-space:nowrap; background:var(--mint); color:var(--ecto-deep)}
+      .status::before{content:""; position:absolute; left:8px; top:50%; width:7px; height:7px; margin-top:-3.5px; border-radius:50%; background:currentColor}
+      .status.connected{background:var(--mint); color:var(--ecto-deep)}
+      .status.disconnected{background:var(--bad-bg); color:var(--bad)}
+      .status.connecting{background:#FBF1DF; color:#9A6212}
+      @media (prefers-color-scheme: dark){ .status.connecting{background:#332717; color:var(--trail-bright)} }
+
+      .body{padding:12px 16px 16px}
+      .listhead{font-family:var(--display); font-weight:700; font-size:14px; letter-spacing:-0.01em; color:var(--ink); margin-bottom:3px}
+      .versions{font-size:11.5px; color:var(--ink-soft); margin:0 0 11px}
+      .versions.skew{color:var(--bad); font-weight:600}
+      .skew-warning{font-size:11.5px; line-height:1.45; color:var(--bad); background:var(--bad-bg); border:1px solid color-mix(in srgb,var(--bad) 35%,transparent); border-radius:9px; padding:8px 10px; margin-bottom:10px}
+
+      /* the ghost character — the one animated element */
+      @keyframes pt-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+      .ghost.float{animation:pt-float 3.2s ease-in-out infinite}
+      @media (prefers-reduced-motion: reduce){ .ghost.float{animation:none} }
+
+      .session-list{list-style:none; padding:0; max-height:260px; overflow-y:auto; display:grid; gap:8px}
+      .session-item{display:flex; align-items:center; gap:11px; background:var(--surface); border:1px solid var(--hairline); border-radius:12px; padding:10px 12px}
+      .agent-ghost{width:26px; height:26px; flex:none; color:var(--ecto)}
+      .agent-ghost .eye{fill:var(--surface)}
+      /* per-agent tints — darker shade for light, lighter for dark; each AA on the card */
+      .agent-ghost.tint-0{color:#0A6B61} .agent-ghost.tint-1{color:#1E5FA8}
+      .agent-ghost.tint-2{color:#6D3DA6} .agent-ghost.tint-3{color:#A8356F}
+      .agent-ghost.tint-4{color:#A24E1C} .agent-ghost.tint-5{color:#2E6B3A}
+      @media (prefers-color-scheme: dark){
+        .agent-ghost.tint-0{color:#53D3C1} .agent-ghost.tint-1{color:#7FB2F0}
+        .agent-ghost.tint-2{color:#C0A3F0} .agent-ghost.tint-3{color:#F093C0}
+        .agent-ghost.tint-4{color:#F0A868} .agent-ghost.tint-5{color:#7FCB86}
       }
-      .empty-state {
-        color: #888;
-        font-style: italic;
-        text-align: center;
-        padding: 20px 0;
-      }
-      button {
-        padding: 4px 8px;
-        cursor: pointer;
-        font-size: 12px;
-      }
-      .actions {
-        margin-top: 10px;
-        text-align: right;
-      }
-      .versions {
-        font-size: 11px;
-        opacity: 0.55;
-        margin: 2px 0 6px;
-      }
-      .versions.skew {
-        opacity: 1;
-        color: #c0392b;
-        font-weight: 600;
-      }
-      .skew-warning {
-        font-size: 11px;
-        line-height: 1.4;
-        color: #7a2018;
-        background: #fdecea;
-        border: 1px solid #f5c6cb;
-        border-radius: 4px;
-        padding: 6px 8px;
-        margin-bottom: 8px;
-      }
+      .session-text{min-width:0}
+      .session-name{font-weight:600; font-size:13px; color:var(--ink); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+      .session-meta{color:var(--ink-soft); font-size:11px; font-family:var(--mono)}
+      .live{display:inline-block; margin-left:6px; vertical-align:middle; font-size:10px; font-weight:600; font-family:var(--body); color:#6B3A08; background:var(--trail-bright); border-radius:999px; padding:1px 7px}
+      @media (prefers-color-scheme: dark){ .live{color:#2A1B06} }
+
+      .empty-state{text-align:center; padding:22px 14px; color:var(--ink-soft); font-size:12.5px; line-height:1.5}
+      .empty-state .ghost{display:block; margin:0 auto 12px; color:var(--ecto)}
+      .empty-state.sleepy .ghost{color:var(--ink-faint); opacity:.55}
+
+      /* reserved placeholder for the uploads summary — Ryan, DAG-41 */
+      .uploads-row{display:flex; align-items:center; gap:8px; margin-top:12px; border:1px dashed var(--hairline); border-radius:11px; padding:10px 12px; color:var(--ink-soft); font-size:12px; text-decoration:none}
+      .uploads-row .ic{width:15px; height:15px; flex:none; color:var(--ecto)}
+      .uploads-row .view{margin-left:auto; color:var(--ecto-deep); font-weight:600}
+
+      .actions{display:flex; gap:8px; margin-top:14px}
+      button{font-family:var(--body); font-weight:600; font-size:12.5px; cursor:pointer; border-radius:9px; padding:8px 12px; border:1px solid var(--hairline); background:var(--surface); color:var(--ink)}
+      button:hover{border-color:var(--ecto-deep)}
+      #refreshBtn{flex:1; background:var(--ecto-deep); color:#fff; border-color:transparent}
+      #refreshBtn:hover{background:var(--ecto)}
+      @media (prefers-color-scheme: dark){ #refreshBtn{color:#121E1B} }
     </style>
   </head>
   <body>
     <div class="header">
-      <h3>Active Agents</h3>
-      <span id="conn-status" class="status disconnected">Disconnected</span>
+      <span class="brand">
+        <svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z" fill="currentColor"/><circle cx="26.5" cy="26" r="2.8" fill="#FAF9F6"/><circle cx="37.5" cy="26" r="2.8" fill="#FAF9F6"/></svg>
+        <b>PolterTab</b>
+      </span>
+      <!-- initial render = connecting until the first status arrives -->
+      <span id="conn-status" class="status connecting">Connecting</span>
     </div>
-    <div id="versions" class="versions"></div>
-    <div id="skew-warning" class="skew-warning" hidden></div>
-    <ul id="session-list" class="session-list">
-      <div class="empty-state">Loading...</div>
-    </ul>
-    <div class="actions">
-      <button id="refreshBtn">Refresh List</button>
-      <button id="optionsBtn">Settings</button>
+    <div class="body">
+      <p class="listhead">Active agents</p>
+      <div id="versions" class="versions"></div>
+      <div id="skew-warning" class="skew-warning" hidden></div>
+      <ul id="session-list" class="session-list">
+        <div class="empty-state">
+          <svg class="ghost float" width="56" height="56" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z" fill="currentColor"/><circle cx="26.5" cy="26" r="2.8" fill="#FAF9F6"/><circle cx="37.5" cy="26" r="2.8" fill="#FAF9F6"/></svg>
+          Reaching the server&hellip;
+        </div>
+      </ul>
+      <!-- Uploads summary — reserved placeholder for DAG-41 (Ryan). Hidden until
+           his follow-up populates and unhides it; data over the existing WS. -->
+      <a id="uploads-summary" class="uploads-row" href="#" hidden>
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <span id="uploads-summary-text">Uploads</span><span class="view">view</span>
+      </a>
+      <div class="actions">
+        <button id="refreshBtn">Refresh list</button>
+        <button id="optionsBtn">Settings</button>
+      </div>
     </div>
     <script src="popup.js"></script>
   </body>

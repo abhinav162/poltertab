@@ -1,48 +1,91 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="utf-8" />
     <title>PolterTab Browser Control Options</title>
     <style>
-      body {
-        font-family: sans-serif;
-        padding: 20px;
+      @font-face{font-family:"Bricolage Grotesque";font-style:normal;font-weight:800;font-display:swap;src:url("fonts/Bricolage-800.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/InstrumentSans-400.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:500;font-display:swap;src:url("fonts/InstrumentSans-500.woff2") format("woff2")}
+      @font-face{font-family:"Instrument Sans";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/InstrumentSans-600.woff2") format("woff2")}
+      @font-face{font-family:"Fragment Mono";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/FragmentMono-400.woff2") format("woff2")}
+
+      :root{
+        color-scheme: light dark;
+        --paper:#FAF9F6; --ink:#23211C; --ink-soft:#595448; --ink-faint:#8C877A;
+        --ecto:#0E8C7F; --ecto-deep:#0A6B61; --mint:#DCF1EB; --surface:#FFFFFF;
+        --hairline:#E2DED4; --ok:#0A6B61;
+        --display:"Bricolage Grotesque","Instrument Sans",system-ui,sans-serif;
+        --body:"Instrument Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+        --mono:"Fragment Mono",ui-monospace,"SF Mono",Menlo,monospace;
       }
-      .container {
-        max-width: 400px;
+      @media (prefers-color-scheme: dark){
+        :root{
+          --paper:#1A1814; --ink:#F1EDE3; --ink-soft:#B4AE9F; --ink-faint:#8E887A;
+          --ecto:#2FB7A6; --ecto-deep:#53D3C1; --mint:#15302C; --surface:#211E18;
+          --hairline:#38342B; --ok:#53D3C1;
+        }
       }
-      label {
-        font-weight: bold;
+      *,*::before,*::after{box-sizing:border-box}
+      *{margin:0}
+      body{
+        background:var(--paper); color:var(--ink); font-family:var(--body);
+        font-size:14px; line-height:1.55; min-height:100vh;
+        -webkit-font-smoothing:antialiased; padding:40px 24px;
       }
-      input {
-        margin-top: 5px;
-        margin-bottom: 15px;
-        padding: 5px;
-        width: 100%;
-        box-sizing: border-box;
-      }
-      button {
-        padding: 8px 15px;
-        cursor: pointer;
-      }
-      #status {
-        margin-top: 10px;
-        color: green;
-      }
+      :focus-visible{outline:2.5px solid var(--ecto-deep); outline-offset:2px; border-radius:6px}
+      [hidden]{display:none!important}
+      .container{max-width:460px; margin-inline:auto}
+      .brand{display:flex; align-items:center; gap:11px; margin-bottom:22px}
+      .brand svg{width:34px; height:34px; display:block; color:var(--ecto)}
+      .brand b{font-family:var(--display); font-weight:800; font-size:21px; letter-spacing:-0.02em}
+      h2{font-family:var(--display); font-weight:800; font-size:22px; letter-spacing:-0.02em; margin-bottom:6px; line-height:1.1}
+      .sub{color:var(--ink-soft); margin-bottom:26px; font-size:13.5px}
+      .card{background:var(--surface); border:1px solid var(--hairline); border-radius:14px; padding:20px}
+      .card + .card{margin-top:16px}
+      .card h3{font-family:var(--display); font-weight:800; font-size:15px; letter-spacing:-0.01em; margin-bottom:4px}
+      label{font-weight:600; font-size:13.5px; display:block; margin-bottom:6px}
+      .hint{color:var(--ink-soft); font-size:12.5px; margin-bottom:10px}
+      input{font-family:var(--mono); font-size:14px; width:100%; padding:10px 12px; border:1px solid var(--hairline); border-radius:10px; background:var(--paper); color:var(--ink); margin-bottom:16px}
+      input:focus{border-color:var(--ecto-deep); background:var(--surface)}
+      .row{display:flex; align-items:center; gap:12px}
+      #saveBtn{font-family:var(--body); font-weight:600; font-size:14px; cursor:pointer; background:var(--ecto-deep); color:#fff; border:1px solid transparent; border-radius:10px; padding:10px 18px}
+      @media (prefers-color-scheme: dark){ #saveBtn{color:#121E1B} }
+      #saveBtn:hover{background:var(--ecto)}
+      #status{color:var(--ok); font-weight:600; font-size:13px; min-height:1em}
+      .reserved{border-style:dashed}
+      .reserved p{color:var(--ink-soft); font-size:12.5px}
+      .foot{margin-top:18px; font-size:12px; color:var(--ink-soft)}
+      .foot a{color:var(--ecto-deep)}
     </style>
   </head>
   <body>
     <div class="container">
-      <h2>PolterTab MCP Settings</h2>
-      <label for="wsPort">WebSocket Port (default: 7822)</label>
-      <input
-        type="number"
-        id="wsPort"
-        min="1024"
-        max="65535"
-        placeholder="7822"
-      />
-      <button id="saveBtn">Save</button>
-      <div id="status"></div>
+      <div class="brand">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z" fill="currentColor"/><circle cx="26.5" cy="26" r="2.8" fill="#FAF9F6"/><circle cx="37.5" cy="26" r="2.8" fill="#FAF9F6"/></svg>
+        <b>PolterTab</b>
+      </div>
+      <h2>Settings</h2>
+      <p class="sub">PolterTab talks to the server over a WebSocket on your own machine. Match this port to the one the server prints on startup.</p>
+
+      <div class="card">
+        <label for="wsPort">WebSocket port</label>
+        <p class="hint">Default 7822. Any port from 1024 to 65535.</p>
+        <input type="number" id="wsPort" min="1024" max="65535" placeholder="7822" />
+        <div class="row">
+          <button id="saveBtn">Save</button>
+          <span id="status"></span>
+        </div>
+      </div>
+
+      <!-- Upload permissions — reserved placeholder for DAG-41 (Ryan). Hidden
+           until his follow-up builds the real panel here; no new permissions. -->
+      <section id="upload-perms" class="card reserved" hidden>
+        <h3>Upload permissions</h3>
+        <p>Choose which folders an agent may upload from.</p>
+      </section>
+
+      <p class="foot">Everything stays local. The only outbound call is one version check a day. <a href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>.</p>
     </div>
     <script src="options.js"></script>
   </body>
