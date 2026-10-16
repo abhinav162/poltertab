@@ -7,13 +7,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const warnEl = document.getElementById("skew-warning");
 
   const SVGNS = "http://www.w3.org/2000/svg";
-  // In-family ghost tints; an agent keeps its color across refreshes.
-  const TINTS = ["#0E8C7F", "#C0692E", "#8A5A7A", "#5B7B52", "#4E6E8C", "#B08523"];
-  function tintFor(id) {
+  // Per-agent ghost tint. The name picks one of six hues deterministically, so
+  // an agent keeps its color across refreshes. The shades themselves live in
+  // the stylesheet (.agent-ghost.tint-N) with a light- and dark-mode value each,
+  // so every tint clears AA contrast on the card in both themes.
+  const TINT_COUNT = 6;
+  function tintIndex(id) {
     const s = String(id || "");
     let h = 0;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    return TINTS[h % TINTS.length];
+    for (let i = 0; i < s.length; i++) h = (Math.imul(h, 37) + s.charCodeAt(i)) >>> 0;
+    return h % TINT_COUNT;
   }
 
   // Build a ghost SVG. kind: "agent" (eyes knock out to card bg) | "big" (paper eyes).
@@ -119,9 +122,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const li = document.createElement("li");
       li.className = "session-item";
 
-      li.appendChild(
-        makeGhost("agent", { size: 26, color: tintFor(session.id) })
-      );
+      const agentGhost = makeGhost("agent", { size: 26 });
+      agentGhost.classList.add("agent-ghost", "tint-" + tintIndex(session.id));
+      li.appendChild(agentGhost);
 
       const text = document.createElement("span");
       text.className = "session-text";

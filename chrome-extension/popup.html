@@ -64,8 +64,17 @@
 
       .session-list{list-style:none; padding:0; max-height:260px; overflow-y:auto; display:grid; gap:8px}
       .session-item{display:flex; align-items:center; gap:11px; background:var(--surface); border:1px solid var(--hairline); border-radius:12px; padding:10px 12px}
-      .agent-ghost{width:26px; height:26px; flex:none}
+      .agent-ghost{width:26px; height:26px; flex:none; color:var(--ecto)}
       .agent-ghost .eye{fill:var(--surface)}
+      /* per-agent tints — darker shade for light, lighter for dark; each AA on the card */
+      .agent-ghost.tint-0{color:#0A6B61} .agent-ghost.tint-1{color:#1E5FA8}
+      .agent-ghost.tint-2{color:#6D3DA6} .agent-ghost.tint-3{color:#A8356F}
+      .agent-ghost.tint-4{color:#A24E1C} .agent-ghost.tint-5{color:#2E6B3A}
+      @media (prefers-color-scheme: dark){
+        .agent-ghost.tint-0{color:#53D3C1} .agent-ghost.tint-1{color:#7FB2F0}
+        .agent-ghost.tint-2{color:#C0A3F0} .agent-ghost.tint-3{color:#F093C0}
+        .agent-ghost.tint-4{color:#F0A868} .agent-ghost.tint-5{color:#7FCB86}
+      }
       .session-text{min-width:0}
       .session-name{font-weight:600; font-size:13px; color:var(--ink); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
       .session-meta{color:var(--ink-soft); font-size:11px; font-family:var(--mono)}
