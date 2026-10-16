@@ -281,8 +281,13 @@ importScripts(
       message.type === "uploads_set_config" ||
       message.type === "uploads_get_log"
     ) {
-      // Only relay from extension pages (options, popup) — never from a web page.
-      if (sender.tab || !sender.url || !sender.url.startsWith(chrome.runtime.getURL(""))) {
+      // Only relay from this extension's own pages (options, popup) — never from
+      // a web page. The url-prefix check is the airtight test: a content
+      // script's sender.url is the web page's URL, so it fails the prefix; only
+      // our own pages pass. We must NOT also require !sender.tab — options_page
+      // opens the options page in a full tab, so its sender.tab is set and that
+      // clause would drop every request the panel sends.
+      if (!sender.url || !sender.url.startsWith(chrome.runtime.getURL(""))) {
         return;
       }
       if (!isConnected) {
@@ -291,6 +296,15 @@ importScripts(
       }
       const replyId = Date.now().toString(36) + Math.random().toString(36).slice(2);
       pendingUploadsReplies.set(replyId, sendResponse);
+      // Drop the pending reply if the server never answers, so a dangling
+      // sendResponse doesn't leak until the worker suspends. The options page
+      // gives up at 6 s; clean up a little after that.
+      setTimeout(() => {
+        if (pendingUploadsReplies.has(replyId)) {
+          pendingUploadsReplies.delete(replyId);
+          try { sendResponse({ ok: false, error: "Timed out waiting for the server." }); } catch (_) {}
+        }
+      }, 8000);
       send({ type: message.type, _replyId: replyId, ...message.data });
       return true;
     }

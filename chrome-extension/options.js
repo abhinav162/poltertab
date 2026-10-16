@@ -98,7 +98,17 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     body.appendChild(p);
   }
 
-  function renderConfig(allowlist, alwaysBlocked) {
+  // Capture a half-typed add-folder path (and any inline error) before a
+  // re-render, so the focus-triggered refresh doesn't wipe what the user was
+  // typing while they tabbed away to copy a path.
+  function captureDraft() {
+    const i = document.getElementById("uploads-add-path");
+    if (!i) return null;
+    const e = document.getElementById("uploads-add-error");
+    return { value: i.value || "", error: e ? e.textContent : "" };
+  }
+
+  function renderConfig(allowlist, alwaysBlocked, draft) {
     body.textContent = "";
 
     // Allowed folders
@@ -144,6 +154,11 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     err.id = "uploads-add-error";
     err.setAttribute("role", "alert");
     body.appendChild(err);
+
+    if (draft) {
+      input.value = draft.value;
+      err.textContent = draft.error || "";
+    }
 
     addBtn.addEventListener("click", (e) => {
       if (!e.isTrusted) return; // god review: trusted user input only
@@ -232,19 +247,30 @@ document.getElementById("saveBtn").addEventListener("click", () => {
   }
 
   async function removeFolder(dir, btn) {
+    const err = document.getElementById("uploads-add-error");
     btn.disabled = true;
     const reply = await ask("uploads_set_config", { action: "remove", dir });
-    if (!reply) { btn.disabled = false; return; }
+    if (!reply) {
+      btn.disabled = false;
+      if (err) err.textContent = "Couldn't reach the server. Try again.";
+      return;
+    }
     if (reply.type === "uploads_not_paired") { renderNotPaired(); return; }
+    if (reply.type === "uploads_error" || (reply.ok === false && reply.error)) {
+      btn.disabled = false;
+      if (err) err.textContent = reply.error || "Server error.";
+      return;
+    }
     load();
   }
 
   async function load() {
+    const draft = captureDraft();
     const reply = await ask("uploads_get_config");
     if (!reply) return renderOffline();
     if (reply.type === "uploads_not_paired") return renderNotPaired();
     if (reply.type === "uploads_error") return renderError(reply.error);
-    if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked);
+    if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked, draft);
     if (reply.ok === false) return renderOffline(); // "Not connected to bridge server."
     renderError("unexpected response");
   }
