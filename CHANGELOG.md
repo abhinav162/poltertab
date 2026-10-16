@@ -2,6 +2,14 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.9.0](https://github.com/abhinav162/poltertab/compare/v1.9.0-beta.2...v1.9.0) (2026-10-15)
+
+
+### Miscellaneous Chores
+
+* release 1.9.0 final ([#42](https://github.com/abhinav162/poltertab/issues/42)) ([0e14ad3](https://github.com/abhinav162/poltertab/commit/0e14ad38bca199866617d804be28d4bb06df230c))
+* **site:** redesign landing page ([#40](https://github.com/abhinav162/poltertab/issues/40)) ([db245a7](https://github.com/abhinav162/poltertab/commit/db245a7987e737fbf78e6aed9f0d6b7ff33e76eb))
+
 ## [1.9.0-beta.2](https://github.com/abhinav162/poltertab/compare/v1.9.0-beta.1...v1.9.0-beta.2) (2026-10-15)
 
 
