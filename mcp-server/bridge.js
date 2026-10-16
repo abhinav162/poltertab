@@ -35,6 +35,9 @@ const {
 } = require("./config.js");
 const updates = require("./update-check.js");
 const OWN_VERSION = require("./../package.json").version;
+const { getAllowlist, addAllowlistEntry, removeAllowlistEntry } = require("./uploads-config.js");
+const { logUpload, getRecentLog } = require("./uploads-log.js");
+const { buildAlwaysBlocked, validateAllowlistEntry } = require("./upload-paths.js");
 
 let WS_PORT = resolvePort();
 
@@ -841,8 +844,9 @@ function _dispatchProxyNow(callerWs, id, action, params) {
 }
 
 function setupPrimaryWss(wss) {
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
     ws.isAlive = true;
+    ws.handshakeOrigin = (req && req.headers && req.headers.origin) || null;
     ws.supportsNewCloseCodes = false;
     ws.on("pong", () => {
       ws.isAlive = true;
@@ -952,6 +956,24 @@ function setupPrimaryWss(wss) {
           if (params && params.tabId) {
             ws.lastTabId = params.tabId;
             broadcastSessionState();
+          }
+
+          // Self-navigation guard: refuse commands targeting extension pages.
+          const EXTENSION_SENSITIVE_ACTIONS = new Set([
+            "navigate", "tab_new", "click", "fill", "snapshot", "debugger_attach",
+          ]);
+          if (EXTENSION_SENSITIVE_ACTIONS.has(action)) {
+            const urlParam = params.url || params.target || "";
+            if (typeof urlParam === "string" && urlParam.includes("chrome-extension://")) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  id,
+                  success: false,
+                  error: "[self_navigation_refused] Agent commands cannot target extension pages.",
+                }));
+              }
+              return;
+            }
           }
 
           if (action === "get_network_state") {
@@ -1099,6 +1121,83 @@ function setupPrimaryWss(wss) {
             }
           }
           return;
+        }
+
+        // Upload config/log messages — extension-origin connections only.
+        if (
+          msg.type === "uploads_get_config" ||
+          msg.type === "uploads_set_config" ||
+          msg.type === "uploads_get_log"
+        ) {
+          const isExtensionOrigin =
+            ws.handshakeOrigin &&
+            ws.handshakeOrigin.startsWith("chrome-extension://");
+          if (!isExtensionOrigin) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_error",
+                _replyId: msg._replyId || null,
+                error: "[uploads_forbidden] Upload config access requires an extension-origin connection.",
+              }));
+            }
+            return;
+          }
+          const os = require("os");
+          const homeDir = os.homedir();
+
+          if (msg.type === "uploads_get_config") {
+            const allowlist = getAllowlist();
+            const alwaysBlocked = buildAlwaysBlocked(homeDir);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_config",
+                _replyId: msg._replyId || null,
+                allowlist,
+                alwaysBlocked,
+              }));
+            }
+            return;
+          }
+
+          if (msg.type === "uploads_set_config") {
+            const { action: cfgAction, dir } = msg;
+            let result;
+            if (cfgAction === "add") {
+              const v = validateAllowlistEntry(dir, homeDir);
+              if (!v.ok) {
+                result = { ok: false, error: v.errorText };
+              } else {
+                addAllowlistEntry(dir);
+                result = { ok: true };
+              }
+            } else if (cfgAction === "remove") {
+              removeAllowlistEntry(dir);
+              result = { ok: true };
+            } else {
+              result = { ok: false, error: `Unknown action: ${cfgAction}` };
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_config_result",
+                _replyId: msg._replyId || null,
+                ...result,
+              }));
+            }
+            return;
+          }
+
+          if (msg.type === "uploads_get_log") {
+            const n = typeof msg.n === "number" ? msg.n : 20;
+            const entries = getRecentLog(n);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_log",
+                _replyId: msg._replyId || null,
+                entries,
+              }));
+            }
+            return;
+          }
         }
 
         // Handle captured network data
