@@ -55,4 +55,26 @@ function removeAllowlistEntry(dir) {
   return true;
 }
 
-module.exports = { getAllowlist, addAllowlistEntry, removeAllowlistEntry, CONFIG_PATH };
+// Adds id to trusted_extension_ids if not already present. Returns true if added.
+function addTrustedExtensionId(id) {
+  const cfg = _readConfig();
+  const list = Array.isArray(cfg.trusted_extension_ids) ? cfg.trusted_extension_ids : [];
+  if (list.includes(id)) return false;
+  _writeConfig({ ...cfg, trusted_extension_ids: [...list, id] });
+  return true;
+}
+
+function getTrustedExtensionIds() {
+  const cfg = _readConfig();
+  const v = cfg.trusted_extension_ids;
+  return Array.isArray(v) ? v : [];
+}
+
+module.exports = {
+  getAllowlist,
+  addAllowlistEntry,
+  removeAllowlistEntry,
+  addTrustedExtensionId,
+  getTrustedExtensionIds,
+  CONFIG_PATH,
+};

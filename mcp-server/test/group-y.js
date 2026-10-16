@@ -8,14 +8,18 @@
 //   Y6  logUpload appends one correct JSON line
 //   Y7  logUpload rotation drops old lines when file exceeds LOG_MAX_BYTES
 //   Y8  getRecentLog(n) returns last n entries
-//   Y9  WS uploads_get_config accepted only from registered extension socket
-//   Y10 WS uploads_get_config refused from attacker extension-origin and originless
-//   Y11 proxy_command to CHROME-EXTENSION:// URL returns self_navigation_refused
-//   Y12 proxy_command to chrome-extension:// URL returns self_navigation_refused
-//   Y13 Badge code present in background.js
-//   Y14 CLI uploads subcommand present in poltertab.js
-//   Y15 Disabled-upload error text points to CLI
-//   Y16 logUpload called in index.js
+//   Y9  WS uploads_get_config returns uploads_not_paired when no ID is paired
+//   Y10 WS uploads_get_config succeeds from paired extension ID
+//   Y11 WS uploads_get_config returns uploads_not_paired for untrusted ID
+//   Y12 WS uploads_get_config returns uploads_not_paired for originless socket
+//   Y13 poltertab uploads pair on non-TTY without --id exits 1
+//   Y14 addTrustedExtensionId preserves unknown config keys
+//   Y15 proxy_command to CHROME-EXTENSION:// URL returns self_navigation_refused
+//   Y16 proxy_command to chrome-extension:// URL returns self_navigation_refused
+//   Y17 Badge code present in background.js
+//   Y18 CLI uploads subcommand present in poltertab.js
+//   Y19 Disabled-upload error text points to CLI
+//   Y20 logUpload called in index.js
 
 const { REPO, assert, fs, path, test, WebSocket, startServer, waitFor } = require("./harness.js");
 const { freePort, stop } = require("./group-s.js");
@@ -264,29 +268,29 @@ async function groupY() {
     }
   });
 
-  // ── Y9: uploads_get_config accepted only from the registered extension socket
-  await test("Y9 uploads_get_config accepted only from registered extension socket", async () => {
+  // ── Y9: uploads_get_config returns uploads_not_paired when no ID is paired ─
+  await test("Y9 uploads_get_config returns uploads_not_paired when no ID is paired", async () => {
     const port = await freePort();
     const home = makeTmpHome();
+    // No config.json written — no paired IDs.
     const srv = startServer({ port, home });
     try {
       await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
 
-      // Register the real extension socket.
-      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://anyid" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
       await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
 
-      // The registered socket should receive uploads_config in reply to uploads_get_config.
       let reply = null;
       ext.on("message", (raw) => {
         const m = JSON.parse(raw);
-        if (m.type === "uploads_config") reply = m;
+        if (m.type === "uploads_not_paired" || m.type === "uploads_config") reply = m;
       });
       ext.send(JSON.stringify({ type: "uploads_get_config", _replyId: "r1" }));
-      await waitFor("uploads_config received", () => reply !== null, 3000);
-      assert.strictEqual(reply.type, "uploads_config", "registered socket must receive uploads_config");
+      await waitFor("reply received", () => reply !== null, 3000);
+      assert.strictEqual(reply.type, "uploads_not_paired", "unpaired server must return uploads_not_paired");
+      assert.ok(reply.error && reply.error.includes("pair"), "error must mention 'pair'");
       ext.close();
     } finally {
       await stop(srv);
@@ -294,41 +298,29 @@ async function groupY() {
     }
   });
 
-  // ── Y10: uploads_get_config refused from attacker-origin and originless ──
-  await test("Y10 uploads_get_config refused from attacker extension-origin and originless", async () => {
+  // ── Y10: uploads_get_config succeeds from paired extension ID ──────────────
+  await test("Y10 uploads_get_config succeeds from paired extension ID", async () => {
     const port = await freePort();
     const home = makeTmpHome();
+    // Pair "legit" as a trusted ID.
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ trusted_extension_ids: ["legit"] }));
     const srv = startServer({ port, home });
     try {
       await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
 
-      // Register the legitimate extension socket first.
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
       await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
 
-      // Attacker extension-origin — NOT the registered socket.
-      const attacker = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://attacker" });
-      let attackerReply = null;
-      await new Promise((res) => attacker.on("open", res));
-      attacker.on("message", (raw) => { attackerReply = JSON.parse(raw); });
-      attacker.send(JSON.stringify({ type: "uploads_get_config", _replyId: "atk" }));
-      await waitFor("attacker reply", () => attackerReply !== null, 3000);
-      assert.strictEqual(attackerReply.type, "uploads_error", "attacker must get uploads_error");
-      assert.ok(attackerReply.error && attackerReply.error.includes("uploads_forbidden"), "error must be uploads_forbidden");
-      attacker.close();
-
-      // Originless connection.
-      const noOrigin = new WebSocket(`ws://localhost:${port}`);
-      let noOriginReply = null;
-      await new Promise((res) => noOrigin.on("open", res));
-      noOrigin.on("message", (raw) => { noOriginReply = JSON.parse(raw); });
-      noOrigin.send(JSON.stringify({ type: "uploads_get_config", _replyId: "no" }));
-      await waitFor("no-origin reply", () => noOriginReply !== null, 3000);
-      assert.strictEqual(noOriginReply.type, "uploads_error", "originless must get uploads_error");
-      noOrigin.close();
-
+      let reply = null;
+      ext.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.type === "uploads_config" || m.type === "uploads_not_paired") reply = m;
+      });
+      ext.send(JSON.stringify({ type: "uploads_get_config", _replyId: "r2" }));
+      await waitFor("uploads_config received", () => reply !== null, 3000);
+      assert.strictEqual(reply.type, "uploads_config", "paired extension must receive uploads_config");
       ext.close();
     } finally {
       await stop(srv);
@@ -336,8 +328,123 @@ async function groupY() {
     }
   });
 
-  // ── Y11: proxy_command to CHROME-EXTENSION:// (uppercase) returns self_navigation_refused
-  await test("Y11 proxy_command navigate to CHROME-EXTENSION:// returns self_navigation_refused", async () => {
+  // ── Y11: uploads_get_config returns uploads_not_paired for untrusted ID ───
+  await test("Y11 uploads_get_config returns uploads_not_paired for untrusted ID", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    // Only "legit" is trusted; "attacker" is not.
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ trusted_extension_ids: ["legit"] }));
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const attacker = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://attacker" });
+      let reply = null;
+      await new Promise((res) => attacker.on("open", res));
+      attacker.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.type === "uploads_not_paired" || m.type === "uploads_config" || m.type === "uploads_error") reply = m;
+      });
+      attacker.send(JSON.stringify({ type: "uploads_get_config", _replyId: "atk" }));
+      await waitFor("attacker refused", () => reply !== null, 3000);
+      assert.ok(
+        reply.type === "uploads_not_paired" || reply.type === "uploads_error",
+        "untrusted ID must get uploads_not_paired or uploads_error, got: " + reply.type,
+      );
+      assert.notStrictEqual(reply.type, "uploads_config", "untrusted ID must not receive uploads_config");
+      attacker.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Y12: uploads_get_config returns uploads_not_paired for originless socket
+  await test("Y12 uploads_get_config returns uploads_not_paired for originless socket", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    // Pair an ID so we are past the "no pairing" gate and test origin check.
+    fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ trusted_extension_ids: ["legit"] }));
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const noOrigin = new WebSocket(`ws://localhost:${port}`);
+      let reply = null;
+      await new Promise((res) => noOrigin.on("open", res));
+      noOrigin.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.type === "uploads_not_paired" || m.type === "uploads_config" || m.type === "uploads_error") reply = m;
+      });
+      noOrigin.send(JSON.stringify({ type: "uploads_get_config", _replyId: "no" }));
+      await waitFor("no-origin reply", () => reply !== null, 3000);
+      assert.ok(
+        reply.type === "uploads_not_paired" || reply.type === "uploads_error",
+        "originless socket must get uploads_not_paired or uploads_error",
+      );
+      assert.notStrictEqual(reply.type, "uploads_config", "originless must not receive uploads_config");
+      noOrigin.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Y13: poltertab uploads pair on non-TTY without --id exits 1 ───────────
+  await test("Y13 poltertab uploads pair on non-TTY without --id exits 1", async () => {
+    const { spawnSync } = require("child_process");
+    const node = process.execPath;
+    const bin = path.join(REPO, "bin", "poltertab.js");
+    // Run with no TTY (pipe stdin). Without --id it must exit 1.
+    const result = spawnSync(node, [bin, "uploads", "pair"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    assert.notStrictEqual(result.status, 0, "non-TTY pair without --id must exit non-zero");
+    const combined = (result.stderr || Buffer.alloc(0)).toString() + (result.stdout || Buffer.alloc(0)).toString();
+    assert.ok(
+      combined.includes("interactive terminal") || combined.includes("--id"),
+      "error must mention interactive terminal or --id flag",
+    );
+  });
+
+  // ── Y14: addTrustedExtensionId preserves unknown config keys ─────────────
+  await test("Y14 addTrustedExtensionId preserves unknown config keys", () => {
+    const tmpHome = makeTmpHome();
+    try {
+      process.env.POLTERTAB_HOME = tmpHome;
+      delete require.cache[require.resolve(path.join(REPO, "mcp-server", "config.js"))];
+      delete require.cache[require.resolve(path.join(REPO, "mcp-server", "uploads-config.js"))];
+      const { addTrustedExtensionId, getTrustedExtensionIds } = require(UPLOADS_CONFIG);
+
+      // Write a config with unknown keys that must be preserved.
+      const cfgPath = path.join(tmpHome, "config.json");
+      fs.writeFileSync(cfgPath, JSON.stringify({ ws_port: 9999, some_other_key: "value" }));
+
+      addTrustedExtensionId("abcdefghijklmnopqrstuvwxyzabcdef");
+
+      const written = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      assert.strictEqual(written.ws_port, 9999, "ws_port must be preserved");
+      assert.strictEqual(written.some_other_key, "value", "some_other_key must be preserved");
+      assert.deepStrictEqual(
+        written.trusted_extension_ids,
+        ["abcdefghijklmnopqrstuvwxyzabcdef"],
+        "trusted_extension_ids must contain the new ID",
+      );
+
+      const ids = getTrustedExtensionIds();
+      assert.ok(ids.includes("abcdefghijklmnopqrstuvwxyzabcdef"), "getTrustedExtensionIds must return the new ID");
+
+      delete require.cache[require.resolve(path.join(REPO, "mcp-server", "config.js"))];
+      delete require.cache[require.resolve(path.join(REPO, "mcp-server", "uploads-config.js"))];
+    } finally {
+      delete process.env.POLTERTAB_HOME;
+      cleanup(tmpHome);
+    }
+  });
+
+  // ── Y15: proxy_command to CHROME-EXTENSION:// (uppercase) returns self_navigation_refused
+  await test("Y15 proxy_command navigate to CHROME-EXTENSION:// returns self_navigation_refused", async () => {
     const port = await freePort();
     const home = makeTmpHome();
     const srv = startServer({ port, home });
@@ -378,8 +485,8 @@ async function groupY() {
     }
   });
 
-  // ── Y12: proxy_command to chrome-extension:// returns self_navigation_refused
-  await test("Y12 proxy_command navigate to chrome-extension:// returns self_navigation_refused", async () => {
+  // ── Y16: proxy_command to chrome-extension:// returns self_navigation_refused
+  await test("Y16 proxy_command navigate to chrome-extension:// returns self_navigation_refused", async () => {
     const port = await freePort();
     const home = makeTmpHome();
     const srv = startServer({ port, home });
@@ -418,8 +525,8 @@ async function groupY() {
     }
   });
 
-  // ── Y13: Badge code in background.js ────────────────────────────────────
-  await test("Y13 badge code present in background.js", () => {
+  // ── Y17: Badge code in background.js ────────────────────────────────────
+  await test("Y17 badge code present in background.js", () => {
     const src = fs.readFileSync(BG, "utf8");
     assert.ok(
       src.includes("setBadgeText"),
@@ -431,8 +538,8 @@ async function groupY() {
     );
   });
 
-  // ── Y14: CLI uploads subcommand in poltertab.js ──────────────────────────
-  await test("Y14 CLI uploads subcommand present in poltertab.js", () => {
+  // ── Y18: CLI uploads subcommand in poltertab.js ──────────────────────────
+  await test("Y18 CLI uploads subcommand present in poltertab.js", () => {
     const src = fs.readFileSync(POLTERTAB_BIN, "utf8");
     assert.ok(
       src.includes('"uploads"') || src.includes("'uploads'") || src.includes("=== \"uploads\""),
@@ -444,8 +551,8 @@ async function groupY() {
     );
   });
 
-  // ── Y15: Disabled-upload error text points to CLI ────────────────────────
-  await test("Y15 disabled-upload error text mentions poltertab uploads", () => {
+  // ── Y19: Disabled-upload error text points to CLI ────────────────────────
+  await test("Y19 disabled-upload error text mentions poltertab uploads", () => {
     const src = fs.readFileSync(UPLOAD_PATHS, "utf8");
     assert.ok(
       src.includes("poltertab uploads allow"),
@@ -453,8 +560,8 @@ async function groupY() {
     );
   });
 
-  // ── Y16: logUpload called in index.js ────────────────────────────────────
-  await test("Y16 logUpload called in index.js", () => {
+  // ── Y20: logUpload called in index.js ────────────────────────────────────
+  await test("Y20 logUpload called in index.js", () => {
     const src = fs.readFileSync(INDEX, "utf8");
     assert.ok(
       src.includes("logUpload"),

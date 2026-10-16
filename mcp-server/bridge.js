@@ -38,6 +38,45 @@ const OWN_VERSION = require("./../package.json").version;
 const { getAllowlist, addAllowlistEntry, removeAllowlistEntry } = require("./uploads-config.js");
 const { logUpload, getRecentLog } = require("./uploads-log.js");
 const { buildAlwaysBlocked, validateAllowlistEntry } = require("./upload-paths.js");
+const fs = require("fs");
+const path = require("path");
+
+// ── Trusted extension IDs ─────────────────────────────────────────────────
+// Upload config/log WS messages are restricted to origins paired via
+// `poltertab uploads pair`. The CWS-assigned ID will go here once the Store
+// publishes the extension; until then it is an empty string (unused).
+//
+// Caveat (design §4): a non-browser local process can forge any Origin header;
+// this gate stops other Chrome extensions, not a hostile process with raw socket
+// access. The always-blocked list and allowlist are the server-side guards.
+const CWS_EXTENSION_ID = ""; // filled when the Chrome Web Store assigns it
+
+function loadTrustedExtensionIds() {
+  const ids = new Set();
+  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
+  try {
+    const cfgPath = path.join(POLTERTAB_HOME, "config.json");
+    const raw = fs.readFileSync(cfgPath, "utf8");
+    const cfg = JSON.parse(raw);
+    if (Array.isArray(cfg.trusted_extension_ids)) {
+      for (const id of cfg.trusted_extension_ids) {
+        if (typeof id === "string" && id.trim()) ids.add(id.trim());
+      }
+    }
+  } catch (_) { /* ENOENT or parse error — no paired IDs */ }
+  return ids;
+}
+
+function isUploadsAuthorized(origin) {
+  if (!origin || !origin.startsWith("chrome-extension://")) return false;
+  const id = origin.slice("chrome-extension://".length).replace(/\/$/, "");
+  const trusted = loadTrustedExtensionIds();
+  return trusted.has(id);
+}
+
+function isPaired() {
+  return loadTrustedExtensionIds().size > 0;
+}
 
 let WS_PORT = resolvePort();
 
@@ -1127,18 +1166,47 @@ function setupPrimaryWss(wss) {
           return;
         }
 
-        // Upload config/log messages — extension-origin connections only.
+        // uploads_get_origins — return list of connected extension origins.
+        // Used by `poltertab uploads pair` to discover which extension to trust.
+        if (msg.type === "uploads_get_origins") {
+          const origins = [];
+          if (wss) {
+            for (const client of wss.clients) {
+              if (client.handshakeOrigin && client.handshakeOrigin.startsWith("chrome-extension://")) {
+                origins.push(client.handshakeOrigin);
+              }
+            }
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "uploads_origins", origins }));
+          }
+          return;
+        }
+
+        // Upload config/log messages — paired extension origin only.
+        // Requires the origin to be in trusted_extension_ids (via `poltertab uploads pair`).
+        // Until an ID is paired, returns uploads_not_paired.
         if (
           msg.type === "uploads_get_config" ||
           msg.type === "uploads_set_config" ||
           msg.type === "uploads_get_log"
         ) {
-          if (ws !== extensionSocket) {
+          if (!isPaired()) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
-                type: "uploads_error",
+                type: "uploads_not_paired",
                 _replyId: msg._replyId || null,
-                error: "[uploads_forbidden] Upload config access requires an extension-origin connection.",
+                error: "Run poltertab uploads pair to link your extension",
+              }));
+            }
+            return;
+          }
+          if (!isUploadsAuthorized(ws.handshakeOrigin)) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_not_paired",
+                _replyId: msg._replyId || null,
+                error: "Run poltertab uploads pair to link your extension",
               }));
             }
             return;
