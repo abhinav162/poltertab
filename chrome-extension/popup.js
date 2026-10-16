@@ -32,12 +32,15 @@ document.addEventListener("DOMContentLoaded", () => {
     body.setAttribute("d", "M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z");
     body.setAttribute("fill", "currentColor");
     svg.appendChild(body);
-    const eyeFill = kind === "agent" ? "var(--surface)" : "#FAF9F6";
+    // Agent eyes knock out to the card via the .eye CSS rule (var() is only valid
+    // in a CSS property, never in an SVG fill attribute). Other ghosts use a
+    // literal paper fill.
+    const paperEye = "#FAF9F6";
     if (sleepy) {
       const lids = document.createElementNS(SVGNS, "path");
       lids.setAttribute("d", "M23 26.5q3.5 3 7 0M34 26.5q3.5 3 7 0");
       lids.setAttribute("fill", "none");
-      lids.setAttribute("stroke", eyeFill);
+      lids.setAttribute("stroke", paperEye);
       lids.setAttribute("stroke-width", "2.2");
       lids.setAttribute("stroke-linecap", "round");
       svg.appendChild(lids);
@@ -47,8 +50,8 @@ document.addEventListener("DOMContentLoaded", () => {
         eye.setAttribute("cx", cx);
         eye.setAttribute("cy", "26");
         eye.setAttribute("r", "2.8");
-        eye.setAttribute("fill", eyeFill);
         if (kind === "agent") eye.setAttribute("class", "eye");
+        else eye.setAttribute("fill", paperEye);
         svg.appendChild(eye);
       }
     }
