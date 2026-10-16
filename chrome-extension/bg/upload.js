@@ -39,6 +39,14 @@ self.PT.makeUpload = ({ sessionManager, forwardToContentScript }) => {
   // Per-call attach is intentional (human decision, 2026-10-15): the yellow
   // debugging banner lasts only for the duration of the picker intercept.
   async function withDebugger(tabId, body) {
+    // Design §7: check tab URL before attach so the refusal is explicit and
+    // attributable, rather than relying on Chrome's native rejection.
+    const tab = await chrome.tabs.get(tabId);
+    let tabProto = "";
+    try { tabProto = new URL(tab.url).protocol.toLowerCase(); } catch (_) {}
+    if (tabProto === "chrome-extension:") {
+      throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+    }
     await new Promise((res, rej) =>
       chrome.debugger.attach({ tabId }, "1.3", () =>
         chrome.runtime.lastError

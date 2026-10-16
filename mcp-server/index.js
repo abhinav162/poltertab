@@ -36,6 +36,7 @@ const {
 const { extractAll } = require("./extract-all.js");
 const bridge = require("./bridge.js");
 const { validateUploadPaths, MAX_BYTES } = require("./upload-paths.js");
+const { logUpload } = require("./uploads-log.js");
 const OWN_VERSION = require("./../package.json").version;
 const fs = require("fs");
 const path = require("path");
@@ -222,6 +223,7 @@ const handleToolCall = async (request) => {
         checkSize: method === "drop",
       });
       if (!validation.ok) {
+        try { logUpload({ paths: filePaths, method, outcome: `denied:${validation.errorText}`, origin: null, session: opts.session || null }); } catch (_) {}
         return {
           content: [{ type: "text", text: validation.errorText }],
           isError: true,
@@ -261,7 +263,14 @@ const handleToolCall = async (request) => {
         `[poltertab] upload_file method=${method} files=${filePaths.join(", ")}\n`,
       );
 
-      const result = await bridge.sendCommand("upload_file", bridgeParams);
+      let result;
+      try {
+        result = await bridge.sendCommand("upload_file", bridgeParams);
+      } catch (uploadErr) {
+        try { logUpload({ paths: filePaths, method, outcome: "error", origin: null, session: opts.session || null }); } catch (_) {}
+        throw uploadErr;
+      }
+      try { logUpload({ paths: filePaths, method, outcome: "ok", origin: null, session: opts.session || null }); } catch (_) {}
       bridge.noteActiveTab(result && result.tabId);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

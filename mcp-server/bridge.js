@@ -35,6 +35,37 @@ const {
 } = require("./config.js");
 const updates = require("./update-check.js");
 const OWN_VERSION = require("./../package.json").version;
+const { getAllowlist, addAllowlistEntry, removeAllowlistEntry, getTrustedExtensionIds } = require("./uploads-config.js");
+const { logUpload, getRecentLog } = require("./uploads-log.js");
+const { buildAlwaysBlocked, validateAllowlistEntry } = require("./upload-paths.js");
+const fs = require("fs");
+const path = require("path");
+
+// ── Trusted extension IDs ─────────────────────────────────────────────────
+// Upload config/log WS messages are restricted to origins paired via
+// `poltertab uploads pair`. The CWS-assigned ID will go here once the Store
+// publishes the extension; until then it is an empty string (unused).
+//
+// Caveat (design §4): a non-browser local process can forge any Origin header;
+// this gate stops other Chrome extensions, not a hostile process with raw socket
+// access. The always-blocked list and allowlist are the server-side guards.
+const CWS_EXTENSION_ID = ""; // filled when the Chrome Web Store assigns it
+
+// isUploadsAuthorized and isPaired may throw on malformed config.json —
+// callers must catch and send uploads_error.
+function isUploadsAuthorized(origin) {
+  if (!origin || !origin.startsWith("chrome-extension://")) return false;
+  const id = origin.slice("chrome-extension://".length).replace(/\/$/, "");
+  const ids = new Set(getTrustedExtensionIds());
+  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
+  return ids.has(id);
+}
+
+function isPaired() {
+  const ids = new Set(getTrustedExtensionIds());
+  if (CWS_EXTENSION_ID) ids.add(CWS_EXTENSION_ID);
+  return ids.size > 0;
+}
 
 let WS_PORT = resolvePort();
 
@@ -841,8 +872,9 @@ function _dispatchProxyNow(callerWs, id, action, params) {
 }
 
 function setupPrimaryWss(wss) {
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
     ws.isAlive = true;
+    ws.handshakeOrigin = (req && req.headers && req.headers.origin) || null;
     ws.supportsNewCloseCodes = false;
     ws.on("pong", () => {
       ws.isAlive = true;
@@ -952,6 +984,28 @@ function setupPrimaryWss(wss) {
           if (params && params.tabId) {
             ws.lastTabId = params.tabId;
             broadcastSessionState();
+          }
+
+          // Self-navigation guard: refuse commands targeting extension pages.
+          const EXTENSION_SENSITIVE_ACTIONS = new Set([
+            "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
+          ]);
+          if (EXTENSION_SENSITIVE_ACTIONS.has(action)) {
+            const urlParam = params.url || params.target || "";
+            let isSelfNav = false;
+            if (typeof urlParam === "string" && urlParam) {
+              try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+            }
+            if (isSelfNav) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  id,
+                  success: false,
+                  error: "[self_navigation_refused] Agent commands cannot target extension pages.",
+                }));
+              }
+              return;
+            }
           }
 
           if (action === "get_network_state") {
@@ -1099,6 +1153,132 @@ function setupPrimaryWss(wss) {
             }
           }
           return;
+        }
+
+        // uploads_get_origins — return list of connected extension origins.
+        // Used by `poltertab uploads pair` to discover which extension to trust.
+        // Only originless (CLI/local) sockets may request this; chrome-extension://
+        // origins must not be able to enumerate other connected extensions.
+        if (msg.type === "uploads_get_origins") {
+          if (ws.handshakeOrigin) {
+            // Extension socket — refuse; only CLI callers (no origin) may enumerate.
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "uploads_error", error: "uploads_get_origins is restricted to local CLI callers" }));
+            }
+            return;
+          }
+          const origins = [];
+          if (wss) {
+            for (const client of wss.clients) {
+              if (client.handshakeOrigin && client.handshakeOrigin.startsWith("chrome-extension://")) {
+                origins.push(client.handshakeOrigin);
+              }
+            }
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "uploads_origins", origins }));
+          }
+          return;
+        }
+
+        // Upload config/log messages — paired extension origin only.
+        // Requires the origin to be in trusted_extension_ids (via `poltertab uploads pair`).
+        // Until an ID is paired, returns uploads_not_paired.
+        if (
+          msg.type === "uploads_get_config" ||
+          msg.type === "uploads_set_config" ||
+          msg.type === "uploads_get_log"
+        ) {
+          let pairedOk, authorizedOk;
+          try {
+            pairedOk = isPaired();
+            authorizedOk = isUploadsAuthorized(ws.handshakeOrigin);
+          } catch (cfgErr) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_error",
+                _replyId: msg._replyId || null,
+                error: "config read error: " + cfgErr.message,
+              }));
+            }
+            return;
+          }
+          if (!pairedOk) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_not_paired",
+                _replyId: msg._replyId || null,
+                error: "Run poltertab uploads pair to link your extension",
+              }));
+            }
+            return;
+          }
+          if (!authorizedOk) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_not_paired",
+                _replyId: msg._replyId || null,
+                error: "Run poltertab uploads pair to link your extension",
+              }));
+            }
+            return;
+          }
+          const os = require("os");
+          const homeDir = os.homedir();
+
+          if (msg.type === "uploads_get_config") {
+            const allowlist = getAllowlist();
+            const alwaysBlocked = buildAlwaysBlocked(homeDir);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_config",
+                _replyId: msg._replyId || null,
+                allowlist,
+                alwaysBlocked,
+              }));
+            }
+            return;
+          }
+
+          if (msg.type === "uploads_set_config") {
+            const { action: cfgAction, dir } = msg;
+            let result;
+            if (cfgAction === "add") {
+              const v = validateAllowlistEntry(dir, homeDir);
+              if (!v.ok) {
+                result = { ok: false, error: v.errorText };
+              } else {
+                addAllowlistEntry(dir);
+                result = { ok: true };
+              }
+            } else if (cfgAction === "remove") {
+              removeAllowlistEntry(dir);
+              result = { ok: true };
+            } else {
+              result = { ok: false, error: `Unknown action: ${cfgAction}` };
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_config_result",
+                _replyId: msg._replyId || null,
+                ...result,
+              }));
+            }
+            return;
+          }
+
+          if (msg.type === "uploads_get_log") {
+            const n = Math.min(typeof msg.n === "number" ? msg.n : 20, 500);
+            const entries = getRecentLog(n);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "uploads_log",
+                _replyId: msg._replyId || null,
+                entries,
+              }));
+            }
+            return;
+          }
         }
 
         // Handle captured network data
@@ -1271,6 +1451,23 @@ function _buildEnvelope(action, params, activeNodeId) {
 // Helper to send command to the extension
 async function sendCommand(action, params) {
   if (incompatible) throw new Error(incompatibleError());
+
+  // Self-navigation guard: refuse commands targeting extension pages.
+  // Mirrors the proxy_command guard; covers the Primary's own tool calls.
+  const SENDCMD_SENSITIVE = new Set([
+    "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
+  ]);
+  if (SENDCMD_SENSITIVE.has(action) && params) {
+    const urlParam = params.url || params.target || "";
+    if (typeof urlParam === "string" && urlParam) {
+      let isSelfNav = false;
+      try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+      if (isSelfNav) {
+        throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+      }
+    }
+  }
+
   // Evicted, or a caller ahead of this one is already reconnecting: wait for
   // that one dial rather than racing it.
   if (isEvicted || reconnect) await lazyReconnect();

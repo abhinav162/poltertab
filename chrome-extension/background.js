@@ -57,6 +57,9 @@ importScripts(
   // so the popup never shows a stale comparison against a server that is gone.
   let serverVersion = null;
 
+  // Pending upload-config/log requests from the options page. Maps _replyId → sendResponse.
+  const pendingUploadsReplies = new Map();
+
   // "example.com" -> "https://example.com"; a url that already names its
   // scheme is left alone. tab_new also accepts about: urls (about:blank is its
   // default), which nothing else does.
@@ -144,6 +147,21 @@ importScripts(
       if (msg.type === "server_version") {
         serverVersion = msg.version || null;
         broadcastState();
+        return;
+      }
+
+      // Relay uploads config/log responses back to the options page.
+      if (
+        msg.type === "uploads_config" ||
+        msg.type === "uploads_config_result" ||
+        msg.type === "uploads_log" ||
+        msg.type === "uploads_error"
+      ) {
+        const replyFn = msg._replyId ? pendingUploadsReplies.get(msg._replyId) : null;
+        if (replyFn) {
+          pendingUploadsReplies.delete(msg._replyId);
+          replyFn({ ok: msg.type !== "uploads_error", ...msg });
+        }
         return;
       }
 
@@ -249,6 +267,26 @@ importScripts(
         connect();
       }
       sendResponse({ connected: isConnected, sessions: activeSessions });
+      return true;
+    }
+
+    // Relay uploads config/log requests from options page → bridge server.
+    if (
+      message.type === "uploads_get_config" ||
+      message.type === "uploads_set_config" ||
+      message.type === "uploads_get_log"
+    ) {
+      // Only relay from extension pages (options, popup) — never from a web page.
+      if (sender.tab || !sender.url || !sender.url.startsWith(chrome.runtime.getURL(""))) {
+        return;
+      }
+      if (!isConnected) {
+        sendResponse({ ok: false, error: "Not connected to bridge server." });
+        return true;
+      }
+      const replyId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+      pendingUploadsReplies.set(replyId, sendResponse);
+      send({ type: message.type, _replyId: replyId, ...message.data });
       return true;
     }
 
@@ -362,10 +400,53 @@ importScripts(
     tab_close: (p) => sessionManager.tabClose(p),
 
     // File upload: picker (CDP intercept) or drop (DataTransfer injection).
-    upload_file: (p) => uploadFile(p),
+    upload_file: async (p) => {
+      chrome.action.setBadgeText({ text: "↑" });
+      chrome.action.setBadgeBackgroundColor({ color: "#666" });
+      try {
+        return await uploadFile(p);
+      } finally {
+        chrome.action.setBadgeText({ text: "" });
+      }
+    },
   };
 
+  const SELF_NAV_ACTIONS = new Set([
+    "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
+  ]);
+
   async function handleCommand(action, params) {
+    // Self-navigation guard: refuse commands targeting extension pages.
+    if (SELF_NAV_ACTIONS.has(action)) {
+      // For actions that carry an explicit URL target, check it case-insensitively.
+      const urlParam = (params && (params.url || params.target)) || "";
+      if (typeof urlParam === "string" && urlParam) {
+        let isSelfNav = false;
+        try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+        if (isSelfNav) {
+          throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+        }
+      } else {
+        // For actions that act on the current tab (no URL param), resolve the
+        // acting tab and refuse if it is an extension page.
+        const tabId = sessionManager.pointer(params || {}).tabId;
+        if (tabId) {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            if (tab && tab.url) {
+              let proto = "";
+              try { proto = new URL(tab.url).protocol.toLowerCase(); } catch (_) {}
+              if (proto === "chrome-extension:") {
+                throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+              }
+            }
+          } catch (err) {
+            if (err.message && err.message.includes("self_navigation_refused")) throw err;
+            // Tab gone or inaccessible — not a self-nav violation.
+          }
+        }
+      }
+    }
     const route = ROUTES[action];
     if (!route) throw new Error(`Unknown action: ${action}`);
     return route(params);

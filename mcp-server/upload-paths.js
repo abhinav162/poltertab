@@ -70,9 +70,9 @@ function validateUploadPaths(filePaths, config) {
     return {
       ok: false,
       errorText:
-        "File uploads are disabled. To enable them, add an upload_allowed_paths array " +
-        "to ~/.poltertab/config.json listing the directories Claude may read files from.\n\n" +
-        "Example:\n{\n  \"upload_allowed_paths\": [\"/Users/you/Documents\", \"/Users/you/Downloads\"]\n}",
+        "File uploads are disabled. The user can run `poltertab uploads allow <dir>` to permit a " +
+        "directory, or open the extension options page to manage allowed folders.\n\n" +
+        "Example:\n  poltertab uploads allow ~/Documents",
     };
   }
 
@@ -139,4 +139,74 @@ function validateUploadPaths(filePaths, config) {
   return { ok: true, resolvedPaths };
 }
 
-module.exports = { validateUploadPaths, MAX_BYTES };
+/**
+ * Validate a single path for addition to the allowlist.
+ * Accepts absolute paths and ~/relative paths. Rejects relative paths and
+ * paths inside the always-blocked set. Accepts nonexistent directories.
+ *
+ * @param {string} dir      - The path the user wants to allow.
+ * @param {string} [homeDir] - Override os.homedir() (tests only).
+ * @returns {{ ok: true } | { ok: false, errorText: string }}
+ */
+function validateAllowlistEntry(dir, homeDir = os.homedir()) {
+  if (!dir || typeof dir !== "string") {
+    return { ok: false, errorText: "Path must be a non-empty string." };
+  }
+
+  if (!path.isAbsolute(dir) && !dir.startsWith("~/")) {
+    return {
+      ok: false,
+      errorText: `"${dir}" is a relative path. Use an absolute path or ~/relative form.`,
+    };
+  }
+
+  const expanded = dir.startsWith("~/")
+    ? path.join(homeDir, dir.slice(2))
+    : dir;
+  let resolved = path.resolve(expanded);
+
+  // For existing paths: realpath so symlinks (e.g. ~/link-to-ssh) are caught
+  // by the always-blocked check below; also verify it is a directory.
+  try {
+    const real = fs.realpathSync(resolved);
+    const stat = fs.statSync(real);
+    if (!stat.isDirectory()) {
+      return {
+        ok: false,
+        errorText: `"${dir}" is a file, not a directory. Only directories can be added to the allowlist.`,
+      };
+    }
+    resolved = real;
+  } catch (_) {
+    // Path does not yet exist — accepted so future-created dirs can be pre-allowed.
+  }
+
+  const alwaysBlocked = buildAlwaysBlocked(homeDir);
+  for (const blocked of alwaysBlocked) {
+    if (resolved === blocked || resolved.startsWith(blocked + path.sep)) {
+      return {
+        ok: false,
+        errorText: `"${dir}" is inside a protected directory (${blocked}) and cannot be added.`,
+      };
+    }
+  }
+
+  // Deny home dotfiles
+  const rel = path.relative(homeDir, resolved);
+  if (!rel.startsWith("..") && rel.startsWith(".") && !rel.includes(path.sep)) {
+    return {
+      ok: false,
+      errorText: `"${dir}" is a home directory dotfile and cannot be added.`,
+    };
+  }
+
+  return { ok: true };
+}
+
+module.exports = {
+  validateUploadPaths,
+  validateAllowlistEntry,
+  buildAlwaysBlocked,
+  expandAllowlistEntry,
+  MAX_BYTES,
+};
