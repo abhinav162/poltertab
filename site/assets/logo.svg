@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="PolterTab">
-  <rect width="64" height="64" rx="15" fill="#FAF9F6"/>
-  <!-- friendly ghost, spectral teal -->
-  <path d="M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z" fill="#0E8C7F"/>
-  <circle cx="26.5" cy="26" r="2.8" fill="#FAF9F6"/>
-  <circle cx="37.5" cy="26" r="2.8" fill="#FAF9F6"/>
+  <rect width="64" height="64" rx="15" fill="#0E8C7F"/>
+  <!-- friendly ghost, paper on spectral teal -->
+  <path d="M32 11c-9.1 0-15.5 6.9-15.5 15.6V46c0 1.9 2.3 2.7 3.6 1.3l2.7-2.9 2.9 3.1c.8.8 2 .8 2.7 0l3-3.3 3 3.3c.8.8 2 .8 2.7 0l2.9-3.1 2.7 2.9c1.3 1.4 3.6.6 3.6-1.3V26.6C47.5 17.9 41.1 11 32 11Z" fill="#FAF9F6"/>
+  <circle cx="26.5" cy="26" r="2.8" fill="#0E8C7F"/>
+  <circle cx="37.5" cy="26" r="2.8" fill="#0E8C7F"/>
   <!-- a wisp of amber: the cursor trail -->
   <path d="M20 54c6-3 18-3 24 0" fill="none" stroke="#E8A13D" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="0.5 7"/>
 </svg>
