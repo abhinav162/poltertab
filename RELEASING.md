@@ -82,15 +82,43 @@ It must read `chore(main): release 1.9.0` (no `-beta`).  If it still shows a
 beta version, the config edit did not reach main — check CI for errors.
 
 After the final ships, open a follow-up PR that removes `release-as` from the
-package entry (restoring `"packages": { ".": {} }`) and commits as
-`chore: remove release-as after 1.9.0 final`.  Without this cleanup every
-subsequent release PR will propose 1.9.0 again.
+package entry and commits as `chore: remove release-as after X.Y.Z final`.
+Without this cleanup every subsequent release PR will propose the same version
+again.  The restored package entry should keep `"exclude-paths": ["site"]` (see
+below) rather than reverting to an empty object.
 
 > **Alternative — commit footer:** A commit body containing `Release-As: 1.9.0`
 > also works, but **only** when the repo's squash-commit template is set to
 > "PR title **and description**" (not "PR title only", which drops the body and
 > silently leaves the release PR on the beta version).  Prefer the file-based
 > approach above; use the footer only after confirming the squash-message setting.
+
+## Excluding paths from release-please
+
+By default, release-please treats any conventional commit that lands on main as
+a trigger for a new release PR, regardless of which files the commit touched.
+This means a `chore:` commit that only touches `site/` (the landing page) will
+open a release PR for the next version.
+
+To prevent this, `release-please-config.json` keeps `"exclude-paths": ["site"]`
+in the package entry:
+
+```json
+"packages": {
+  ".": {
+    "exclude-paths": ["site"]
+  }
+}
+```
+
+With this setting, commits whose changed files all fall under `site/` are ignored
+by release-please and do not open or advance a release PR.  Commits that touch
+files outside `site/` behave normally.
+
+> **History:** during the 1.9.0 cycle, `chore(site): redesign landing page` (#40)
+> merged to main and caused release-please to open PR #41 proposing 1.9.0-beta.3,
+> even though no functional code changed.  The `exclude-paths` setting prevents
+> this from recurring.
 
 ## GitHub release pre-release flag
 

@@ -19,7 +19,7 @@
   ],
   "packages": {
     ".": {
-      "release-as": "1.9.0"
+      "exclude-paths": ["site"]
     }
   }
 }
