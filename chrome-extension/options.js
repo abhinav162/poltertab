@@ -19,3 +19,237 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     }, 2000);
   });
 });
+
+// ---- Upload permissions panel (DAG-41) -------------------------------------
+// All data is the server's ~/.poltertab/config.json and uploads.log.jsonl,
+// fetched over the existing WebSocket via the background worker. The panel never
+// keeps an editable cached copy: if the server is unreachable it says so and
+// points at the CLI. Edits ride the WS and are validated server-side.
+(() => {
+  const body = document.getElementById("uploads-body");
+  if (!body) return;
+
+  // Promise wrapper over chrome.runtime.sendMessage. Resolves to the reply, or
+  // null when the background/server never answers (lastError or a timeout) so
+  // the caller can fall back to the offline state instead of hanging.
+  function ask(type, data) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        resolve(v);
+      };
+      const timer = setTimeout(() => finish(null), 6000);
+      try {
+        chrome.runtime.sendMessage({ type, data }, (reply) => {
+          clearTimeout(timer);
+          if (chrome.runtime.lastError) return finish(null);
+          finish(reply || null);
+        });
+      } catch (_) {
+        clearTimeout(timer);
+        finish(null);
+      }
+    });
+  }
+
+  // --- small DOM helpers (textContent only — server strings are never HTML) ---
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function baseName(p) {
+    const s = String(p || "").replace(/[\\/]+$/, "");
+    const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+
+  function renderOffline() {
+    body.textContent = "";
+    const p = el("p", "u-notice");
+    p.append(
+      "Can't reach the PolterTab server, so folders can't be shown or changed here. Start the server, then reopen this page — or manage folders in a terminal with ",
+    );
+    p.append(el("code", null, "poltertab uploads"));
+    p.append(".");
+    body.appendChild(p);
+  }
+
+  function renderNotPaired() {
+    body.textContent = "";
+    const p = el("p", "u-notice");
+    p.append("Pair this browser first: run ");
+    p.append(el("code", null, "poltertab uploads pair"));
+    p.append(" in a terminal, then reopen this page. Match the id it prints to this extension's id:");
+    body.appendChild(p);
+    let id = "";
+    try { id = chrome.runtime.id || ""; } catch (_) {}
+    body.appendChild(el("span", "u-id", id || "(unknown)"));
+  }
+
+  function renderError(message) {
+    body.textContent = "";
+    const p = el("p", "u-notice");
+    p.append("Uploads couldn't be loaded: ");
+    p.append(el("code", null, String(message || "unknown error")));
+    body.appendChild(p);
+  }
+
+  function renderConfig(allowlist, alwaysBlocked) {
+    body.textContent = "";
+
+    // Allowed folders
+    body.appendChild(el("p", "u-sub", "Allowed folders"));
+    if (!allowlist || allowlist.length === 0) {
+      body.appendChild(
+        el("div", "u-empty", "Uploads are off. Add a folder to let agents upload files from it."),
+      );
+    } else {
+      const ul = el("ul", "u-list");
+      allowlist.forEach((dir) => {
+        const li = el("li", "u-row");
+        li.appendChild(el("span", "u-path", dir));
+        const btn = el("button", "u-remove", "Remove");
+        btn.type = "button";
+        btn.addEventListener("click", (e) => {
+          if (!e.isTrusted) return; // god review: trusted user input only
+          removeFolder(dir, btn);
+        });
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+      body.appendChild(ul);
+    }
+
+    // Add folder
+    const add = el("div", "u-add");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "uploads-add-path";
+    input.placeholder = "~/Documents or /Users/you/Projects";
+    input.setAttribute("aria-label", "Folder to allow");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    const addBtn = el("button", null, "Add folder");
+    addBtn.type = "button";
+    addBtn.id = "uploads-add-btn";
+    add.appendChild(input);
+    add.appendChild(addBtn);
+    body.appendChild(add);
+
+    const err = el("div", "u-error");
+    err.id = "uploads-add-error";
+    err.setAttribute("role", "alert");
+    body.appendChild(err);
+
+    addBtn.addEventListener("click", (e) => {
+      if (!e.isTrusted) return; // god review: trusted user input only
+      submitAdd(input, err, addBtn);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        if (!e.isTrusted) return;
+        submitAdd(input, err, addBtn);
+      }
+    });
+
+    // Never allowed (display only)
+    body.appendChild(el("p", "u-sub", "Never allowed"));
+    const note = el("p", "hint", "These are always blocked and can't be added, anywhere.");
+    body.appendChild(note);
+    const blocked = el("ul", "u-blocked");
+    (alwaysBlocked || []).forEach((p) => blocked.appendChild(el("li", null, p)));
+    blocked.appendChild(el("li", null, "Home dotfiles (files in your home folder starting with a dot)"));
+    body.appendChild(blocked);
+
+    // Recent uploads
+    body.appendChild(el("p", "u-sub", "Recent uploads"));
+    const logHost = el("div");
+    logHost.id = "uploads-log-host";
+    logHost.appendChild(el("p", "hint", "Loading…"));
+    body.appendChild(logHost);
+    loadLog(logHost);
+  }
+
+  function renderLog(host, entries) {
+    host.textContent = "";
+    if (!entries || entries.length === 0) {
+      host.appendChild(el("p", "hint", "No uploads yet."));
+      return;
+    }
+    const ul = el("ul", "u-log");
+    entries.slice().reverse().forEach((entry) => {
+      const li = el("li");
+      let t = "";
+      try {
+        t = new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      } catch (_) { t = ""; }
+      li.appendChild(el("span", "u-time", t));
+
+      const paths = Array.isArray(entry.paths) ? entry.paths : (entry.paths ? [entry.paths] : []);
+      let name = paths.length ? baseName(paths[0]) : "(file)";
+      if (paths.length > 1) name += ` +${paths.length - 1}`;
+      li.appendChild(el("span", "u-file", name));
+
+      const outcome = String(entry.outcome || "");
+      const allowed = outcome === "ok";
+      const badge = el("span", "u-badge " + (allowed ? "ok" : "denied"), allowed ? "allowed" : "denied");
+      li.appendChild(badge);
+      ul.appendChild(li);
+    });
+    host.appendChild(ul);
+  }
+
+  async function loadLog(host) {
+    const reply = await ask("uploads_get_log", { n: 20 });
+    if (!reply || reply.type !== "uploads_log") {
+      host.textContent = "";
+      host.appendChild(el("p", "hint", "Activity log unavailable."));
+      return;
+    }
+    renderLog(host, reply.entries);
+  }
+
+  async function submitAdd(input, err, addBtn) {
+    const dir = input.value.trim();
+    err.textContent = "";
+    if (!dir) {
+      err.textContent = "Type a folder path first.";
+      return;
+    }
+    addBtn.disabled = true;
+    const reply = await ask("uploads_set_config", { action: "add", dir });
+    addBtn.disabled = false;
+    if (!reply) { err.textContent = "Couldn't reach the server. Try again."; return; }
+    if (reply.type === "uploads_not_paired") { renderNotPaired(); return; }
+    if (reply.type === "uploads_error") { err.textContent = reply.error || "Server error."; return; }
+    if (reply.ok) { input.value = ""; load(); return; }
+    // Validation rejection echoed inline (always-blocked, not a directory, …)
+    err.textContent = reply.error || "That folder couldn't be added.";
+  }
+
+  async function removeFolder(dir, btn) {
+    btn.disabled = true;
+    const reply = await ask("uploads_set_config", { action: "remove", dir });
+    if (!reply) { btn.disabled = false; return; }
+    if (reply.type === "uploads_not_paired") { renderNotPaired(); return; }
+    load();
+  }
+
+  async function load() {
+    const reply = await ask("uploads_get_config");
+    if (!reply) return renderOffline();
+    if (reply.type === "uploads_not_paired") return renderNotPaired();
+    if (reply.type === "uploads_error") return renderError(reply.error);
+    if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked);
+    if (reply.ok === false) return renderOffline(); // "Not connected to bridge server."
+    renderError("unexpected response");
+  }
+
+  load();
+  // Reflect a CLI edit made while this page is open.
+  window.addEventListener("focus", () => load());
+})();

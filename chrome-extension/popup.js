@@ -187,8 +187,41 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.runtime.openOptionsPage();
   });
 
+  // Uploads summary row (DAG-41). One line + a "view" link to the options panel.
+  // Reads the server allowlist over the WS; stays hidden if the server is
+  // unreachable (the connection pill already shows that case).
+  const uploadsRow = document.getElementById("uploads-summary");
+  const uploadsText = document.getElementById("uploads-summary-text");
+  if (uploadsRow) {
+    uploadsRow.addEventListener("click", (e) => {
+      e.preventDefault();
+      chrome.runtime.openOptionsPage();
+    });
+  }
+  function loadUploadsSummary() {
+    try {
+      chrome.runtime.sendMessage({ type: "uploads_get_config" }, (reply) => {
+        if (chrome.runtime.lastError || !reply) return; // leave hidden
+        if (!uploadsRow || !uploadsText) return;
+        if (reply.type === "uploads_not_paired") {
+          uploadsText.textContent = "Not paired";
+        } else if (reply.type === "uploads_config") {
+          const n = (reply.allowlist || []).length;
+          uploadsText.textContent =
+            n === 0 ? "Uploads off" : `Uploads: ${n} folder${n === 1 ? "" : "s"} allowed`;
+        } else {
+          return; // error / offline → stay hidden
+        }
+        uploadsRow.hidden = false;
+      });
+    } catch (_) {
+      /* leave hidden */
+    }
+  }
+
   // Initial fetch
   fetchStatus();
+  loadUploadsSummary();
 
   // Listen for broadcast updates from background.js
   chrome.runtime.onMessage.addListener((msg) => {

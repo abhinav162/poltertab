@@ -155,12 +155,17 @@ importScripts(
         msg.type === "uploads_config" ||
         msg.type === "uploads_config_result" ||
         msg.type === "uploads_log" ||
+        msg.type === "uploads_not_paired" ||
         msg.type === "uploads_error"
       ) {
         const replyFn = msg._replyId ? pendingUploadsReplies.get(msg._replyId) : null;
         if (replyFn) {
           pendingUploadsReplies.delete(msg._replyId);
-          replyFn({ ok: msg.type !== "uploads_error", ...msg });
+          // not_paired and error are failures; the options page branches on
+          // msg.type regardless, but keep ok honest for anything that only
+          // checks it. config_result carries its own ok, which ...msg preserves.
+          const ok = msg.type !== "uploads_error" && msg.type !== "uploads_not_paired";
+          replyFn({ ok, ...msg });
         }
         return;
       }
