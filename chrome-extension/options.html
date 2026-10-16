@@ -14,7 +14,7 @@
         color-scheme: light dark;
         --paper:#FAF9F6; --ink:#23211C; --ink-soft:#595448; --ink-faint:#8C877A;
         --ecto:#0E8C7F; --ecto-deep:#0A6B61; --mint:#DCF1EB; --surface:#FFFFFF;
-        --hairline:#E2DED4; --ok:#0A6B61;
+        --hairline:#E2DED4; --ok:#0A6B61; --bad:#B4451F; --bad-bg:#FBEBE3;
         --display:"Bricolage Grotesque","Instrument Sans",system-ui,sans-serif;
         --body:"Instrument Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
         --mono:"Fragment Mono",ui-monospace,"SF Mono",Menlo,monospace;
@@ -23,7 +23,7 @@
         :root{
           --paper:#1A1814; --ink:#F1EDE3; --ink-soft:#B4AE9F; --ink-faint:#8E887A;
           --ecto:#2FB7A6; --ecto-deep:#53D3C1; --mint:#15302C; --surface:#211E18;
-          --hairline:#38342B; --ok:#53D3C1;
+          --hairline:#38342B; --ok:#53D3C1; --bad:#F0916B; --bad-bg:#3A221A;
         }
       }
       *,*::before,*::after{box-sizing:border-box}
@@ -57,6 +57,35 @@
       .reserved p{color:var(--ink-soft); font-size:12.5px}
       .foot{margin-top:18px; font-size:12px; color:var(--ink-soft)}
       .foot a{color:var(--ecto-deep)}
+
+      /* ---- uploads panel (DAG-41) ---- */
+      .u-sub{font-family:var(--display); font-weight:700; font-size:12.5px; letter-spacing:-0.01em; color:var(--ink); margin:16px 0 7px}
+      .u-sub:first-child{margin-top:0}
+      .u-list{list-style:none; padding:0; display:grid; gap:7px}
+      .u-row{display:flex; align-items:center; gap:10px; background:var(--paper); border:1px solid var(--hairline); border-radius:10px; padding:8px 10px}
+      .u-path{font-family:var(--mono); font-size:12.5px; color:var(--ink); word-break:break-all; min-width:0; flex:1}
+      .u-remove{font-family:var(--body); font-weight:600; font-size:12px; cursor:pointer; flex:none; color:var(--bad); background:var(--bad-bg); border:1px solid transparent; border-radius:8px; padding:5px 10px}
+      .u-remove:hover{border-color:var(--bad)}
+      .u-empty{color:var(--ink-soft); font-size:12.5px; background:var(--paper); border:1px dashed var(--hairline); border-radius:10px; padding:12px}
+      .u-add{display:flex; gap:9px; align-items:stretch; margin-top:10px}
+      .u-add input{margin-bottom:0}
+      #uploads-add-btn{font-family:var(--body); font-weight:600; font-size:13px; cursor:pointer; flex:none; background:var(--ecto-deep); color:#fff; border:1px solid transparent; border-radius:10px; padding:0 15px}
+      @media (prefers-color-scheme: dark){ #uploads-add-btn{color:#121E1B} }
+      #uploads-add-btn:hover{background:var(--ecto)}
+      .u-error{color:var(--bad); font-size:12.5px; margin-top:7px; min-height:1em}
+      .u-blocked{list-style:none; padding:0; display:flex; flex-wrap:wrap; gap:6px}
+      .u-blocked li{font-family:var(--mono); font-size:11.5px; color:var(--ink-soft); background:var(--paper); border:1px solid var(--hairline); border-radius:7px; padding:3px 8px}
+      .u-log{list-style:none; padding:0; display:grid; gap:6px; max-height:230px; overflow-y:auto}
+      .u-log li{display:flex; align-items:center; gap:9px; font-size:12px; padding:6px 2px; border-bottom:1px solid var(--hairline)}
+      .u-log li:last-child{border-bottom:0}
+      .u-time{font-family:var(--mono); font-size:11px; color:var(--ink-soft); flex:none}
+      .u-file{font-family:var(--mono); font-size:12px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+      .u-badge{font-weight:600; font-size:10.5px; flex:none; border-radius:999px; padding:2px 8px}
+      .u-badge.ok{background:var(--mint); color:var(--ecto-deep)}
+      .u-badge.denied{background:var(--bad-bg); color:var(--bad)}
+      .u-notice{color:var(--ink-soft); font-size:13px; line-height:1.5}
+      .u-notice code,.u-id{font-family:var(--mono); font-size:12.5px; color:var(--ink); background:var(--paper); border:1px solid var(--hairline); border-radius:7px; padding:2px 7px}
+      .u-id{display:inline-block; margin-top:8px; word-break:break-all}
     </style>
   </head>
   <body>
@@ -78,11 +107,12 @@
         </div>
       </div>
 
-      <!-- Upload permissions — reserved placeholder for DAG-41 (Ryan). Hidden
-           until his follow-up builds the real panel here; no new permissions. -->
-      <section id="upload-perms" class="card reserved" hidden>
+      <!-- Upload permissions (DAG-41). Rendered by options.js from the server's
+           config over the existing WebSocket; no new permissions, nothing remote. -->
+      <section id="upload-perms" class="card">
         <h3>Upload permissions</h3>
-        <p>Choose which folders an agent may upload from.</p>
+        <p class="hint">Agents may upload files only from folders you allow here. Changes take effect immediately.</p>
+        <div id="uploads-body" aria-live="polite"></div>
       </section>
 
       <p class="foot">Everything stays local. The only outbound call is one version check a day. <a href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>.</p>
