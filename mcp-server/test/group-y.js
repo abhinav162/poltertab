@@ -8,16 +8,17 @@
 //   Y6  logUpload appends one correct JSON line
 //   Y7  logUpload rotation drops old lines when file exceeds LOG_MAX_BYTES
 //   Y8  getRecentLog(n) returns last n entries
-//   Y9  WS uploads_get_config accepted only from extension-origin (source check)
-//   Y10 WS uploads_set_config refused from originless (source check)
-//   Y11 Self-navigation guard present in bridge.js
-//   Y12 Self-navigation guard present in background.js
+//   Y9  WS uploads_get_config accepted only from registered extension socket
+//   Y10 WS uploads_get_config refused from attacker extension-origin and originless
+//   Y11 proxy_command to CHROME-EXTENSION:// URL returns self_navigation_refused
+//   Y12 proxy_command to chrome-extension:// URL returns self_navigation_refused
 //   Y13 Badge code present in background.js
 //   Y14 CLI uploads subcommand present in poltertab.js
 //   Y15 Disabled-upload error text points to CLI
 //   Y16 logUpload called in index.js
 
-const { REPO, assert, fs, path, test } = require("./harness.js");
+const { REPO, assert, fs, path, test, WebSocket, startServer, waitFor } = require("./harness.js");
+const { freePort, stop } = require("./group-s.js");
 const os = require("os");
 const crypto = require("crypto");
 
@@ -263,56 +264,158 @@ async function groupY() {
     }
   });
 
-  // ── Y9: uploads_get_config accepted from extension-origin (source check) ─
-  await test("Y9 bridge.js accepts uploads_get_config only from extension-origin (source-code check)", () => {
-    const src = fs.readFileSync(BRIDGE, "utf8");
-    assert.ok(
-      src.includes("chrome-extension://"),
-      "bridge.js must gate uploads messages on chrome-extension:// origin",
-    );
-    assert.ok(
-      src.includes("uploads_get_config"),
-      "bridge.js must handle uploads_get_config",
-    );
+  // ── Y9: uploads_get_config accepted only from the registered extension socket
+  await test("Y9 uploads_get_config accepted only from registered extension socket", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Register the real extension socket.
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      await new Promise((res) => ext.on("open", res));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+
+      // The registered socket should receive uploads_config in reply to uploads_get_config.
+      let reply = null;
+      ext.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.type === "uploads_config") reply = m;
+      });
+      ext.send(JSON.stringify({ type: "uploads_get_config", _replyId: "r1" }));
+      await waitFor("uploads_config received", () => reply !== null, 3000);
+      assert.strictEqual(reply.type, "uploads_config", "registered socket must receive uploads_config");
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
   });
 
-  // ── Y10: uploads_set_config refused from originless (source check) ───────
-  await test("Y10 bridge.js refuses uploads_set_config from originless connections (source-code check)", () => {
-    const src = fs.readFileSync(BRIDGE, "utf8");
-    assert.ok(
-      src.includes("uploads_forbidden"),
-      "bridge.js must send uploads_forbidden error for non-extension-origin",
-    );
-    assert.ok(
-      src.includes("uploads_set_config"),
-      "bridge.js must check uploads_set_config",
-    );
+  // ── Y10: uploads_get_config refused from attacker-origin and originless ──
+  await test("Y10 uploads_get_config refused from attacker extension-origin and originless", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Register the legitimate extension socket first.
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      await new Promise((res) => ext.on("open", res));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+
+      // Attacker extension-origin — NOT the registered socket.
+      const attacker = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://attacker" });
+      let attackerReply = null;
+      await new Promise((res) => attacker.on("open", res));
+      attacker.on("message", (raw) => { attackerReply = JSON.parse(raw); });
+      attacker.send(JSON.stringify({ type: "uploads_get_config", _replyId: "atk" }));
+      await waitFor("attacker reply", () => attackerReply !== null, 3000);
+      assert.strictEqual(attackerReply.type, "uploads_error", "attacker must get uploads_error");
+      assert.ok(attackerReply.error && attackerReply.error.includes("uploads_forbidden"), "error must be uploads_forbidden");
+      attacker.close();
+
+      // Originless connection.
+      const noOrigin = new WebSocket(`ws://localhost:${port}`);
+      let noOriginReply = null;
+      await new Promise((res) => noOrigin.on("open", res));
+      noOrigin.on("message", (raw) => { noOriginReply = JSON.parse(raw); });
+      noOrigin.send(JSON.stringify({ type: "uploads_get_config", _replyId: "no" }));
+      await waitFor("no-origin reply", () => noOriginReply !== null, 3000);
+      assert.strictEqual(noOriginReply.type, "uploads_error", "originless must get uploads_error");
+      noOrigin.close();
+
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
   });
 
-  // ── Y11: Self-navigation guard in bridge.js ──────────────────────────────
-  await test("Y11 self-navigation guard present in bridge.js", () => {
-    const src = fs.readFileSync(BRIDGE, "utf8");
-    assert.ok(
-      src.includes("self_navigation_refused"),
-      "bridge.js must contain self_navigation_refused guard",
-    );
-    assert.ok(
-      src.includes("chrome-extension://"),
-      "bridge.js must check for chrome-extension:// in params",
-    );
+  // ── Y11: proxy_command to CHROME-EXTENSION:// (uppercase) returns self_navigation_refused
+  await test("Y11 proxy_command navigate to CHROME-EXTENSION:// returns self_navigation_refused", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Attach a fake extension so the Primary is connected.
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      await new Promise((res) => ext.on("open", res));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+
+      // A secondary sends proxy_command navigate with uppercase scheme.
+      const secondary = new WebSocket(`ws://localhost:${port}`);
+      await new Promise((res) => secondary.on("open", res));
+      secondary.send(JSON.stringify({ type: "secondary_mcp", nodeId: crypto.randomUUID(), version: "test" }));
+      await waitFor("secondary accepted", () => srv.stderr.includes("Secondary"), 3000);
+
+      let refusal = null;
+      secondary.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.error && m.error.includes("self_navigation_refused")) refusal = m;
+      });
+      const id = crypto.randomUUID();
+      secondary.send(JSON.stringify({
+        type: "proxy_command", id,
+        action: "navigate",
+        params: { url: "CHROME-EXTENSION://legit/options.html" },
+      }));
+      await waitFor("self_navigation_refused", () => refusal !== null, 3000);
+      assert.ok(refusal.error.includes("self_navigation_refused"), "must refuse uppercase chrome-extension:// target");
+
+      secondary.close();
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
   });
 
-  // ── Y12: Self-navigation guard in background.js ──────────────────────────
-  await test("Y12 self-navigation guard present in background.js", () => {
-    const src = fs.readFileSync(BG, "utf8");
-    assert.ok(
-      src.includes("self_navigation_refused"),
-      "background.js must contain self_navigation_refused guard",
-    );
-    assert.ok(
-      src.includes("SELF_NAV_ACTIONS"),
-      "background.js must define SELF_NAV_ACTIONS set",
-    );
+  // ── Y12: proxy_command to chrome-extension:// returns self_navigation_refused
+  await test("Y12 proxy_command navigate to chrome-extension:// returns self_navigation_refused", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      await new Promise((res) => ext.on("open", res));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext ready", () => srv.stderr.includes("Extension connected"), 3000);
+
+      const secondary = new WebSocket(`ws://localhost:${port}`);
+      await new Promise((res) => secondary.on("open", res));
+      secondary.send(JSON.stringify({ type: "secondary_mcp", nodeId: crypto.randomUUID(), version: "test" }));
+      await waitFor("secondary accepted", () => srv.stderr.includes("Secondary"), 3000);
+
+      let refusal = null;
+      secondary.on("message", (raw) => {
+        const m = JSON.parse(raw);
+        if (m.error && m.error.includes("self_navigation_refused")) refusal = m;
+      });
+      const id = crypto.randomUUID();
+      secondary.send(JSON.stringify({
+        type: "proxy_command", id,
+        action: "navigate",
+        params: { url: "chrome-extension://legit/options.html" },
+      }));
+      await waitFor("self_navigation_refused", () => refusal !== null, 3000);
+      assert.ok(refusal.error.includes("self_navigation_refused"), "must refuse chrome-extension:// target");
+
+      secondary.close();
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
   });
 
   // ── Y13: Badge code in background.js ────────────────────────────────────

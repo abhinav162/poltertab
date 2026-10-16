@@ -276,6 +276,10 @@ importScripts(
       message.type === "uploads_set_config" ||
       message.type === "uploads_get_log"
     ) {
+      // Only relay from extension pages (options, popup) — never from a web page.
+      if (sender.tab || !sender.url || !sender.url.startsWith(chrome.runtime.getURL(""))) {
+        return;
+      }
       if (!isConnected) {
         sendResponse({ ok: false, error: "Not connected to bridge server." });
         return true;
@@ -408,15 +412,39 @@ importScripts(
   };
 
   const SELF_NAV_ACTIONS = new Set([
-    "navigate", "tab_new", "click", "fill", "snapshot", "debugger_attach",
+    "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
   ]);
 
   async function handleCommand(action, params) {
     // Self-navigation guard: refuse commands targeting extension pages.
     if (SELF_NAV_ACTIONS.has(action)) {
+      // For actions that carry an explicit URL target, check it case-insensitively.
       const urlParam = (params && (params.url || params.target)) || "";
-      if (typeof urlParam === "string" && urlParam.includes("chrome-extension://")) {
-        throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+      if (typeof urlParam === "string" && urlParam) {
+        let isSelfNav = false;
+        try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+        if (isSelfNav) {
+          throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+        }
+      } else {
+        // For actions that act on the current tab (no URL param), resolve the
+        // acting tab and refuse if it is an extension page.
+        const tabId = sessionManager.pointer(params || {}).tabId;
+        if (tabId) {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            if (tab && tab.url) {
+              let proto = "";
+              try { proto = new URL(tab.url).protocol.toLowerCase(); } catch (_) {}
+              if (proto === "chrome-extension:") {
+                throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+              }
+            }
+          } catch (err) {
+            if (err.message && err.message.includes("self_navigation_refused")) throw err;
+            // Tab gone or inaccessible — not a self-nav violation.
+          }
+        }
       }
     }
     const route = ROUTES[action];

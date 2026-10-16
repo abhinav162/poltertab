@@ -70,8 +70,8 @@ function validateUploadPaths(filePaths, config) {
     return {
       ok: false,
       errorText:
-        "File uploads are disabled. Run `poltertab uploads allow <dir>` to permit a directory, " +
-        "or open the extension options page to manage allowed folders.\n\n" +
+        "File uploads are disabled. The user can run `poltertab uploads allow <dir>` to permit a " +
+        "directory, or open the extension options page to manage allowed folders.\n\n" +
         "Example:\n  poltertab uploads allow ~/Documents",
     };
   }
@@ -163,7 +163,23 @@ function validateAllowlistEntry(dir, homeDir = os.homedir()) {
   const expanded = dir.startsWith("~/")
     ? path.join(homeDir, dir.slice(2))
     : dir;
-  const resolved = path.resolve(expanded);
+  let resolved = path.resolve(expanded);
+
+  // For existing paths: realpath so symlinks (e.g. ~/link-to-ssh) are caught
+  // by the always-blocked check below; also verify it is a directory.
+  try {
+    const real = fs.realpathSync(resolved);
+    const stat = fs.statSync(real);
+    if (!stat.isDirectory()) {
+      return {
+        ok: false,
+        errorText: `"${dir}" is a file, not a directory. Only directories can be added to the allowlist.`,
+      };
+    }
+    resolved = real;
+  } catch (_) {
+    // Path does not yet exist — accepted so future-created dirs can be pre-allowed.
+  }
 
   const alwaysBlocked = buildAlwaysBlocked(homeDir);
   for (const blocked of alwaysBlocked) {

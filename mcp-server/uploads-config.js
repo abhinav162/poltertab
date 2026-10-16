@@ -15,8 +15,9 @@ const CONFIG_PATH = path.join(POLTERTAB_HOME, "config.json");
 function _readConfig() {
   try {
     return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-  } catch (_) {
-    return {};
+  } catch (err) {
+    if (err.code === "ENOENT") return {};
+    throw new Error("config.json is not valid JSON — fix it before editing the allowlist");
   }
 }
 

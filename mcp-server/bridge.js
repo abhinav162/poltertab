@@ -960,11 +960,15 @@ function setupPrimaryWss(wss) {
 
           // Self-navigation guard: refuse commands targeting extension pages.
           const EXTENSION_SENSITIVE_ACTIONS = new Set([
-            "navigate", "tab_new", "click", "fill", "snapshot", "debugger_attach",
+            "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
           ]);
           if (EXTENSION_SENSITIVE_ACTIONS.has(action)) {
             const urlParam = params.url || params.target || "";
-            if (typeof urlParam === "string" && urlParam.includes("chrome-extension://")) {
+            let isSelfNav = false;
+            if (typeof urlParam === "string" && urlParam) {
+              try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+            }
+            if (isSelfNav) {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                   id,
@@ -1129,10 +1133,7 @@ function setupPrimaryWss(wss) {
           msg.type === "uploads_set_config" ||
           msg.type === "uploads_get_log"
         ) {
-          const isExtensionOrigin =
-            ws.handshakeOrigin &&
-            ws.handshakeOrigin.startsWith("chrome-extension://");
-          if (!isExtensionOrigin) {
+          if (ws !== extensionSocket) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: "uploads_error",
@@ -1187,7 +1188,7 @@ function setupPrimaryWss(wss) {
           }
 
           if (msg.type === "uploads_get_log") {
-            const n = typeof msg.n === "number" ? msg.n : 20;
+            const n = Math.min(typeof msg.n === "number" ? msg.n : 20, 500);
             const entries = getRecentLog(n);
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
@@ -1370,6 +1371,23 @@ function _buildEnvelope(action, params, activeNodeId) {
 // Helper to send command to the extension
 async function sendCommand(action, params) {
   if (incompatible) throw new Error(incompatibleError());
+
+  // Self-navigation guard: refuse commands targeting extension pages.
+  // Mirrors the proxy_command guard; covers the Primary's own tool calls.
+  const SENDCMD_SENSITIVE = new Set([
+    "navigate", "tab_new", "click", "fill", "snapshot", "scrape", "extract",
+  ]);
+  if (SENDCMD_SENSITIVE.has(action) && params) {
+    const urlParam = params.url || params.target || "";
+    if (typeof urlParam === "string" && urlParam) {
+      let isSelfNav = false;
+      try { isSelfNav = new URL(urlParam).protocol.toLowerCase() === "chrome-extension:"; } catch (_) {}
+      if (isSelfNav) {
+        throw new Error("[self_navigation_refused] Agent commands cannot target extension pages.");
+      }
+    }
+  }
+
   // Evicted, or a caller ahead of this one is already reconnecting: wait for
   // that one dial rather than racing it.
   if (isEvicted || reconnect) await lazyReconnect();
