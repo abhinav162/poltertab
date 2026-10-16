@@ -2,6 +2,20 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.10.0-beta.1](https://github.com/abhinav162/poltertab/compare/v1.9.0...v1.10.0-beta.1) (2026-10-16)
+
+
+### Features
+
+* **extension:** Daylight redesign of popup and options, new icon ([#45](https://github.com/abhinav162/poltertab/issues/45)) ([8f1f1c8](https://github.com/abhinav162/poltertab/commit/8f1f1c89c8fee0213a2448cc1f0015c72f9645cb))
+* **extension:** manage upload folders from the settings page ([#47](https://github.com/abhinav162/poltertab/issues/47)) ([3040815](https://github.com/abhinav162/poltertab/commit/3040815230356e9ac12bad7dc66b2a8b5fda8511))
+* **uploads:** manage upload folders from the CLI and extension, with activity log ([#46](https://github.com/abhinav162/poltertab/issues/46)) ([149a91c](https://github.com/abhinav162/poltertab/commit/149a91cbbe337db9f3657974d208b081400c2f71))
+
+
+### Miscellaneous Chores
+
+* remove release-as and add exclude-paths after 1.9.0 final ([#43](https://github.com/abhinav162/poltertab/issues/43)) ([75bcd6a](https://github.com/abhinav162/poltertab/commit/75bcd6ad68987a5e6dd29405873fd875b31c3dc8))
+
 ## [1.9.0](https://github.com/abhinav162/poltertab/compare/v1.9.0-beta.2...v1.9.0) (2026-10-15)
 
 
