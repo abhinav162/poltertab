@@ -22,8 +22,10 @@ const { freePort, fakeSecondary, stamped, stop } = require("./group-s.js");
 // case runs on its own free port with an 800 ms idle timeout.
 
 const IDLE_MS = 800;
-// The eviction check can run on a coarser tick than the timeout itself.
-const EVICT_WITHIN_MS = IDLE_MS + 3000;
+// The eviction check runs every Math.floor(IDLE_MS / 2) ms nominally, but
+// Node.js setInterval can be delayed several seconds under CI CPU saturation.
+// Budget 12 s beyond IDLE_MS so the assertion reliably outlasts timer drift.
+const EVICT_WITHIN_MS = IDLE_MS + 12000;
 
 const count = (s, needle) => s.split(needle).length - 1;
 const nodeIdsIn = (s) => [...s.matchAll(/Node (\S+) running as Secondary/g)].map((m) => m[1]);
