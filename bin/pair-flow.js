@@ -135,7 +135,10 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
 
   const cleanup = () => {
     clearTimeout(idleTimer);
-    try { server && server.close(); } catch (_) {}
+    if (server) {
+      try { server.clients.forEach((c) => c.terminate()); } catch (_) {}
+      try { server.close(); } catch (_) {}
+    }
   };
 
   server = new WebSocket.WebSocketServer({ host: "127.0.0.1", port });
@@ -202,6 +205,19 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
 
         if (msg.type === "pair_code_request") {
           pairHost.handleCodeRequest(ws, origin);
+          return;
+        }
+
+        // Popup/options asking whether this extension is paired yet.
+        // Reply with uploads_not_paired so the UI can show the pair code.
+        if (msg.type === "uploads_get_config") {
+          try {
+            if (ws.readyState === 1 /* OPEN */) {
+              const reply = { type: "uploads_not_paired", pairCode: pairHost._socketCodes.get(ws) || null };
+              if (msg._replyId !== undefined) reply._replyId = msg._replyId;
+              ws.send(JSON.stringify(reply));
+            }
+          } catch (_) {}
           return;
         }
 

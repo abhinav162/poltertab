@@ -748,6 +748,228 @@ async function groupZ() {
     if (ext1) ext1.close();
     if (ext2) ext2.close();
   });
+
+  // ── Z22: running-server pings do not regenerate pair code ──────────────────
+  await test("Z22 running server: pings do not regenerate pair code; original code accepted after pings", async () => {
+    // Sub-check: generateForSocket void must add old code to _recentlyExpired so a
+    // late submitCode returns "expired" not "wrong" (pair-host.js fix).
+    {
+      delete require.cache[require.resolve(PAIR_HOST)];
+      const { PairHost } = require(PAIR_HOST);
+      const ph = new PairHost();
+      const ws = fakeWs();
+      ph.generateForSocket(ws, "chrome-extension://z22-unit");
+      const firstCode = ws.sent[0].code;
+      ph.generateForSocket(ws, "chrome-extension://z22-unit"); // explicitly void firstCode
+      const r = ph.submitCode(firstCode);
+      assert.strictEqual(r.reason, "expired",
+        `voided code must return "expired" not "wrong"; got: ${r.reason}`);
+    }
+
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    let ext, cli;
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://z22-ext" });
+      const extMsgs = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMsgs.push(JSON.parse(raw)));
+
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("first pair_code", () => extMsgs.some((m) => m.type === "pair_code"), 3000);
+      const firstCode = extMsgs.find((m) => m.type === "pair_code").code;
+
+      // Send several pings — must NOT generate additional codes (bridge.js fix).
+      for (let i = 0; i < 3; i++) {
+        ext.send(JSON.stringify({ type: "ping" }));
+      }
+      await sleep(300);
+
+      const allCodes = extMsgs.filter((m) => m.type === "pair_code");
+      assert.strictEqual(allCodes.length, 1,
+        `pings must not regenerate code; got ${allCodes.length} pair_code messages`);
+
+      // Original code must still be valid and accepted after pings.
+      cli = new WebSocket(`ws://localhost:${port}`);
+      const cliMsgs = [];
+      await new Promise((res) => cli.on("open", res));
+      cli.on("message", (raw) => cliMsgs.push(JSON.parse(raw)));
+
+      cli.send(JSON.stringify({ type: "uploads_pair_submit", code: firstCode }));
+      await waitFor("pair_result", () => cliMsgs.some((m) => m.type === "uploads_pair_result"), 3000);
+
+      const result = cliMsgs.find((m) => m.type === "uploads_pair_result");
+      assert.ok(result.ok, `code submitted after pings must be accepted; got: ${JSON.stringify(result)}`);
+    } finally {
+      if (ext) ext.close();
+      if (cli) cli.close();
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Z23: temp listener replies uploads_not_paired with _replyId ────────────
+  await test("Z23 temp listener replies uploads_not_paired+_replyId to uploads_get_config", async () => {
+    const port = await freePort();
+    const freshKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+    if (freshKey) delete require.cache[freshKey];
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+    let pendingCb = null;
+    const rl = {
+      question: (_prompt, cb) => { pendingCb = cb; },
+      close: () => {},
+    };
+
+    const listenerPromise = pairViaTempListener(port, rl);
+    await sleep(50);
+
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z23-ext" });
+    const extMsgs = [];
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.on("message", (raw) => extMsgs.push(JSON.parse(raw)));
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+    await waitFor("pair_code", () => extMsgs.some((m) => m.type === "pair_code"), 3000);
+
+    // Background.js sends uploads_get_config with _replyId on behalf of popup/options.
+    ext.send(JSON.stringify({ type: "uploads_get_config", _replyId: "z23-42" }));
+    await sleep(300);
+
+    const reply = extMsgs.find((m) => m._replyId === "z23-42");
+    assert.ok(reply,
+      `extension must receive a reply with _replyId "z23-42"; messages so far: ${JSON.stringify(extMsgs.map((m) => m.type))}`);
+    assert.strictEqual(reply.type, "uploads_not_paired",
+      `reply.type must be "uploads_not_paired", got: "${reply.type}"`);
+
+    if (pendingCb) pendingCb("");
+    ext.close();
+    await listenerPromise;
+  });
+
+  // ── Z24: popup renders pairCode from state_update when server is unreachable ─
+  await test("Z24 popup shows pairCode in uploads row from state_update even when server is unreachable", () => {
+    const vm = require("vm");
+
+    const messageListeners = [];
+    const uploadsRow = { hidden: true, textContent: "", addEventListener() {} };
+    const uploadsText = { textContent: "" };
+
+    function makeEl() {
+      return {
+        textContent: "", className: "", hidden: true, title: "", style: {},
+        appendChild() {}, addEventListener() {}, setAttribute() {}, append() {},
+        classList: { add() {} },
+      };
+    }
+
+    let _lastError = null;
+    const sandbox = {
+      document: {
+        _cb: null,
+        addEventListener(ev, cb) { if (ev === "DOMContentLoaded") this._cb = cb; },
+        getElementById(id) {
+          if (id === "uploads-summary") return uploadsRow;
+          if (id === "uploads-summary-text") return uploadsText;
+          return makeEl();
+        },
+        createElement() { return makeEl(); },
+        createElementNS() { const e = makeEl(); e.setAttribute = () => {}; return e; },
+        createTextNode() { return {}; },
+      },
+      chrome: {
+        runtime: {
+          get lastError() { return _lastError; },
+          sendMessage(msg, cb) {
+            if (!cb) return;
+            if (msg && msg.type === "uploads_get_config") {
+              // Simulate unreachable server — set lastError so popup leaves row hidden.
+              _lastError = { message: "connection lost" };
+              cb(null);
+              _lastError = null;
+            } else {
+              cb({ connected: false, sessions: [], version: "1.0.0" });
+            }
+          },
+          onMessage: { addListener(cb) { messageListeners.push(cb); } },
+          openOptionsPage() {},
+        },
+      },
+      console,
+    };
+
+    const popupSrc = fs.readFileSync(path.join(REPO, "chrome-extension", "popup.js"), "utf8");
+    vm.runInNewContext(popupSrc, sandbox);
+    if (sandbox.document._cb) sandbox.document._cb();
+
+    // Simulate background.js broadcasting state_update with pair code.
+    for (const l of messageListeners) {
+      l({ type: "state_update", state: { connected: false, sessions: [], pairCode: "ABCD" } });
+    }
+
+    assert.strictEqual(uploadsRow.hidden, false,
+      "uploads row must be visible after state_update with pairCode when server is unreachable");
+    assert.ok(uploadsText.textContent.includes("ABCD"),
+      `uploads text must include pair code "ABCD"; got: "${uploadsText.textContent}"`);
+  });
+
+  // ── Z25: temp listener terminates connected clients after pair; port freed ──
+  await test("Z25 temp listener terminates connected extension socket after pair; port is free", async () => {
+    const port = await freePort();
+    const freshKey2 = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+    if (freshKey2) delete require.cache[freshKey2];
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+    const { PairHost } = require(PAIR_HOST);
+    const net = require("net");
+
+    let capturedCode = null;
+    const _orig = PairHost.prototype.generateForSocket;
+    PairHost.prototype.generateForSocket = function (ws, extensionId) {
+      _orig.call(this, ws, extensionId);
+      const code = this._socketCodes.get(ws);
+      if (code) capturedCode = code;
+    };
+
+    let ext;
+    try {
+      const rl = {
+        question: (_prompt, cb) => {
+          const wait = () => {
+            if (capturedCode) { setImmediate(() => cb(capturedCode)); return; }
+            setTimeout(wait, 20);
+          };
+          wait();
+        },
+        close: () => {},
+      };
+
+      const listenerPromise = pairViaTempListener(port, rl);
+      await sleep(50);
+
+      // Connect ext but do NOT close it — it must be terminated by cleanup().
+      ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z25-ext" });
+      await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+      const result = await listenerPromise;
+      assert.ok(result.ok, `pair must succeed; got: ${JSON.stringify(result)}`);
+
+      await sleep(200); // give cleanup a moment to finalize
+
+      // Port must be free even though we never called ext.close() — cleanup must have terminated it.
+      await new Promise((resolve, reject) => {
+        const probe = net.createServer();
+        probe.listen(port, "127.0.0.1", () => { probe.close(resolve); });
+        probe.on("error", (e) => reject(new Error(`port ${port} still in use after pair cleanup: ${e.message}`)));
+      });
+    } finally {
+      PairHost.prototype.generateForSocket = _orig;
+      const cleanKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+      if (cleanKey) delete require.cache[cleanKey];
+      if (ext) { try { ext.terminate(); } catch (_) {} }
+    }
+  });
 }
 
 module.exports = groupZ;

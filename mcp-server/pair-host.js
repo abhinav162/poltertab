@@ -67,6 +67,9 @@ class PairHost {
       if (entry) clearTimeout(entry.timer);
       this._codes.delete(old);
       this._socketCodes.delete(ws);
+      // Track as recently-expired so a late submitCode returns "expired" not "wrong".
+      this._recentlyExpired.add(old);
+      setTimeout(() => this._recentlyExpired.delete(old), this._codeTtlMs);
     }
 
     const code = this._uniqueCode();
