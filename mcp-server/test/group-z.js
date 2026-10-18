@@ -665,11 +665,25 @@ async function groupZ() {
     const port = await freePort();
     const { PairHost } = require(PAIR_HOST);
 
-    // Patch uploads-config to throw, then load pair-flow fresh so it captures the thrower.
-    const uploadsConfigKey = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/uploads-config.js"));
+    const home = makeTmpHome();
+    const savedHome = process.env.POLTERTAB_HOME;
+    process.env.POLTERTAB_HOME = home;
+
+    // Require uploads-config unconditionally — require() creates the cache entry AND returns
+    // the exact exports object pair-flow.js will destructure, so the throw always fires even
+    // when the module was not previously in require.cache (CI cold-cache state).
+    const uploadsConfig = require(path.join(REPO, "mcp-server", "uploads-config.js"));
+    const _origAddFn = uploadsConfig.addTrustedExtensionId;
+    uploadsConfig.addTrustedExtensionId = () => { throw new Error("write fail"); };
+    // Loud-fail guard: ensures the patch is in place before pair-flow is re-required.
+    assert.throws(
+      () => uploadsConfig.addTrustedExtensionId(),
+      /write fail/,
+      "patch must apply before pair-flow is re-required",
+    );
+
+    // Delete pair-flow from cache so it re-requires uploads-config and captures the thrower.
     const pairFlowKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
-    const _origAddFn = uploadsConfigKey && require.cache[uploadsConfigKey].exports.addTrustedExtensionId;
-    if (uploadsConfigKey) require.cache[uploadsConfigKey].exports.addTrustedExtensionId = () => { throw new Error("write fail"); };
     if (pairFlowKey) delete require.cache[pairFlowKey];
 
     let ext1, ext2, result;
@@ -724,9 +738,12 @@ async function groupZ() {
       assert.strictEqual(ext1PairCodes, 1, `ext1 must not receive a re-push (got ${ext1PairCodes})`);
       assert.strictEqual(result.reason, "config_write_failed", `expected config_write_failed, got ${result.reason}`);
     } finally {
-      if (uploadsConfigKey && _origAddFn) require.cache[uploadsConfigKey].exports.addTrustedExtensionId = _origAddFn;
+      uploadsConfig.addTrustedExtensionId = _origAddFn;
       const freshKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
       if (freshKey) delete require.cache[freshKey];
+      if (savedHome === undefined) delete process.env.POLTERTAB_HOME;
+      else process.env.POLTERTAB_HOME = savedHome;
+      cleanup(home);
     }
     if (ext1) ext1.close();
     if (ext2) ext2.close();
