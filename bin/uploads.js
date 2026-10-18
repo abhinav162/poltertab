@@ -9,9 +9,18 @@ const {
   addAllowlistEntry,
   removeAllowlistEntry,
   addTrustedExtensionId,
+  getTrustedExtensionIds,
+  removeTrustedExtensionId,
 } = require("../mcp-server/uploads-config.js");
 const { getRecentLog } = require("../mcp-server/uploads-log.js");
 const { validateAllowlistEntry, buildAlwaysBlocked } = require("../mcp-server/upload-paths.js");
+const {
+  resolveWsPort,
+  tryConnectToServer,
+  probeIsPoltertab,
+  pairViaRunningServer,
+  pairViaTempListener,
+} = require("./pair-flow.js");
 
 async function run(argv) {
   const sub = argv[0];
@@ -103,134 +112,171 @@ async function run(argv) {
     return;
   }
 
+  if (sub === "unpair") {
+    await runUnpair(argv.slice(1));
+    return;
+  }
+
   console.error(`\n  Unknown subcommand: ${sub}`);
-  console.error("  Usage: poltertab uploads list|allow <dir>|revoke <dir>|log [-n N]|pair [--id <id>]\n");
+  console.error("  Usage: poltertab uploads list|allow <dir>|revoke <dir>|log [-n N]|pair [--id <id>]|unpair [--id <id>]\n");
   process.exit(1);
 }
 
-// Reads the port poltertab is listening on from the default config or falls back.
-function resolveWsPort() {
-  try {
-    const { resolvePort } = require("../mcp-server/config.js");
-    return resolvePort();
-  } catch (_) {
-    return 7822;
-  }
-}
+// (pair primitives live in pair-flow.js and are imported above)
 
-// poltertab uploads pair — link a Chrome extension by its ID so it may send
-// upload config/log WS messages. Interactive by default (requires TTY);
-// --id <id> skips the prompt for scripted human use.
+// ── poltertab uploads pair ─────────────────────────────────────────────────
+
 async function runPair(argv) {
+  // --id is kept for backward compatibility: pair by bare extension ID directly.
   const idFlagIdx = argv.indexOf("--id");
   const flagId = idFlagIdx !== -1 ? argv[idFlagIdx + 1] : null;
 
-  if (!flagId && !process.stdin.isTTY) {
+  if (flagId) {
+    if (!/^[a-p]{32}$/.test(flagId)) {
+      console.error(`\nInvalid extension ID: ${flagId}`);
+      console.error("Chrome extension IDs are 32 lowercase letters (a-p).\n");
+      process.exit(1);
+    }
+    const added = addTrustedExtensionId(flagId);
+    if (added) {
+      console.log(`\n  Paired: ${flagId}`);
+      console.log("  Upload config access is now enabled for this extension.");
+      console.log(`  (undo: poltertab uploads unpair ${flagId})\n`);
+    } else {
+      console.log(`\n  Already paired: ${flagId}\n`);
+    }
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
     console.error("\nError: poltertab uploads pair requires an interactive terminal.\n" +
       "Use --id <extension-id> to pair non-interactively.\n");
     process.exit(1);
   }
 
-  let extensionId = flagId;
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  if (!extensionId) {
-    // Ask the running server which extension origins are connected.
-    const port = resolveWsPort();
-    let origins = [];
-    try {
-      origins = await fetchConnectedOrigins(port);
-    } catch (err) {
-      console.error(`\nCould not connect to poltertab server on port ${port}: ${err.message}`);
-      console.error("Make sure poltertab is running, then try again.\n");
-      process.exit(1);
-    }
+  const port = resolveWsPort();
 
-    const extIds = origins
-      .filter((o) => o.startsWith("chrome-extension://"))
-      .map((o) => o.slice("chrome-extension://".length).replace(/\/$/, ""));
-
-    if (extIds.length === 0) {
-      console.error("\nNo extensions are currently connected to poltertab.");
-      console.error("Make sure the poltertab Chrome extension is installed and active, then try again.\n");
-      process.exit(1);
-    }
-
-    console.log("\nConnected extension IDs:");
-    extIds.forEach((id, i) => console.log(`  ${i + 1}. ${id}`));
-    console.log("\nOpen chrome://extensions to find which ID matches your poltertab extension.");
-
-    const readline = require("readline");
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const choice = await new Promise((resolve) => {
-      rl.question(
-        `\nCompare the ID(s) above with chrome://extensions to find your poltertab extension.\n` +
-        `Enter number (1-${extIds.length}) to pair, or paste the ID directly: `,
-        (ans) => {
-          rl.close();
-          resolve(ans.trim());
-        },
+  let serverWs = null;
+  try {
+    serverWs = await tryConnectToServer(port);
+    // Verify the server is actually poltertab, not an unrelated WS server.
+    if (!(await probeIsPoltertab(port))) {
+      serverWs.terminate();
+      serverWs = null;
+      rl.close();
+      console.error(
+        `\n  Port ${port} is in use by something that isn't poltertab.` +
+        " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
       );
-    });
-    const num = parseInt(choice, 10);
-    if (!isNaN(num) && num >= 1 && num <= extIds.length) {
-      extensionId = extIds[num - 1];
-    } else if (/^[a-p]{32}$/.test(choice)) {
-      extensionId = choice;
-    } else {
-      console.error("\nInvalid selection.\n");
+      process.exit(1);
+    }
+  } catch (err) {
+    if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT") {
+      rl.close();
+      console.error(`\nCould not connect to port ${port}: ${err.message}\n`);
+      process.exit(1);
+    }
+    // Nothing listening — start temp listener.
+  }
+
+  let result;
+  if (serverWs) {
+    result = await pairViaRunningServer(serverWs, rl);
+  } else {
+    console.log(
+      `\n  No poltertab server found. Starting a temporary pairing listener on port ${port}.`,
+    );
+    console.log("  Open the extension popup — it will connect automatically and show a 4-letter code.\n");
+    process.stdout.write("  waiting for the extension to connect…\n");
+
+    try {
+      result = await pairViaTempListener(port, rl, {
+        onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
+      });
+    } catch (err) {
+      rl.close();
+      if (err.code === "EADDRINUSE") {
+        console.error(
+          `\n  Port ${port} is in use by something that isn't poltertab.` +
+          " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
+        );
+      } else {
+        console.error(`\n  Failed to start pairing listener: ${err.message}\n`);
+      }
       process.exit(1);
     }
   }
 
-  if (!/^[a-p]{32}$/.test(extensionId)) {
-    console.error(`\nInvalid extension ID: ${extensionId}`);
-    console.error("Chrome extension IDs are 32 lowercase letters.\n");
-    process.exit(1);
-  }
+  rl.close();
 
-  const added = addTrustedExtensionId(extensionId);
-  if (added) {
-    console.log(`\n  Paired: ${extensionId}`);
-    console.log("  Upload config access is now enabled for this extension.\n");
-  } else {
-    console.log(`\n  Already paired: ${extensionId}\n`);
+  if (result.ok) {
+    const shortId = result.extensionId.slice(0, 8);
+    console.log(
+      `\n  ✓ paired               extension ${shortId}… · uploads panel is live in the extension`,
+    );
+    console.log(`  (undo: poltertab uploads unpair ${result.extensionId})\n`);
+  } else if (result.reason === "skipped") {
+    console.log("\n  – pairing skipped      run poltertab uploads pair once the extension is loaded\n");
+  } else if (result.reason === "locked") {
+    console.error("\n  Too many wrong codes. Pairing is locked for 15 minutes.\n");
+    process.exit(1);
   }
 }
 
-// Ask the WS server for connected extension origins via uploads_get_origins.
-function fetchConnectedOrigins(port) {
-  return new Promise((resolve, reject) => {
-    let WebSocket;
-    try {
-      WebSocket = require("ws");
-    } catch (_) {
-      reject(new Error("ws module not available"));
-      return;
+// ── poltertab uploads unpair ───────────────────────────────────────────────
+
+async function runUnpair(argv) {
+  // Accept positional id: `poltertab uploads unpair <id>` (the form success hints print).
+  // Also accept --id <id> for backward compatibility.
+  const idFlagIdx = argv.indexOf("--id");
+  const flagId = idFlagIdx !== -1 ? argv[idFlagIdx + 1] : null;
+  const positionalId = !flagId && argv.length > 0 && !argv[0].startsWith("-") ? argv[0] : null;
+  const targetId = flagId || positionalId;
+
+  if (targetId) {
+    const removed = removeTrustedExtensionId(targetId);
+    if (removed) {
+      console.log(`\n  Unpaired: ${targetId}\n`);
+    } else {
+      console.log(`\n  Not found in paired extensions: ${targetId}\n`);
     }
-    const ws = new WebSocket(`ws://localhost:${port}`);
-    const timer = setTimeout(() => {
-      ws.terminate();
-      reject(new Error("timeout waiting for server response"));
-    }, 5000);
-    ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "uploads_get_origins" }));
-    });
-    ws.on("message", (raw) => {
-      clearTimeout(timer);
-      try {
-        const msg = JSON.parse(raw);
-        if (msg.type === "uploads_origins") {
-          ws.close();
-          resolve(Array.isArray(msg.origins) ? msg.origins : []);
-        }
-      } catch (_) {
-        ws.close();
-        reject(new Error("Invalid response from server"));
+    return;
+  }
+
+  // No-id form: list all paired ids, require TTY + y/n confirmation before removing.
+  const ids = getTrustedExtensionIds();
+  if (ids.length === 0) {
+    console.log("\n  No extensions are currently paired.\n");
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error(
+      "\n  'poltertab uploads unpair' with no id requires an interactive terminal.\n" +
+      "  Pass the extension id to remove a specific one: poltertab uploads unpair <id>\n",
+    );
+    process.exit(1);
+  }
+
+  console.log("\n  Currently paired extensions:");
+  for (const id of ids) console.log(`    ${id}`);
+  console.log();
+
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await new Promise((resolve) => {
+    rl.question("  Remove ALL paired extensions? [y/N] ", (ans) => {
+      rl.close();
+      if ((ans || "").trim().toLowerCase() === "y") {
+        for (const id of ids) removeTrustedExtensionId(id);
+        console.log(`\n  Unpaired ${ids.length} extension${ids.length === 1 ? "" : "s"}.\n`);
+      } else {
+        console.log("\n  Cancelled.\n");
       }
-    });
-    ws.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
+      resolve();
     });
   });
 }

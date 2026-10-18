@@ -22,6 +22,7 @@
 // mirrored at the top of background.js with a pointer back to this comment. If
 // you change one, change both.
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -37,12 +38,17 @@ const path = require("path");
 const POLTERTAB_HOME =
   process.env.POLTERTAB_HOME || path.join(os.homedir(), ".poltertab");
 
-// Port: MCP_BROWSER_WS_PORT env, then --port CLI arg, then the default.
+// Port: --port arg → MCP_BROWSER_WS_PORT env → ws_port in config.json → 7822.
 const DEFAULT_WS_PORT = 7822;
 function resolvePort(argv = process.argv, env = process.env) {
   const i = argv.indexOf("--port");
   if (i !== -1 && argv[i + 1]) return parseInt(argv[i + 1], 10);
   if (env.MCP_BROWSER_WS_PORT) return parseInt(env.MCP_BROWSER_WS_PORT, 10);
+  try {
+    const home = env.POLTERTAB_HOME || path.join(os.homedir(), ".poltertab");
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+    if (Number.isInteger(cfg.ws_port) && cfg.ws_port > 0) return cfg.ws_port;
+  } catch (_) {}
   return DEFAULT_WS_PORT;
 }
 

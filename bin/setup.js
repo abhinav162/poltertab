@@ -30,6 +30,8 @@ const SNIPPET_SRC = path.join(PKG, "assets", "claude-md-snippet.md");
 // link would get the previous stable extension, because GitHub's
 // /releases/latest skips prereleases — a fresh, correctly-followed setup that
 // lands in version skew.
+const { addAllowlistEntry } = require("../mcp-server/uploads-config.js");
+const { validateAllowlistEntry } = require("../mcp-server/upload-paths.js");
 const updates = require("../mcp-server/update-check.js");
 const EXTENSION_URL = updates.extensionUrl(
   require("../package.json").version,
@@ -38,6 +40,10 @@ const EXTENSION_URL = updates.extensionUrl(
 // Identifies our section in a CLAUDE.md we do not own. Presence means
 // "already installed" — this is the whole idempotency check for step 2.
 const MARKER = "<!-- poltertab -->";
+
+// Default folder offered in the uploads prompt. Must never be inside
+// buildAlwaysBlocked — a unit test (H7) pins this.
+const DEFAULT_UPLOAD_FOLDER = "~/Downloads";
 
 const c = {
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
@@ -150,13 +156,163 @@ async function chooseScope(rl) {
   }
 }
 
-async function run(argv = []) {
+// --- Section 1: folder prompt -----------------------------------------------
+
+// Shows the uploads-folder prompt and updates the allowlist.
+// Uses the wizard's existing readline interface (rl); never opens a second one.
+// Caller guarantees stdin is a TTY before calling.
+//
+// Exported for direct unit testing.
+async function runFolderPrompt(rl, {
+  homeDir = os.homedir(),
+  addFn = addAllowlistEntry,
+  validateFn = validateAllowlistEntry,
+} = {}) {
+  console.log(`\n  Let agents upload files from a folder?  [${DEFAULT_UPLOAD_FOLDER}]`);
+  console.log("  Enter = allow ~/Downloads · type another folder · n = skip");
+
+  const MAX_RETRIES = 2;
+  let retries = 0;
+
+  for (;;) {
+    const raw = (await ask(rl, "  > ")).trim();
+
+    if (raw === "n" || raw === "N") {
+      console.log("  – uploads skipped      enable later: poltertab uploads allow <dir>");
+      return;
+    }
+
+    const folderPath = raw === "" ? DEFAULT_UPLOAD_FOLDER : raw;
+
+    const v = validateFn(folderPath, homeDir);
+    if (!v.ok) {
+      console.log(`  ${c.yellow("!")} ${v.errorText}`);
+      retries++;
+      if (retries >= MAX_RETRIES) {
+        console.log("  – uploads skipped (poltertab uploads allow <dir> any time)");
+        return;
+      }
+      // re-ask; the loop continues
+      continue;
+    }
+
+    const added = addFn(folderPath);
+    if (added) {
+      console.log(`  ${c.green("✓")} uploads folder       ${c.dim(folderPath)}`);
+    } else {
+      console.log(`  ${c.green("✓")} uploads folder       ${c.dim(folderPath)} (already set)`);
+    }
+    return;
+  }
+}
+
+// --- Section 3: setup pairing step ------------------------------------------
+
+// Shows the extension instructions and runs the pairing code loop.
+// Uses the wizard's existing readline interface (rl).
+// Caller guarantees stdin is a TTY before calling.
+//
+// opts.pairFlow — injectable pair function for unit tests. Signature:
+//   async (rl) => { ok, extensionId? } | { ok: false, reason }
+// When not injected, the real server/temp-listener flow is used.
+//
+// Exported for direct unit testing.
+async function runSetupPairingStep(rl, { pairFlow } = {}) {
+  const {
+    resolveWsPort,
+    tryConnectToServer,
+    probeIsPoltertab,
+    pairViaRunningServer,
+    pairViaTempListener,
+  } = require("./pair-flow.js");
+
+  console.log(`\n  ${c.bold("Last step — connect the extension:")}`);
+  console.log(`  1. Download and unzip:  ${c.cyan(EXTENSION_URL)}`);
+  console.log("  2. chrome://extensions → turn on Developer mode → Load unpacked → pick the folder");
+  console.log("  3. Click the PolterTab icon in Chrome and type the 4-letter code it shows.");
+  console.log("");
+
+  // Use the injected flow (tests) or the real connection flow.
+  if (!pairFlow) {
+    const port = resolveWsPort();
+    let serverWs = null;
+    try {
+      serverWs = await tryConnectToServer(port);
+      // Verify the server is actually poltertab before treating it as the pair host.
+      if (!(await probeIsPoltertab(port))) {
+        serverWs.terminate();
+        serverWs = null;
+        console.log(
+          `  Port ${port} is in use by something that isn’t poltertab.` +
+          " Close it or set a different port in ~/.poltertab/config.json, then retry.",
+        );
+        return;
+      }
+    } catch (err) {
+      if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT" && err.code !== "ETIMEDOUT") {
+        console.log(`  Could not reach port ${port}: ${err.message}`);
+        return;
+      }
+      // Nothing listening — use temp listener below.
+    }
+
+    if (serverWs) {
+      process.stdout.write("  waiting for the extension to connect…\n");
+      pairFlow = (r) => pairViaRunningServer(serverWs, r);
+    } else {
+      process.stdout.write("  waiting for the extension to connect…\n");
+      pairFlow = async (r) => {
+        try {
+          return await pairViaTempListener(port, r, {
+            onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
+          });
+        } catch (e) {
+          if (e.code === "EADDRINUSE") {
+            console.log(
+              `  Port ${port} is in use by something that isn’t poltertab.` +
+              " Close it or set a different port in ~/.poltertab/config.json, then retry.",
+            );
+            return { ok: false, reason: "skipped" };
+          }
+          throw e;
+        }
+      };
+    }
+  }
+
+  const result = await pairFlow(rl);
+
+  if (result.ok) {
+    const shortId = result.extensionId.slice(0, 8);
+    console.log(
+      `  ${c.green("✓")} paired               extension ${shortId}…` +
+      " · uploads panel is live in the extension",
+    );
+    console.log(c.dim(`      undo: poltertab uploads unpair ${result.extensionId}`));
+  } else if (result.reason === "skipped") {
+    console.log(
+      "  – pairing skipped      run poltertab uploads pair once the extension is loaded",
+    );
+  } else if (result.reason === "locked") {
+    console.log("  Too many wrong codes. Pairing is locked for 15 minutes.");
+  }
+  // Other reasons (error, server_disconnected): silent skip, don't abort setup.
+}
+
+// --- wizard ----------------------------------------------------------------
+
+async function run(argv = [], {
+  home = os.homedir(),
+  cwd = process.cwd(),
+  isTTY = process.stdin.isTTY,
+  rl: injectedRl = null,
+} = {}) {
   console.log(`\n  ${c.bold("PolterTab")} — browser control for AI agents\n`);
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  // Open one readline interface for all prompts. If tests inject one, use it.
+  const rl = injectedRl || (isTTY
+    ? readline.createInterface({ input: process.stdin, output: process.stdout })
+    : null);
 
   let scope;
   try {
@@ -164,12 +320,15 @@ async function run(argv = []) {
       ? "global"
       : argv.includes("--project")
         ? "project"
-        : await chooseScope(rl);
-  } finally {
-    rl.close();
+        : rl
+          ? await chooseScope(rl)
+          : (() => { throw new Error("Choose --global or --project when stdin is not a TTY"); })();
+  } catch (err) {
+    if (rl && !injectedRl) rl.close();
+    throw err;
   }
 
-  const paths = resolvePaths(scope);
+  const paths = resolvePaths(scope, { home, cwd });
   console.log("");
 
   // Each step reports what it actually did. A step that fails is reported with
@@ -199,10 +358,31 @@ async function run(argv = []) {
     console.log(c.dim(`      run: claude mcp add --scope ${paths.mcpScope} poltertab poltertab`));
   }
 
-  console.log(`\n  ${c.bold("One step left — install the Chrome extension:")}`);
-  console.log(`  ${c.cyan(EXTENSION_URL)}`);
-  console.log(c.dim("      unzip it, then chrome://extensions → Developer mode → Load unpacked\n"));
-  console.log(`  ${c.dim("Restart Claude Code to pick up the new tools.")}\n`);
+  // Section 1: optional uploads folder prompt (TTY only).
+  if (isTTY && rl) {
+    try {
+      await runFolderPrompt(rl, { homeDir: home });
+    } catch (err) {
+      console.log(`  ${c.yellow("!")} uploads folder skipped — ${err.message}`);
+    }
+  }
+
+  // Section 3: optional pairing step (TTY only).
+  if (isTTY && rl) {
+    try {
+      await runSetupPairingStep(rl);
+    } catch (err) {
+      console.log(`  ${c.yellow("!")} pairing step failed — ${err.message}`);
+    }
+  } else {
+    // Non-TTY: show extension instructions so the output is still useful.
+    console.log(`\n  ${c.bold("One step left — install the Chrome extension:")}`);
+    console.log(`  ${c.cyan(EXTENSION_URL)}`);
+    console.log(c.dim("      unzip it, then chrome://extensions → Developer mode → Load unpacked\n"));
+    console.log(`  ${c.dim("Restart Claude Code to pick up the new tools.")}\n`);
+  }
+
+  if (rl && !injectedRl) rl.close();
 }
 
 module.exports = {
@@ -211,8 +391,11 @@ module.exports = {
   installSkill,
   updateClaudeMd,
   registerServer,
+  runFolderPrompt,
+  runSetupPairingStep,
   MARKER,
   EXTENSION_URL,
+  DEFAULT_UPLOAD_FOLDER,
 };
 
 // Guard so the test suite can require this file without triggering a wizard

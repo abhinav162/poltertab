@@ -35,7 +35,8 @@ const {
 } = require("./config.js");
 const updates = require("./update-check.js");
 const OWN_VERSION = require("./../package.json").version;
-const { getAllowlist, addAllowlistEntry, removeAllowlistEntry, getTrustedExtensionIds } = require("./uploads-config.js");
+const { getAllowlist, addAllowlistEntry, removeAllowlistEntry, getTrustedExtensionIds, addTrustedExtensionId } = require("./uploads-config.js");
+const { PairHost } = require("./pair-host.js");
 const { logUpload, getRecentLog } = require("./uploads-log.js");
 const { buildAlwaysBlocked, validateAllowlistEntry } = require("./upload-paths.js");
 const fs = require("fs");
@@ -68,6 +69,10 @@ function isPaired() {
 }
 
 let WS_PORT = resolvePort();
+
+// Manages in-memory pair codes for the current Primary session. Null when this
+// node is a Secondary (Secondary never generates codes; the Primary does).
+let pairHost = null;
 
 // Populated when the extension connects; stays null until then, which is itself
 // worth reporting — a skew warning must not fire on "no extension yet".
@@ -301,6 +306,7 @@ function allowOrigin(info, cb) {
 }
 
 function setupPrimaryServer() {
+  pairHost = new PairHost();
   const http = require("http");
   const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
   // The source address alone does not stop DNS rebinding: a page at
@@ -1151,12 +1157,63 @@ function setupPrimaryWss(wss) {
                 // A socket that died mid-handshake reconnects on its own.
               }
             }
+            // Push a pair code to unpaired extensions so the UI can display it
+            // without the user running any CLI command first.
+            // Per-origin check: an already-trusted extension must not receive a code.
+            if (!isUploadsAuthorized(ws.handshakeOrigin) && pairHost && ws.handshakeOrigin) {
+              pairHost.generateForSocket(ws, ws.handshakeOrigin);
+            }
+          }
+          return;
+        }
+
+        // pair_code_request — extension asks for a (re)fresh of its pair code.
+        // Only accepted from unpaired extension sockets; throttled per socket (30 s).
+        if (msg.type === "pair_code_request") {
+          if (!ws.handshakeOrigin || !ws.handshakeOrigin.startsWith("chrome-extension://")) return;
+          if (isUploadsAuthorized(ws.handshakeOrigin) || !pairHost) return;
+          pairHost.handleCodeRequest(ws, ws.handshakeOrigin);
+          return;
+        }
+
+        // uploads_pair_submit — CLI submits a 4-char code to pair an extension.
+        // Originless (CLI) callers only; extension sockets must not self-pair.
+        if (msg.type === "uploads_pair_submit") {
+          if (ws.handshakeOrigin) return; // extension socket — ignore
+          if (!pairHost) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "uploads_pair_result", ok: false, reason: "no_active_code" }));
+            }
+            return;
+          }
+          const result = pairHost.submitCode(msg.code);
+          if (result.ok) {
+            // Store the bare ID (without chrome-extension:// prefix).
+            const bareId = result.extensionId.slice("chrome-extension://".length).replace(/\/$/, "");
+            let trustErr = null;
+            try { addTrustedExtensionId(bareId); } catch (e) { trustErr = e; }
+            if (trustErr) {
+              // Config write failed — do NOT claim success to avoid a paired-but-not-stored split.
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "uploads_pair_result", ok: false, reason: "config_write_failed" }));
+              }
+              return;
+            }
+            if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
+              result.extWs.send(JSON.stringify({ type: "uploads_paired" }));
+            }
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "uploads_pair_result", ok: true, extensionId: bareId }));
+            }
+          } else {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "uploads_pair_result", ...result }));
+            }
           }
           return;
         }
 
         // uploads_get_origins — return list of connected extension origins.
-        // Used by `poltertab uploads pair` to discover which extension to trust.
         // Only originless (CLI/local) sockets may request this; chrome-extension://
         // origins must not be able to enumerate other connected extensions.
         if (msg.type === "uploads_get_origins") {
@@ -1229,12 +1286,14 @@ function setupPrimaryWss(wss) {
           if (msg.type === "uploads_get_config") {
             const allowlist = getAllowlist();
             const alwaysBlocked = buildAlwaysBlocked(homeDir);
+            const trustedExtensionIds = getTrustedExtensionIds();
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: "uploads_config",
                 _replyId: msg._replyId || null,
                 allowlist,
                 alwaysBlocked,
+                trustedExtensionIds,
               }));
             }
             return;
@@ -1353,6 +1412,7 @@ function setupPrimaryWss(wss) {
     });
 
     ws.on("close", () => {
+      if (pairHost) pairHost.onSocketClose(ws);
       if (ws.nodeId) {
         console.error(
           `[PolterTab MCP] Secondary node disconnected: ${ws.nodeId}`,
