@@ -352,3 +352,140 @@ code, kbd, pre { font-family: var(--mono); }
 .doc code { font-family: var(--mono); font-size: .88em; background: color-mix(in srgb, var(--ecto) 12%, transparent); padding: 1px 5px; border-radius: 4px; color: var(--ecto-deep); overflow-wrap: anywhere; }
 .doc .meta { font-family: var(--mono); font-size: .86rem; color: var(--ink-faint); margin-top: .6rem; }
 .doc .back { margin-top: 2.6rem; display: inline-block; font-weight: 600; }
+
+/* ============================================================
+   Motion and micro-interactions (plans/poltertab-site-motion.md)
+   Transform/opacity only. 150–600 ms. One orchestrated moment (the hero
+   scene playing once), small physical feedback everywhere else. Every rule
+   here has a reduced-motion final state in the block at the bottom.
+   ============================================================ */
+:root {
+  --ease-out: cubic-bezier(.2, .7, .2, 1);
+  --ease-in-out: cubic-bezier(.45, 0, .2, 1);
+}
+
+/* 1. Hero entrance — staggered rise. The whole text column rises WITHOUT an
+   opacity fade: Lighthouse measured the lede paragraph as the mobile LCP
+   element, and anything starting at opacity 0 delays that paint (1.6 s → 3 s
+   when the lede faded). Transform never does. Only the media fades. --------- */
+@keyframes rise-only { from { transform: translateY(14px); } to { transform: none; } }
+@keyframes rise-far  { from { transform: translateY(24px); } to { transform: none; } }
+@keyframes fade-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in   { from { opacity: 0; } to { opacity: 1; } }
+
+.hero h1 { animation: rise-only .55s var(--ease-out) both; }
+.hero .lede, .hero .cmd, .hero .hero-ctas, .hero .fine { animation: rise-far .55s var(--ease-out) both; }
+.hero .lede     { animation-delay: .09s; }
+.hero .cmd      { animation-delay: .18s; }
+.hero .hero-ctas{ animation-delay: .27s; }
+.hero .fine     { animation-delay: .36s; }
+.hero-media     { animation: fade-rise .6s var(--ease-out) .15s both; }
+
+/* 2. The scene plays once: trail appears, cursor travels to the Subject field,
+   the field fills, the tool-call chip lands. Ends in the exact resting layout
+   the page had before, so screenshots and the no-JS page are unchanged. ---- */
+@keyframes cursor-travel {
+  from { opacity: 0; transform: translate(-96px, 26px); }
+  30%  { opacity: 1; }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes veil-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes chip-land {
+  from { opacity: 0; transform: translateY(12px) rotate(1.4deg); }
+  to   { opacity: 1; transform: translateY(0) rotate(1.4deg); }
+}
+@keyframes ghost-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+.scene .trail  { animation: fade-in .3s var(--ease-out) .75s both; }
+.scene .cursor { animation: cursor-travel .7s var(--ease-in-out) .85s both; }
+/* the Subject field starts "empty" under a surface-coloured veil that fades
+   away as the cursor arrives — opacity only, the filled field is underneath */
+.form-field.seq { position: relative; }
+.form-field.seq::after {
+  content: ""; position: absolute; inset: -1.5px; border-radius: 8px;
+  background: var(--surface); border: 1.5px solid var(--hairline);
+  pointer-events: none;
+  animation: veil-out .35s var(--ease-out) 1.5s both;
+}
+.toolcall { animation: chip-land .4s var(--ease-out) 1.95s both; }
+
+/* 3. Ghost personality: fade in, keep the bob, blink; brand mark tilts. ----- */
+@media (prefers-reduced-motion: no-preference) {
+  .ghost { animation: ghost-in .5s var(--ease-out) .6s both, bob 5.5s ease-in-out 1.1s infinite; }
+}
+@keyframes blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(.08); } }
+.ghost .eyes { transform-box: fill-box; transform-origin: center; animation: blink 4.6s ease-in-out 2.2s infinite; }
+.brand img { transition: transform .18s var(--ease-out); }
+.brand:hover img, .brand:focus-visible img { transform: rotate(-8deg); }
+
+/* 4. Scroll-reveal. Hidden state exists only once the script has run
+   (html.js), so with JS off everything is simply visible. .in is added by an
+   IntersectionObserver, once; elements already in view are shown at once. */
+html.js .reveal { opacity: 0; transform: translateY(16px); }
+html.js .reveal.in {
+  opacity: 1; transform: none;
+  transition: opacity .5s var(--ease-out), transform .5s var(--ease-out);
+  transition-delay: calc(var(--i, 0) * 70ms);
+}
+html.js .reveal.in.now { transition-duration: .3s; transition-delay: 0s; }
+
+/* 5. Buttons and pills: lift on hover AND focus-visible, press to scale. ---- */
+.btn:hover, .btn:focus-visible { transform: translateY(-2px); }
+.btn:active { transform: translateY(0) scale(.98); transition-duration: .12s; }
+.btn-pill { transition: background-color .18s ease, color .18s ease, transform .18s var(--ease-out); }
+.btn-pill:hover, .btn-pill:focus-visible { transform: translateY(-1px); }
+.btn-pill:active { transform: translateY(0) scale(.97); transition-duration: .12s; }
+.cmd .copy-btn { transition: transform .14s var(--ease-out), background-color .18s ease, color .18s ease, filter .18s ease; }
+.cmd .copy-btn:hover, .cmd .copy-btn:focus-visible { transform: translateY(-1px); }
+.cmd .copy-btn:active { transform: scale(.96); }
+
+/* 6. Nav and footer link underline, drawn from the left. ------------------- */
+.nav-link, .footer-links a { position: relative; }
+.nav-link::after, .footer-links a::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 2px;
+  background: var(--ink); transform: scaleX(0); transform-origin: left;
+  transition: transform .22s var(--ease-out);
+}
+.nav-link:hover::after, .nav-link:focus-visible::after,
+.footer-links a:hover::after, .footer-links a:focus-visible::after { transform: scaleX(1); }
+
+/* 7. Install command: edge tints on hover; copy confirms with a pop, a mint
+   state for 1.6 s and one flash across the block. --------------------------- */
+.cmd { position: relative; transition: border-color .18s ease; }
+.cmd:hover, .cmd:focus-within { border-color: color-mix(in srgb, var(--ecto) 60%, transparent); }
+.cmd::after {
+  content: ""; position: absolute; inset: 0; border-radius: 12px;
+  background: var(--term-mint); opacity: 0; pointer-events: none;
+}
+@keyframes flash { 0% { opacity: 0; } 30% { opacity: .16; } 100% { opacity: 0; } }
+.cmd.is-flash::after { animation: flash .45s ease-out; }
+@keyframes pop { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
+.cmd .copy-btn.is-copied { background: var(--mint); color: var(--ecto-deep); animation: pop .22s var(--ease-out); }
+
+/* 8. Demo rows, security items, hops: lift; the screenshot eases up a touch.
+   Keyboard parity via focus-within. No shadow changes (repaint). ---------- */
+.demo, .sec-item, .hop { transition: transform .25s var(--ease-out); }
+.demo:hover, .demo:focus-within { transform: translateY(-3px); }
+.sec-item:hover, .sec-item:focus-within, .hop:hover, .hop:focus-within { transform: translateY(-2px); }
+.demo-shot { transition: transform .4s var(--ease-out); }
+.demo:hover .demo-shot, .demo:focus-within .demo-shot { transform: scale(1.015); }
+
+/* Reduced motion: everything lands in its final state. ---------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .hero h1, .hero .lede, .hero .cmd, .hero .hero-ctas, .hero .fine, .hero-media,
+  .scene .trail, .scene .cursor, .toolcall, .ghost, .ghost .eyes,
+  .cmd.is-flash::after, .cmd .copy-btn.is-copied { animation: none; }
+  .form-field.seq::after { display: none; }
+  html.js .reveal { opacity: 1; transform: none; transition: none; }
+  .btn, .btn-pill, .cmd .copy-btn, .brand img, .demo, .sec-item, .hop, .demo-shot,
+  .nav-link::after, .footer-links a::after, .cmd { transition: none; }
+  .btn:hover, .btn:focus-visible, .btn:active,
+  .btn-pill:hover, .btn-pill:focus-visible, .btn-pill:active,
+  .cmd .copy-btn:hover, .cmd .copy-btn:focus-visible, .cmd .copy-btn:active,
+  .brand:hover img, .brand:focus-visible img,
+  .demo:hover, .demo:focus-within, .sec-item:hover, .sec-item:focus-within, .hop:hover, .hop:focus-within,
+  .demo:hover .demo-shot, .demo:focus-within .demo-shot { transform: none; }
+  /* underline still appears, just without the draw */
+  .nav-link:hover::after, .nav-link:focus-visible::after,
+  .footer-links a:hover::after, .footer-links a:focus-visible::after { transform: scaleX(1); }
+}
