@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>document.documentElement.classList.add('js');</script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PolterTab: a ghost in your browser, doing your work</title>
@@ -85,7 +86,7 @@
                   <div class="form-field is-done"><span class="lbl">Priority</span>High</div>
                 </div>
                 <div class="form-row">
-                  <div class="form-field is-done"><span class="lbl">Subject</span>Invoices missing from March export</div>
+                  <div class="form-field is-done seq"><span class="lbl">Subject</span>Invoices missing from March export</div>
                 </div>
                 <div class="form-row">
                   <div class="form-field"><span class="lbl">Attachment</span>march-invoices.csv &#10003; attached</div>
@@ -96,7 +97,7 @@
             <span class="hero-media-tag" aria-hidden="true">Reserved for live capture</span>
           </div>
           <svg class="trail" viewBox="0 0 300 100" fill="none" aria-hidden="true"><path d="M8 90 C 90 10, 180 95, 292 38" stroke="#E8A13D" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/></svg>
-          <svg class="ghost" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z" fill="#0E8C7F" opacity=".94"/><circle cx="12.5" cy="14" r="2" fill="#FAF9F6"/><circle cx="19.5" cy="14" r="2" fill="#FAF9F6"/></svg>
+          <svg class="ghost" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z" fill="#0E8C7F" opacity=".94"/><g class="eyes"><circle cx="12.5" cy="14" r="2" fill="#FAF9F6"/><circle cx="19.5" cy="14" r="2" fill="#FAF9F6"/></g></svg>
           <svg class="cursor" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l16 11-7 1.5L16 22l-3.6 1.4L9 16l-5 4V2z" fill="#23211C"/></svg>
           <div class="toolcall" aria-hidden="true">browser_fill <b>"#subject"</b> &rarr; ok (218ms)</div>
         </div>
@@ -360,12 +361,61 @@ poltertab setup</code>
         if (!target) return;
         var text = target.textContent;
         navigator.clipboard && navigator.clipboard.writeText(text).then(function () {
-          var prev = btn.textContent;
-          btn.textContent = 'Copied';
-          setTimeout(function () { btn.textContent = prev; }, 1600);
+          var prev = btn.textContent, cmd = btn.closest('.cmd');
+          btn.textContent = '\u2713 Copied';
+          btn.classList.add('is-copied');
+          if (cmd) { cmd.classList.remove('is-flash'); void cmd.offsetWidth; cmd.classList.add('is-flash'); }
+          setTimeout(function () {
+            btn.textContent = prev;
+            btn.classList.remove('is-copied');
+            if (cmd) cmd.classList.remove('is-flash');
+          }, 1600);
         });
       });
     });
+
+    // Scroll-reveal. Content is never left hidden: the hidden state only
+    // exists under html.js (set in <head>); with no IntersectionObserver or
+    // reduced motion everything is shown at once; elements already in view on
+    // load are shown without waiting; a late safety pass reveals anything the
+    // observer missed. Each element reveals once.
+    (function () {
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var groups = ['.section-head', '.steps', '.demos', '.sec-grid', '.hops', '.faq', '.clients', '.final .wrap'];
+      var items = [];
+      groups.forEach(function (sel) {
+        document.querySelectorAll(sel).forEach(function (g) {
+          var kids = g.classList.contains('section-head') ? [g] : Array.prototype.slice.call(g.children);
+          kids.forEach(function (el, i) {
+            el.classList.add('reveal');
+            el.style.setProperty('--i', String(Math.min(i, 6)));
+            items.push(el);
+          });
+        });
+      });
+      function show(el, now) { el.classList.add('in'); if (now) el.classList.add('now'); }
+      if (reduce || !('IntersectionObserver' in window)) { items.forEach(function (el) { show(el, true); }); return; }
+      var vh = window.innerHeight || document.documentElement.clientHeight;
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (!e.isIntersecting) return;
+          show(e.target, false);
+          io.unobserve(e.target);
+        });
+      }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
+      items.forEach(function (el) {
+        if (el.getBoundingClientRect().top < vh * 0.9) { show(el, true); }
+        else { io.observe(el); }
+      });
+      // Safety: nothing stays hidden if the observer never fires for it.
+      window.addEventListener('load', function () {
+        setTimeout(function () {
+          items.forEach(function (el) {
+            if (!el.classList.contains('in') && el.getBoundingClientRect().top < vh) show(el, true);
+          });
+        }, 1500);
+      });
+    })();
   </script>
 </body>
 </html>
