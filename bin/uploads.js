@@ -17,6 +17,7 @@ const { validateAllowlistEntry, buildAlwaysBlocked } = require("../mcp-server/up
 const {
   resolveWsPort,
   tryConnectToServer,
+  probeIsPoltertab,
   pairViaRunningServer,
   pairViaTempListener,
 } = require("./pair-flow.js");
@@ -161,17 +162,21 @@ async function runPair(argv) {
   let serverWs = null;
   try {
     serverWs = await tryConnectToServer(port);
+    // Verify the server is actually poltertab, not an unrelated WS server.
+    if (!(await probeIsPoltertab(port))) {
+      serverWs.terminate();
+      serverWs = null;
+      rl.close();
+      console.error(
+        `\n  Port ${port} is in use by something that isn't poltertab.` +
+        " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
+      );
+      process.exit(1);
+    }
   } catch (err) {
     if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT") {
       rl.close();
-      if (err.code === "EADDRINUSE") {
-        console.error(
-          `\n  Port ${port} is in use by something that isn't poltertab.` +
-          " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
-        );
-      } else {
-        console.error(`\nCould not connect to port ${port}: ${err.message}\n`);
-      }
+      console.error(`\nCould not connect to port ${port}: ${err.message}\n`);
       process.exit(1);
     }
     // Nothing listening — start temp listener.
@@ -187,9 +192,22 @@ async function runPair(argv) {
     console.log("  Open the extension popup — it will connect automatically and show a 4-letter code.\n");
     process.stdout.write("  waiting for the extension to connect…\n");
 
-    result = await pairViaTempListener(port, rl, {
-      onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
-    });
+    try {
+      result = await pairViaTempListener(port, rl, {
+        onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
+      });
+    } catch (err) {
+      rl.close();
+      if (err.code === "EADDRINUSE") {
+        console.error(
+          `\n  Port ${port} is in use by something that isn't poltertab.` +
+          " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
+        );
+      } else {
+        console.error(`\n  Failed to start pairing listener: ${err.message}\n`);
+      }
+      process.exit(1);
+    }
   }
 
   rl.close();
@@ -211,28 +229,56 @@ async function runPair(argv) {
 // ── poltertab uploads unpair ───────────────────────────────────────────────
 
 async function runUnpair(argv) {
+  // Accept positional id: `poltertab uploads unpair <id>` (the form success hints print).
+  // Also accept --id <id> for backward compatibility.
   const idFlagIdx = argv.indexOf("--id");
   const flagId = idFlagIdx !== -1 ? argv[idFlagIdx + 1] : null;
+  const positionalId = !flagId && argv.length > 0 && !argv[0].startsWith("-") ? argv[0] : null;
+  const targetId = flagId || positionalId;
 
-  if (flagId) {
-    const removed = removeTrustedExtensionId(flagId);
+  if (targetId) {
+    const removed = removeTrustedExtensionId(targetId);
     if (removed) {
-      console.log(`\n  Unpaired: ${flagId}\n`);
+      console.log(`\n  Unpaired: ${targetId}\n`);
     } else {
-      console.log(`\n  Not found in paired extensions: ${flagId}\n`);
+      console.log(`\n  Not found in paired extensions: ${targetId}\n`);
     }
     return;
   }
 
+  // No-id form: list all paired ids, require TTY + y/n confirmation before removing.
   const ids = getTrustedExtensionIds();
   if (ids.length === 0) {
     console.log("\n  No extensions are currently paired.\n");
     return;
   }
-  for (const id of ids) {
-    removeTrustedExtensionId(id);
+
+  if (!process.stdin.isTTY) {
+    console.error(
+      "\n  'poltertab uploads unpair' with no id requires an interactive terminal.\n" +
+      "  Pass the extension id to remove a specific one: poltertab uploads unpair <id>\n",
+    );
+    process.exit(1);
   }
-  console.log(`\n  Unpaired ${ids.length} extension${ids.length === 1 ? "" : "s"}.\n`);
+
+  console.log("\n  Currently paired extensions:");
+  for (const id of ids) console.log(`    ${id}`);
+  console.log();
+
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await new Promise((resolve) => {
+    rl.question("  Remove ALL paired extensions? [y/N] ", (ans) => {
+      rl.close();
+      if ((ans || "").trim().toLowerCase() === "y") {
+        for (const id of ids) removeTrustedExtensionId(id);
+        console.log(`\n  Unpaired ${ids.length} extension${ids.length === 1 ? "" : "s"}.\n`);
+      } else {
+        console.log("\n  Cancelled.\n");
+      }
+      resolve();
+    });
+  });
 }
 
 module.exports = { run };

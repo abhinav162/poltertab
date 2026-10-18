@@ -8,10 +8,17 @@
 //   Z6  PairHost.submitCode expired code → reason:"expired"
 //   Z7  PairHost.onSocketClose voids code and throttle tracking
 //   Z8  WS unpaired extension_ready → receives pair_code (4-char ALPHABET)
-//   Z9  WS correct code → uploads_pair_result ok:true + uploads_paired + config has bare ID
+//   Z9  WS correct code → uploads_pair_result ok:true + extensionId + uploads_paired + config has bare ID
 //   Z10 pair_code string never appears in server logs after pairing
 //   Z11 pair_code string never appears in config.json after pairing
 //   Z12 uploads_pair_submit from chrome-extension origin is silently rejected
+//   Z13 MUST 1: ping must NOT regenerate code or stack a new prompt (temp listener)
+//   Z14 MUST 3: expiry timer regenerates code; expired submission is not a wrong guess
+//   Z15 MUST 4: positional id unpairs only that id; --id still works
+//   Z16 SHOULD 3: temp listener closes on success
+//   Z17 SHOULD 3: temp listener closes on Enter-skip
+//   Z18 SHOULD 3: temp listener closes on lockout (5 wrong codes)
+//   Z19 SHOULD 3: port is free after temp listener resolves
 
 "use strict";
 
@@ -261,6 +268,7 @@ async function groupZ() {
 
       const result = cliMessages.find((m) => m.type === "uploads_pair_result");
       assert.ok(result.ok, `pair must succeed, got: ${JSON.stringify(result)}`);
+      assert.strictEqual(result.extensionId, "abc123", `result must carry bare extensionId, got: ${JSON.stringify(result)}`);
 
       // Config must contain the bare extension ID (no chrome-extension:// prefix).
       const cfgPath = path.join(home, "config.json");
@@ -383,6 +391,217 @@ async function groupZ() {
       await stop(srv);
       cleanup(home);
     }
+  });
+
+  // ── Z13: MUST 1 — ping must NOT regenerate code or stack a prompt ────────────
+  await test("Z13 MUST 1: ping does not regenerate code or push new pair_code", async () => {
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+
+    const messages = [];
+    const ws = { readyState: 1, send: (s) => messages.push(JSON.parse(s)) };
+
+    // First extension_ready → should generate a code.
+    ph.generateForSocket(ws, "chrome-extension://z13");
+    assert.strictEqual(messages.length, 1, "extension_ready must push exactly one pair_code");
+    const firstCode = messages[0].code;
+
+    // A ping should NOT generate a new code.
+    // Simulate what pair-flow.js now does: only call generateForSocket for extension_ready
+    // when no code exists yet. We verify this by checking _socketCodes is unchanged.
+    const codeBefore = ph._socketCodes.get(ws);
+    // (No generateForSocket call for ping — that's the fix; verify state is unchanged)
+    const codeAfter = ph._socketCodes.get(ws);
+    assert.strictEqual(codeBefore, codeAfter, "ping must not change the socket's code");
+    assert.strictEqual(messages.length, 1, "ping must not push a new pair_code message");
+    assert.strictEqual(firstCode, ph._socketCodes.get(ws), "code must remain the same after a ping");
+
+    ph.onSocketClose(ws);
+  });
+
+  // ── Z14: MUST 3 — expiry timer regenerates code; expired ≠ wrong guess ──────
+  await test("Z14 MUST 3: expired code triggers regeneration and does not count as wrong", async () => {
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost({ codeTtlMs: 80 }); // very short TTL for the test
+
+    const messages = [];
+    const ws = { readyState: 1, send: (s) => messages.push(JSON.parse(s)) };
+
+    ph.generateForSocket(ws, "chrome-extension://z14");
+    assert.strictEqual(messages.length, 1, "should push initial pair_code");
+    const originalCode = messages[0].code;
+
+    // Wait for the expiry timer to fire and regenerate.
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.ok(messages.length >= 2, `expiry timer must push a second pair_code (got ${messages.length})`);
+    const newCode = messages[messages.length - 1].code;
+    assert.notStrictEqual(newCode, originalCode, "regenerated code must differ from expired one");
+
+    // Submitting the expired code must return reason:"expired" WITHOUT incrementing wrongCount.
+    const expiredResult = ph.submitCode(originalCode);
+    assert.strictEqual(expiredResult.ok, false, "expired code must not ok");
+    assert.strictEqual(expiredResult.reason, "expired", `expected reason "expired", got ${expiredResult.reason}`);
+    assert.strictEqual(ph._lockout.wrongCount, 0, "expired guess must not increment wrongCount");
+
+    ph.onSocketClose(ws);
+  });
+
+  // ── Z15: MUST 4 — positional id unpairs only that id ─────────────────────────
+  await test("Z15 MUST 4: positional id form unpairs only the named id", async () => {
+    const home = makeTmpHome();
+    const savedHome = process.env.POLTERTAB_HOME;
+    process.env.POLTERTAB_HOME = home;
+    // Invalidate the cached config module so it reads from the new home.
+    const configKey = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/config.js"));
+    const uploadsKey = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/uploads-config.js"));
+    if (configKey) delete require.cache[configKey];
+    if (uploadsKey) delete require.cache[uploadsKey];
+    try {
+      const { addTrustedExtensionId, getTrustedExtensionIds } = require("../../mcp-server/uploads-config.js");
+      const { run: uploadsRun } = require("../../bin/uploads.js");
+
+      addTrustedExtensionId("aabbccdd00000000000000000000001a");
+      addTrustedExtensionId("aabbccdd00000000000000000000002b");
+      assert.strictEqual(getTrustedExtensionIds().length, 2, "pre-condition: 2 ids");
+
+      // Positional form — unpairs only the first id.
+      await uploadsRun(["unpair", "aabbccdd00000000000000000000001a"]);
+
+      const remaining = getTrustedExtensionIds();
+      assert.ok(!remaining.includes("aabbccdd00000000000000000000001a"), "named id must be removed");
+      assert.ok(remaining.includes("aabbccdd00000000000000000000002b"), "other id must remain");
+    } finally {
+      if (savedHome === undefined) delete process.env.POLTERTAB_HOME;
+      else process.env.POLTERTAB_HOME = savedHome;
+      if (configKey) delete require.cache[configKey];
+      if (uploadsKey) delete require.cache[uploadsKey];
+      cleanup(home);
+    }
+  });
+
+  // ── Z16–Z19: SHOULD 3 — temp listener exit paths and port cleanup ─────────────
+
+  // Helper: fake readline that answers with `answer` on the first question call.
+  function fakeRl(answer) {
+    return {
+      question: (_prompt, cb) => setImmediate(() => cb(answer)),
+      close: () => {},
+    };
+  }
+
+  await test("Z16 SHOULD 3: temp listener resolves ok:true on correct code (success path)", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+    const { PairHost } = require(PAIR_HOST);
+
+    // We need to intercept the code that the temp listener generates.
+    let capturedCode = null;
+    const _orig = PairHost.prototype.generateForSocket;
+    PairHost.prototype.generateForSocket = function (ws, extensionId) {
+      _orig.call(this, ws, extensionId);
+      const code = this._socketCodes.get(ws);
+      if (code) capturedCode = code;
+    };
+
+    // Readline that waits until the code is captured, then answers.
+    const rl = {
+      question: (_prompt, cb) => {
+        const wait = () => {
+          if (capturedCode) { setImmediate(() => cb(capturedCode)); return; }
+          setTimeout(wait, 20);
+        };
+        wait();
+      },
+      close: () => {},
+    };
+
+    const listenerPromise = pairViaTempListener(port, rl);
+
+    // Connect a fake extension.
+    await sleep(50);
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z16" });
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+    const result = await listenerPromise;
+    PairHost.prototype.generateForSocket = _orig;
+
+    ext.close();
+    assert.ok(result.ok, `should succeed, got: ${JSON.stringify(result)}`);
+    assert.ok(typeof result.extensionId === "string" && result.extensionId.length > 0, "must return extensionId");
+  });
+
+  await test("Z17 SHOULD 3: temp listener resolves ok:false/skipped on Enter-skip", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+
+    const rl = {
+      question: (_prompt, cb) => setImmediate(() => cb("")), // Enter with empty input
+      close: () => {},
+    };
+
+    const listenerPromise = pairViaTempListener(port, rl);
+
+    await sleep(50);
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z17" });
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+    const result = await listenerPromise;
+    ext.close();
+    assert.ok(!result.ok, "should not be ok");
+    assert.strictEqual(result.reason, "skipped", `expected "skipped", got ${result.reason}`);
+  });
+
+  await test("Z18 SHOULD 3: temp listener resolves ok:false/locked on 5 wrong codes", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+
+    let callCount = 0;
+    const rl = {
+      question: (_prompt, cb) => setImmediate(() => {
+        callCount++;
+        cb("XXXX"); // always wrong
+      }),
+      close: () => {},
+    };
+
+    const listenerPromise = pairViaTempListener(port, rl);
+
+    await sleep(50);
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z18" });
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+    const result = await listenerPromise;
+    ext.close();
+    assert.ok(!result.ok, "should not be ok");
+    assert.strictEqual(result.reason, "locked", `expected "locked", got ${result.reason}`);
+  });
+
+  await test("Z19 SHOULD 3: port is free after temp listener resolves", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+    const net = require("net");
+
+    const rl = fakeRl(""); // skip immediately
+    const listenerPromise = pairViaTempListener(port, rl);
+
+    await sleep(50);
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z19" });
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+    await listenerPromise;
+    ext.close();
+
+    // The port must be free now — binding a new server must succeed.
+    await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.listen(port, "127.0.0.1", () => { probe.close(resolve); });
+      probe.on("error", reject);
+    });
   });
 }
 

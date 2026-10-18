@@ -221,6 +221,7 @@ async function runSetupPairingStep(rl, { pairFlow } = {}) {
   const {
     resolveWsPort,
     tryConnectToServer,
+    probeIsPoltertab,
     pairViaRunningServer,
     pairViaTempListener,
   } = require("./pair-flow.js");
@@ -237,14 +238,17 @@ async function runSetupPairingStep(rl, { pairFlow } = {}) {
     let serverWs = null;
     try {
       serverWs = await tryConnectToServer(port);
-    } catch (err) {
-      if (err.code === "EADDRINUSE") {
+      // Verify the server is actually poltertab before treating it as the pair host.
+      if (!(await probeIsPoltertab(port))) {
+        serverWs.terminate();
+        serverWs = null;
         console.log(
           `  Port ${port} is in use by something that isn’t poltertab.` +
           " Close it or set a different port in ~/.poltertab/config.json, then retry.",
         );
         return;
       }
+    } catch (err) {
       if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT" && err.code !== "ETIMEDOUT") {
         console.log(`  Could not reach port ${port}: ${err.message}`);
         return;
@@ -253,12 +257,26 @@ async function runSetupPairingStep(rl, { pairFlow } = {}) {
     }
 
     if (serverWs) {
+      process.stdout.write("  waiting for the extension to connect…\n");
       pairFlow = (r) => pairViaRunningServer(serverWs, r);
     } else {
       process.stdout.write("  waiting for the extension to connect…\n");
-      pairFlow = (r) => pairViaTempListener(port, r, {
-        onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
-      });
+      pairFlow = async (r) => {
+        try {
+          return await pairViaTempListener(port, r, {
+            onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
+          });
+        } catch (e) {
+          if (e.code === "EADDRINUSE") {
+            console.log(
+              `  Port ${port} is in use by something that isn’t poltertab.` +
+              " Close it or set a different port in ~/.poltertab/config.json, then retry.",
+            );
+            return { ok: false, reason: "skipped" };
+          }
+          throw e;
+        }
+      };
     }
   }
 

@@ -19,6 +19,8 @@ const REQUEST_THROTTLE_MS = 30 * 1000;   // 30 s per socket
 const LOCKOUT_MAX_WRONG = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
+module.exports._CODE_TTL_MS = CODE_TTL_MS; // exported for tests that need the value
+
 function _randomCode() {
   let s = "";
   for (let i = 0; i < CODE_LENGTH; i++) {
@@ -28,7 +30,9 @@ function _randomCode() {
 }
 
 class PairHost {
-  constructor() {
+  // opts.codeTtlMs — injectable TTL for unit tests (defaults to 5 minutes).
+  constructor({ codeTtlMs = CODE_TTL_MS } = {}) {
+    this._codeTtlMs = codeTtlMs;
     // code → { ws, extensionId, expiresAt, timer }
     this._codes = new Map();
     // ws → code
@@ -37,6 +41,9 @@ class PairHost {
     this._socketLastRequest = new Map();
     // global wrong-guess counter
     this._lockout = { wrongCount: 0, lockedUntil: 0 };
+    // codes that recently expired — kept for one TTL window so submitCode can
+    // tell the user "expired, try the new one" without counting it as wrong.
+    this._recentlyExpired = new Set();
   }
 
   _isLockedOut() {
@@ -65,20 +72,29 @@ class PairHost {
     }
 
     const code = this._uniqueCode();
-    const expiresAt = Date.now() + CODE_TTL_MS;
+    const expiresAt = Date.now() + this._codeTtlMs;
     const timer = setTimeout(() => {
       if (this._codes.get(code)) {
         this._codes.delete(code);
         this._socketCodes.delete(ws);
+        // Track as recently-expired so a late submitCode returns "expired" (not
+        // "wrong") and does not burn a lockout try.
+        this._recentlyExpired.add(code);
+        setTimeout(() => this._recentlyExpired.delete(code), this._codeTtlMs);
+        // Spec: push a fresh code down the same socket so the popup never shows
+        // a dead code. If the socket is already closed, nothing to do.
+        if (ws.readyState === 1 /* OPEN */) {
+          this.generateForSocket(ws, extensionId);
+        }
       }
-    }, CODE_TTL_MS);
+    }, this._codeTtlMs);
 
     this._codes.set(code, { ws, extensionId, expiresAt, timer });
     this._socketCodes.set(ws, code);
 
     try {
       if (ws.readyState === 1 /* OPEN */) {
-        ws.send(JSON.stringify({ type: "pair_code", code }));
+        ws.send(JSON.stringify({ type: "pair_code", code, expiresAt }));
       }
     } catch (_) {}
   }
@@ -117,7 +133,15 @@ class PairHost {
     const code = String(rawCode || "").toUpperCase().trim();
     const entry = this._codes.get(code);
 
-    if (!entry || entry.expiresAt < now) {
+    // Expired code: tell the user to wait for the new one; do NOT count as a
+    // wrong guess — the expiry timer already regenerated a fresh code.
+    // This handles both the sub-second race (entry still present but past
+    // expiresAt) and the post-timer case (entry deleted, code in _recentlyExpired).
+    if ((entry && entry.expiresAt < now) || this._recentlyExpired.has(code)) {
+      return { ok: false, reason: "expired" };
+    }
+
+    if (!entry) {
       this._lockout.wrongCount += 1;
       if (this._lockout.wrongCount >= LOCKOUT_MAX_WRONG) {
         this._lockout = { wrongCount: 0, lockedUntil: now + LOCKOUT_DURATION_MS };
@@ -129,7 +153,7 @@ class PairHost {
       }
       return {
         ok: false,
-        reason: entry ? "expired" : "wrong",
+        reason: "wrong",
         triesLeft: LOCKOUT_MAX_WRONG - this._lockout.wrongCount,
       };
     }

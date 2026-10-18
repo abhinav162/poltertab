@@ -77,7 +77,8 @@ function pairViaRunningServer(serverWs, rl) {
       } else if (msg.reason === "locked_out") {
         const mins = msg.secsLeft ? Math.ceil(msg.secsLeft / 60) : 15;
         process.stderr.write(
-          `\n  Too many wrong codes. Pairing is locked for ${mins} minutes.\n`,
+          `\n  Too many wrong codes. Pairing is locked for ${mins} minutes.\n` +
+          "  (You can still pair during the lockout with: poltertab uploads pair --id <extension-id>)\n",
         );
         finish({ ok: false, reason: "locked" });
       } else if (msg.reason === "expired") {
@@ -178,10 +179,18 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
         let msg;
         try { msg = JSON.parse(raw); } catch (_) { return; }
 
-        if (msg.type === "extension_ready" || msg.type === "ping") {
-          pairHost.generateForSocket(ws, origin);
-          if (onStatus) onStatus("extension connected — the code is in its popup");
-          askCode();
+        if (msg.type === "extension_ready") {
+          // Generate a code only on first contact; subsequent pings must not regenerate.
+          if (!pairHost._socketCodes.has(ws)) {
+            pairHost.generateForSocket(ws, origin);
+            if (onStatus) onStatus("extension connected — the code is in its popup");
+            askCode();
+          }
+          return;
+        }
+
+        if (msg.type === "ping") {
+          // Keep-alive — just reset the idle timer (already done above); do NOT regenerate.
           return;
         }
 
@@ -189,7 +198,16 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
           pairHost.handleCodeRequest(ws, origin);
           return;
         }
-        // All other messages silently ignored (pairing-only mode).
+
+        // Non-pairing message from a Secondary or AI tool dialing in during setup.
+        try {
+          if (ws.readyState === 1 /* OPEN */) {
+            ws.send(JSON.stringify({
+              type: "error",
+              error: "pairing mode — restart your AI tool for browser control",
+            }));
+          }
+        } catch (_) {}
       });
 
       ws.on("close", () => pairHost.onSocketClose(ws));
@@ -215,7 +233,8 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
           } else if (result.reason === "locked_out") {
             const mins = result.secsLeft ? Math.ceil(result.secsLeft / 60) : 15;
             process.stderr.write(
-              `\n  Too many wrong codes. Pairing is locked for ${mins} minutes.\n`,
+              `\n  Too many wrong codes. Pairing is locked for ${mins} minutes.\n` +
+              "  (You can still pair during the lockout with: poltertab uploads pair --id <extension-id>)\n",
             );
             finish({ ok: false, reason: "locked" });
           } else if (result.reason === "expired") {
@@ -235,9 +254,32 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
   });
 }
 
+// ── poltertab server probe ─────────────────────────────────────────────────
+
+// Returns true when the server at port is a poltertab Primary.
+// Prevents treating an unrelated WebSocket server as the pair host.
+async function probeIsPoltertab(port) {
+  const http = require("http");
+  return new Promise((resolve) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/status", timeout: 2000 }, (res) => {
+      let data = "";
+      res.on("data", (c) => { data += c; });
+      res.on("end", () => {
+        try {
+          const body = JSON.parse(data);
+          resolve(body.role === "primary");
+        } catch (_) { resolve(false); }
+      });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+  });
+}
+
 module.exports = {
   resolveWsPort,
   tryConnectToServer,
+  probeIsPoltertab,
   pairViaRunningServer,
   pairViaTempListener,
 };

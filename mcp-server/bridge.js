@@ -1159,7 +1159,8 @@ function setupPrimaryWss(wss) {
             }
             // Push a pair code to unpaired extensions so the UI can display it
             // without the user running any CLI command first.
-            if (!isPaired() && pairHost && ws.handshakeOrigin) {
+            // Per-origin check: an already-trusted extension must not receive a code.
+            if (!isUploadsAuthorized(ws.handshakeOrigin) && pairHost && ws.handshakeOrigin) {
               pairHost.generateForSocket(ws, ws.handshakeOrigin);
             }
           }
@@ -1170,7 +1171,7 @@ function setupPrimaryWss(wss) {
         // Only accepted from unpaired extension sockets; throttled per socket (30 s).
         if (msg.type === "pair_code_request") {
           if (!ws.handshakeOrigin || !ws.handshakeOrigin.startsWith("chrome-extension://")) return;
-          if (isPaired() || !pairHost) return;
+          if (isUploadsAuthorized(ws.handshakeOrigin) || !pairHost) return;
           pairHost.handleCodeRequest(ws, ws.handshakeOrigin);
           return;
         }
@@ -1189,12 +1190,20 @@ function setupPrimaryWss(wss) {
           if (result.ok) {
             // Store the bare ID (without chrome-extension:// prefix).
             const bareId = result.extensionId.slice("chrome-extension://".length).replace(/\/$/, "");
-            try { addTrustedExtensionId(bareId); } catch (_) {}
+            let trustErr = null;
+            try { addTrustedExtensionId(bareId); } catch (e) { trustErr = e; }
+            if (trustErr) {
+              // Config write failed — do NOT claim success to avoid a paired-but-not-stored split.
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "uploads_pair_result", ok: false, reason: "config_write_failed" }));
+              }
+              return;
+            }
             if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
               result.extWs.send(JSON.stringify({ type: "uploads_paired" }));
             }
             if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "uploads_pair_result", ok: true }));
+              ws.send(JSON.stringify({ type: "uploads_pair_result", ok: true, extensionId: bareId }));
             }
           } else {
             if (ws.readyState === WebSocket.OPEN) {
@@ -1277,12 +1286,14 @@ function setupPrimaryWss(wss) {
           if (msg.type === "uploads_get_config") {
             const allowlist = getAllowlist();
             const alwaysBlocked = buildAlwaysBlocked(homeDir);
+            const trustedExtensionIds = getTrustedExtensionIds();
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: "uploads_config",
                 _replyId: msg._replyId || null,
                 allowlist,
                 alwaysBlocked,
+                trustedExtensionIds,
               }));
             }
             return;

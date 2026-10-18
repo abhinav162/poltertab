@@ -69,7 +69,7 @@ document.getElementById("saveBtn").addEventListener("click", () => {
 
   function renderOffline() {
     body.textContent = "";
-    const p = el("p", "u-notice");
+    const p = el("p", "u-notice u-offline");
     p.append(
       "Can't reach the PolterTab server, so folders can't be shown or changed here. Start the server, then reopen this page — or manage folders in a terminal with ",
     );
@@ -139,8 +139,17 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     return { value: i.value || "", error: e ? e.textContent : "" };
   }
 
-  function renderConfig(allowlist, alwaysBlocked, draft) {
+  function renderConfig(allowlist, alwaysBlocked, draft, trustedExtensionIds) {
     body.textContent = "";
+
+    // Paired extension id (SHOULD 4 — show which id holds config access).
+    if (trustedExtensionIds && trustedExtensionIds.length > 0) {
+      const paired = el("p", "u-sub", "Paired extension");
+      body.appendChild(paired);
+      trustedExtensionIds.forEach((id) => {
+        body.appendChild(el("div", "u-id", id));
+      });
+    }
 
     // Allowed folders
     body.appendChild(el("p", "u-sub", "Allowed folders"));
@@ -301,7 +310,7 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     if (!reply) return renderOffline();
     if (reply.type === "uploads_not_paired") return renderNotPaired(reply.pairCode);
     if (reply.type === "uploads_error") return renderError(reply.error);
-    if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked, draft);
+    if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked, draft, reply.trustedExtensionIds);
     if (reply.ok === false) return renderOffline(); // "Not connected to bridge server."
     renderError("unexpected response");
   }
@@ -313,10 +322,11 @@ document.getElementById("saveBtn").addEventListener("click", () => {
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "uploads_paired_notice") load();
     if (msg.type === "state_update" && msg.state && msg.state.pairCode !== undefined) {
-      // If we're currently showing the not-paired UI, refresh it with the new code.
-      const codeEl = document.querySelector(".u-pair-code");
-      const noticeEl = document.querySelector(".u-notice");
-      if (noticeEl) renderNotPaired(msg.state.pairCode);
+      // Refresh the not-paired UI only when we're actually showing it (not the
+      // config view or the offline notice — both also have .u-notice).
+      const offlineEl = document.querySelector(".u-offline");
+      const configEl = document.querySelector(".u-sub");
+      if (!offlineEl && !configEl) renderNotPaired(msg.state.pairCode);
     }
   });
 })();
