@@ -56,6 +56,9 @@ importScripts(
   // Learned from the server's reply to extension_ready; cleared on disconnect
   // so the popup never shows a stale comparison against a server that is gone.
   let serverVersion = null;
+  // The most recent pair code pushed by the server. Cleared on disconnect or
+  // when uploads_paired arrives. Never written to storage or sent to web pages.
+  let currentPairCode = null;
 
   // Pending upload-config/log requests from the options page. Maps _replyId → sendResponse.
   const pendingUploadsReplies = new Map();
@@ -150,6 +153,23 @@ importScripts(
         return;
       }
 
+      // pair_code — server pushes a 4-letter code to unpaired extensions.
+      // Store it for the popup/options page; never log or persist it.
+      if (msg.type === "pair_code") {
+        currentPairCode = msg.code || null;
+        broadcastState();
+        return;
+      }
+
+      // uploads_paired — pairing succeeded; clear the code and let pages re-render.
+      if (msg.type === "uploads_paired") {
+        currentPairCode = null;
+        broadcastState();
+        // Let any open options page know it should reload its config.
+        chrome.runtime.sendMessage({ type: "uploads_paired_notice" }).catch(() => {});
+        return;
+      }
+
       // Relay uploads config/log responses back to the options page.
       if (
         msg.type === "uploads_config" ||
@@ -165,7 +185,9 @@ importScripts(
           // msg.type regardless, but keep ok honest for anything that only
           // checks it. config_result carries its own ok, which ...msg preserves.
           const ok = msg.type !== "uploads_error" && msg.type !== "uploads_not_paired";
-          replyFn({ ok, ...msg });
+          // Include the current pair code so the options page can show it
+          // without a second round-trip.
+          replyFn({ ok, pairCode: currentPairCode, ...msg });
         }
         return;
       }
@@ -196,6 +218,7 @@ importScripts(
       isConnected = false;
       activeSessions = [];
       serverVersion = null;
+      currentPairCode = null;
       broadcastState();
       // Stop keep-alive; redial now and on a back-off, with the alarm as the
       // backstop if the worker is suspended before that succeeds.
@@ -220,6 +243,7 @@ importScripts(
           sessions: activeSessions,
           version: chrome.runtime.getManifest().version,
           serverVersion,
+          pairCode: currentPairCode,
         },
       })
       .catch(() => {});
@@ -261,7 +285,7 @@ importScripts(
       if (!isConnected) {
         connect();
       }
-      sendResponse({ connected: isConnected, sessions: activeSessions });
+      sendResponse({ connected: isConnected, sessions: activeSessions, pairCode: currentPairCode });
       return true;
     }
 

@@ -28,7 +28,7 @@ const { results } = require("./harness.js");
 //   U  connection arbitration extras   (::1 reach, idle eviction / lazy reconnect)
 //   V  legacy-bind regression          (macOS SO_REUSEADDR, /status loopback-only)
 //   W  extension reconnect + version   (immediate redial, 4002, never-connected vs reconnecting)
-const GROUPS = "abcdefghijklmnopqrstuvwxy".split("");
+const GROUPS = "abcdefghijklmnopqrstuvwxyz".split("");
 
 (async () => {
   console.log("PolterTab regression suite");

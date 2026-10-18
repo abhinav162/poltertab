@@ -78,16 +78,47 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     body.appendChild(p);
   }
 
-  function renderNotPaired() {
+  function renderNotPaired(pairCode) {
     body.textContent = "";
-    const p = el("p", "u-notice");
-    p.append("Pair this browser first: run ");
-    p.append(el("code", null, "poltertab uploads pair"));
-    p.append(" in a terminal, then reopen this page. Match the id it prints to this extension's id:");
-    body.appendChild(p);
-    let id = "";
-    try { id = chrome.runtime.id || ""; } catch (_) {}
-    body.appendChild(el("span", "u-id", id || "(unknown)"));
+    let extId = "";
+    try { extId = chrome.runtime.id || ""; } catch (_) {}
+
+    if (pairCode) {
+      // Show the code prominently; extension ID in a collapsed details block.
+      const p = el("p", "u-notice");
+      p.append("Enter this code in the terminal where you ran ");
+      p.append(el("code", null, "poltertab uploads pair"));
+      p.append(":");
+      body.appendChild(p);
+
+      const codeEl = el("div", "u-pair-code", pairCode);
+      body.appendChild(codeEl);
+
+      const details = document.createElement("details");
+      details.className = "u-id-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "Extension ID";
+      details.appendChild(summary);
+      details.appendChild(el("span", "u-id", extId || "(unknown)"));
+      body.appendChild(details);
+    } else {
+      // No code yet — server hasn't pushed one (may not be running).
+      const p = el("p", "u-notice");
+      p.append("Start poltertab in a terminal, then run ");
+      p.append(el("code", null, "poltertab uploads pair"));
+      p.append(". A pairing code will appear here once the extension connects.");
+      body.appendChild(p);
+
+      if (extId) {
+        const details = document.createElement("details");
+        details.className = "u-id-details";
+        const summary = document.createElement("summary");
+        summary.textContent = "Extension ID";
+        details.appendChild(summary);
+        details.appendChild(el("span", "u-id", extId));
+        body.appendChild(details);
+      }
+    }
   }
 
   function renderError(message) {
@@ -239,7 +270,7 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     const reply = await ask("uploads_set_config", { action: "add", dir });
     addBtn.disabled = false;
     if (!reply) { err.textContent = "Couldn't reach the server. Try again."; return; }
-    if (reply.type === "uploads_not_paired") { renderNotPaired(); return; }
+    if (reply.type === "uploads_not_paired") { renderNotPaired(reply.pairCode); return; }
     if (reply.type === "uploads_error") { err.textContent = reply.error || "Server error."; return; }
     if (reply.ok) { input.value = ""; load(); return; }
     // Validation rejection echoed inline (always-blocked, not a directory, …)
@@ -255,7 +286,7 @@ document.getElementById("saveBtn").addEventListener("click", () => {
       if (err) err.textContent = "Couldn't reach the server. Try again.";
       return;
     }
-    if (reply.type === "uploads_not_paired") { renderNotPaired(); return; }
+    if (reply.type === "uploads_not_paired") { renderNotPaired(reply.pairCode); return; }
     if (reply.type === "uploads_error" || (reply.ok === false && reply.error)) {
       btn.disabled = false;
       if (err) err.textContent = reply.error || "Server error.";
@@ -268,7 +299,7 @@ document.getElementById("saveBtn").addEventListener("click", () => {
     const draft = captureDraft();
     const reply = await ask("uploads_get_config");
     if (!reply) return renderOffline();
-    if (reply.type === "uploads_not_paired") return renderNotPaired();
+    if (reply.type === "uploads_not_paired") return renderNotPaired(reply.pairCode);
     if (reply.type === "uploads_error") return renderError(reply.error);
     if (reply.type === "uploads_config") return renderConfig(reply.allowlist, reply.alwaysBlocked, draft);
     if (reply.ok === false) return renderOffline(); // "Not connected to bridge server."
@@ -278,4 +309,14 @@ document.getElementById("saveBtn").addEventListener("click", () => {
   load();
   // Reflect a CLI edit made while this page is open.
   window.addEventListener("focus", () => load());
+  // Flip live when the extension is paired (background.js broadcasts this).
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "uploads_paired_notice") load();
+    if (msg.type === "state_update" && msg.state && msg.state.pairCode !== undefined) {
+      // If we're currently showing the not-paired UI, refresh it with the new code.
+      const codeEl = document.querySelector(".u-pair-code");
+      const noticeEl = document.querySelector(".u-notice");
+      if (noticeEl) renderNotPaired(msg.state.pairCode);
+    }
+  });
 })();

@@ -929,6 +929,151 @@ test("G21  doctor exits non-zero on skew so a script can act on it", async (box)
   assert.ok(behind, "guard against an unused-var lint");
 });
 
+// ── H. setup folder prompt ────────────────────────────────────────────────────
+group("H  setup folder prompt");
+
+test("H1  setup.js imports addAllowlistEntry and validateAllowlistEntry", () => {
+  const src = fs.readFileSync(path.join(REPO, "bin", "setup.js"), "utf8");
+  assert.ok(src.includes("addAllowlistEntry"), "setup.js must import addAllowlistEntry");
+  assert.ok(src.includes("validateAllowlistEntry"), "setup.js must import validateAllowlistEntry");
+});
+
+test("H2  setup.js contains a folder prompt step after MCP registration", () => {
+  const src = fs.readFileSync(path.join(REPO, "bin", "setup.js"), "utf8");
+  assert.ok(src.includes("Allow a folder for uploads"), "setup.js must contain folder prompt text");
+  assert.ok(src.includes("uploads folder"), "setup.js must contain 'uploads folder' label");
+  assert.ok(src.includes("rl2"), "setup.js must use a second readline interface (rl2) for the folder prompt");
+});
+
+test("H3  setup run with Enter (skip) writes no folder to config", async (box) => {
+  const readline = require("readline");
+  const origCreate = readline.createInterface;
+
+  let rlCallCount = 0;
+  readline.createInterface = () => {
+    rlCallCount++;
+    return {
+      question(_q, cb) { cb(""); }, // empty = skip
+      close() {},
+    };
+  };
+
+  try {
+    // Pass --global so scope selection skips the real chooseScope.
+    // Use a box home so we never touch ~/.poltertab.
+    const origHome = process.env.POLTERTAB_HOME;
+    process.env.POLTERTAB_HOME = box;
+    try {
+      await setup.run(["--global"], { home: box, cwd: box });
+    } finally {
+      if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
+      else delete process.env.POLTERTAB_HOME;
+    }
+  } finally {
+    readline.createInterface = origCreate;
+  }
+
+  const cfgPath = path.join(box, "config.json");
+  if (fs.existsSync(cfgPath)) {
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const list = cfg.upload_allowed_paths || [];
+    assert.strictEqual(list.length, 0, "empty Enter must not write any folder");
+  }
+  // No config.json is also fine (means no folder was added).
+});
+
+test("H4  addAllowlistEntry writes folder to config in isolated home", (box) => {
+  // Clear module cache so uploads-config.js re-reads POLTERTAB_HOME fresh.
+  const configKey = require.resolve(path.join(REPO, "mcp-server", "config.js"));
+  const ucKey = require.resolve(path.join(REPO, "mcp-server", "uploads-config.js"));
+  delete require.cache[configKey];
+  delete require.cache[ucKey];
+
+  const origHome = process.env.POLTERTAB_HOME;
+  process.env.POLTERTAB_HOME = box;
+  try {
+    const { addAllowlistEntry } = require(path.join(REPO, "mcp-server", "uploads-config.js"));
+    const added = addAllowlistEntry(box);
+    assert.ok(added, "addAllowlistEntry must return true for a new entry");
+
+    const cfgPath = path.join(box, "config.json");
+    assert.ok(fs.existsSync(cfgPath), "config.json must be written");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    assert.ok((cfg.upload_allowed_paths || []).includes(box), "config.json must contain the folder");
+  } finally {
+    if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
+    else delete process.env.POLTERTAB_HOME;
+    // Restore module cache state so later tests use the suite-wide HOME.
+    delete require.cache[configKey];
+    delete require.cache[ucKey];
+  }
+});
+
+test("H5  setup run with invalid path skips and does not throw", async (box) => {
+  const readline = require("readline");
+  const origCreate = readline.createInterface;
+
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  readline.createInterface = () => ({
+    question(_q, cb) { cb("../relative/path"); }, // invalid
+    close() {},
+  });
+
+  const origHome = process.env.POLTERTAB_HOME;
+  process.env.POLTERTAB_HOME = box;
+  try {
+    await setup.run(["--global"], { home: box, cwd: box });
+  } finally {
+    if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
+    else delete process.env.POLTERTAB_HOME;
+    readline.createInterface = origCreate;
+    console.log = origLog;
+  }
+
+  // Must print a skip notice, not throw.
+  assert.ok(
+    consoleOut.includes("skip") || consoleOut.includes("invalid") || consoleOut.includes("Error") || consoleOut.includes("!"),
+    "invalid path must produce a warning/skip line",
+  );
+
+  // Config must not contain the invalid path.
+  const cfgPath = path.join(box, "config.json");
+  if (fs.existsSync(cfgPath)) {
+    const raw = fs.readFileSync(cfgPath, "utf8");
+    assert.ok(!raw.includes("../relative/path"), "invalid path must not appear in config");
+  }
+});
+
+test("H6  addAllowlistEntry with duplicate path is idempotent (returns false)", (box) => {
+  const configKey = require.resolve(path.join(REPO, "mcp-server", "config.js"));
+  const ucKey = require.resolve(path.join(REPO, "mcp-server", "uploads-config.js"));
+  delete require.cache[configKey];
+  delete require.cache[ucKey];
+
+  const origHome = process.env.POLTERTAB_HOME;
+  process.env.POLTERTAB_HOME = box;
+  try {
+    const { addAllowlistEntry } = require(path.join(REPO, "mcp-server", "uploads-config.js"));
+    const first = addAllowlistEntry(box);
+    const second = addAllowlistEntry(box);
+    assert.ok(first, "first add must return true");
+    assert.ok(!second, "duplicate add must return false (already present)");
+
+    // Exactly one entry in the config.
+    const cfg = JSON.parse(fs.readFileSync(path.join(box, "config.json"), "utf8"));
+    const hits = (cfg.upload_allowed_paths || []).filter((e) => e === box);
+    assert.strictEqual(hits.length, 1, "duplicate must not double-add the entry");
+  } finally {
+    if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
+    else delete process.env.POLTERTAB_HOME;
+    delete require.cache[configKey];
+    delete require.cache[ucKey];
+  }
+});
+
 chain.then(() => {
   console.log(
     `\n${pass} passed, ${failures.length} failed` +

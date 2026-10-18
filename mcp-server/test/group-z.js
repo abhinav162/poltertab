@@ -1,0 +1,389 @@
+// Z. Easy pairing — PairHost unit tests + behavioural WS tests
+//
+//   Z1  PairHost.generateForSocket pushes pair_code with 4-char ALPHABET code
+//   Z2  PairHost.generateForSocket voids old code for same socket
+//   Z3  PairHost.handleCodeRequest is throttled (30 s / socket)
+//   Z4  PairHost.submitCode correct → ok:true, single-use
+//   Z5  PairHost.submitCode 5 wrong → locked_out; resets on success
+//   Z6  PairHost.submitCode expired code → reason:"expired"
+//   Z7  PairHost.onSocketClose voids code and throttle tracking
+//   Z8  WS unpaired extension_ready → receives pair_code (4-char ALPHABET)
+//   Z9  WS correct code → uploads_pair_result ok:true + uploads_paired + config has bare ID
+//   Z10 pair_code string never appears in server logs after pairing
+//   Z11 pair_code string never appears in config.json after pairing
+//   Z12 uploads_pair_submit from chrome-extension origin is silently rejected
+
+"use strict";
+
+const { REPO, assert, fs, path, test, WebSocket, startServer, waitFor, sleep } = require("./harness.js");
+const { freePort, stop } = require("./group-s.js");
+const os = require("os");
+const crypto = require("crypto");
+
+const PAIR_HOST = path.join(REPO, "mcp-server", "pair-host.js");
+
+const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+function makeTmpHome() {
+  const dir = path.join(os.tmpdir(), "poltertab-z-" + crypto.randomBytes(4).toString("hex"));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function cleanup(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+}
+
+// Minimal fake ws object sufficient for PairHost unit tests.
+function fakeWs(readyState = 1) {
+  const sent = [];
+  return {
+    readyState,
+    sent,
+    send(data) { sent.push(JSON.parse(data)); },
+  };
+}
+
+async function groupZ() {
+  console.log("\nZ. easy pairing");
+
+  // ── Z1: generateForSocket pushes pair_code with 4-char ALPHABET code ───────
+  await test("Z1 generateForSocket pushes pair_code with 4-char ALPHABET code", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    ph.generateForSocket(ws, "chrome-extension://abc");
+
+    assert.strictEqual(ws.sent.length, 1, "exactly one message sent");
+    const msg = ws.sent[0];
+    assert.strictEqual(msg.type, "pair_code");
+    assert.ok(typeof msg.code === "string" && msg.code.length === 4, `code must be 4 chars, got: ${msg.code}`);
+    for (const ch of msg.code) {
+      assert.ok(ALPHABET.includes(ch), `char '${ch}' not in ALPHABET`);
+    }
+  });
+
+  // ── Z2: generateForSocket voids old code for same socket ───────────────────
+  await test("Z2 generateForSocket voids old code for same socket", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    ph.generateForSocket(ws, "chrome-extension://abc");
+    const firstCode = ws.sent[0].code;
+
+    ph.generateForSocket(ws, "chrome-extension://abc");
+    const secondCode = ws.sent[1].code;
+
+    // Old code is no longer submittable.
+    const result = ph.submitCode(firstCode);
+    assert.ok(!result.ok, "old code must be voided");
+    assert.ok(result.reason === "wrong" || result.reason === "expired", `expected wrong/expired, got: ${result.reason}`);
+
+    // New code IS submittable.
+    const result2 = ph.submitCode(secondCode);
+    assert.ok(result2.ok, "new code must be valid");
+  });
+
+  // ── Z3: handleCodeRequest is throttled (30 s / socket) ─────────────────────
+  await test("Z3 handleCodeRequest is throttled within 30s", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    // First request — generates a code and pushes it.
+    ph.handleCodeRequest(ws, "chrome-extension://abc");
+    assert.strictEqual(ws.sent.length, 1, "first request should send code");
+
+    // Second request within throttle window — re-sends existing code, no new generate.
+    ph.handleCodeRequest(ws, "chrome-extension://abc");
+    assert.strictEqual(ws.sent.length, 2, "throttled re-request should re-send code");
+    assert.strictEqual(ws.sent[0].code, ws.sent[1].code, "throttled re-request must re-send same code");
+  });
+
+  // ── Z4: submitCode correct → ok:true, single-use ───────────────────────────
+  await test("Z4 submitCode correct → ok:true and single-use", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    ph.generateForSocket(ws, "chrome-extension://myext");
+    const code = ws.sent[0].code;
+
+    const result = ph.submitCode(code);
+    assert.ok(result.ok, "correct code must succeed");
+    assert.strictEqual(result.extensionId, "chrome-extension://myext");
+    assert.strictEqual(result.extWs, ws);
+
+    // Single-use: same code again must fail.
+    const result2 = ph.submitCode(code);
+    assert.ok(!result2.ok, "code must be single-use");
+  });
+
+  // ── Z5: 5 wrong → locked_out; wrong count resets on success ────────────────
+  await test("Z5 five wrong codes trigger lockout; wrong count resets on success", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+    ph.generateForSocket(ws, "chrome-extension://ext");
+    const goodCode = ws.sent[0].code;
+
+    // Submit 4 wrong codes — should not lock out yet.
+    for (let i = 0; i < 4; i++) {
+      const r = ph.submitCode("ZZZZ");
+      assert.ok(!r.ok);
+      assert.notStrictEqual(r.reason, "locked_out", `should not lock out after ${i + 1} wrongs`);
+    }
+    // 5th wrong → locked_out.
+    const r5 = ph.submitCode("ZZZZ");
+    assert.ok(!r5.ok);
+    assert.strictEqual(r5.reason, "locked_out");
+    assert.ok(typeof r5.secsLeft === "number" && r5.secsLeft > 0);
+
+    // Correct code is also refused while locked out.
+    const locked = ph.submitCode(goodCode);
+    assert.ok(!locked.ok);
+    assert.strictEqual(locked.reason, "locked_out");
+  });
+
+  // ── Z6: submitCode on expired code → reason:"expired" ──────────────────────
+  await test("Z6 submitCode expired code returns reason expired", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    ph.generateForSocket(ws, "chrome-extension://ext");
+    const code = ws.sent[0].code;
+
+    // Manually backdating the entry's expiresAt simulates TTL expiry.
+    const entry = ph._codes.get(code);
+    assert.ok(entry, "entry must exist");
+    entry.expiresAt = Date.now() - 1; // already expired
+
+    const result = ph.submitCode(code);
+    assert.ok(!result.ok);
+    assert.strictEqual(result.reason, "expired");
+  });
+
+  // ── Z7: onSocketClose voids code and throttle tracking ─────────────────────
+  await test("Z7 onSocketClose voids code and clears throttle tracking", () => {
+    delete require.cache[require.resolve(PAIR_HOST)];
+    const { PairHost } = require(PAIR_HOST);
+    const ph = new PairHost();
+    const ws = fakeWs();
+
+    ph.generateForSocket(ws, "chrome-extension://ext");
+    const code = ws.sent[0].code;
+
+    // Confirm code is active.
+    assert.ok(ph._codes.has(code), "code must be in map before close");
+
+    ph.onSocketClose(ws);
+
+    assert.ok(!ph._codes.has(code), "code must be voided on socket close");
+    assert.ok(!ph._socketCodes.has(ws), "socket entry must be removed");
+    assert.ok(!ph._socketLastRequest.has(ws), "throttle tracking must be cleared");
+
+    // Code is no longer valid.
+    const result = ph.submitCode(code);
+    assert.ok(!result.ok);
+  });
+
+  // ── Z8: WS unpaired extension_ready → receives pair_code ───────────────────
+  await test("Z8 WS: unpaired extension receives pair_code on extension_ready", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    // No config.json → server has no paired IDs.
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://unpaired" });
+      const extMessages = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+      // Wait for pair_code push.
+      await waitFor("pair_code received", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+      const pairMsg = extMessages.find((m) => m.type === "pair_code");
+      assert.ok(pairMsg, "must receive pair_code");
+      assert.ok(typeof pairMsg.code === "string" && pairMsg.code.length === 4,
+        `code must be 4 chars, got: ${JSON.stringify(pairMsg.code)}`);
+      for (const ch of pairMsg.code) {
+        assert.ok(ALPHABET.includes(ch), `char '${ch}' not in ALPHABET`);
+      }
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Z9: correct code → uploads_pair_result ok:true + uploads_paired + config ─
+  await test("Z9 WS: correct code → paired; config has bare ID; extension gets uploads_paired", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Connect extension (unpaired).
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://abc123" });
+      const extMessages = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("pair_code", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+      const code = extMessages.find((m) => m.type === "pair_code").code;
+
+      // Connect CLI socket (no origin).
+      const cli = new WebSocket(`ws://localhost:${port}`);
+      const cliMessages = [];
+      await new Promise((res) => cli.on("open", res));
+      cli.on("message", (raw) => cliMessages.push(JSON.parse(raw)));
+
+      // Submit the correct code.
+      cli.send(JSON.stringify({ type: "uploads_pair_submit", code }));
+
+      await waitFor("uploads_pair_result", () => cliMessages.some((m) => m.type === "uploads_pair_result"), 3000);
+      await waitFor("uploads_paired", () => extMessages.some((m) => m.type === "uploads_paired"), 3000);
+
+      const result = cliMessages.find((m) => m.type === "uploads_pair_result");
+      assert.ok(result.ok, `pair must succeed, got: ${JSON.stringify(result)}`);
+
+      // Config must contain the bare extension ID (no chrome-extension:// prefix).
+      const cfgPath = path.join(home, "config.json");
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      const ids = cfg.trusted_extension_ids || [];
+      assert.ok(ids.includes("abc123"), `config must have bare ID "abc123", got: ${JSON.stringify(ids)}`);
+      // Bare ID must NOT include the scheme prefix.
+      assert.ok(!ids.some((id) => id.includes("chrome-extension://")), "config must store bare ID, not full origin");
+
+      ext.close();
+      cli.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Z10: pair_code string never appears in server logs after pairing ────────
+  await test("Z10 pair_code string never appears in server logs after pairing", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://logtest" });
+      const extMessages = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("pair_code", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+      const code = extMessages.find((m) => m.type === "pair_code").code;
+
+      const cli = new WebSocket(`ws://localhost:${port}`);
+      const cliMessages = [];
+      await new Promise((res) => cli.on("open", res));
+      cli.on("message", (raw) => cliMessages.push(JSON.parse(raw)));
+      cli.send(JSON.stringify({ type: "uploads_pair_submit", code }));
+      await waitFor("paired", () => cliMessages.some((m) => m.type === "uploads_pair_result" && m.ok), 3000);
+
+      // Give server a moment to flush any log lines.
+      await sleep(100);
+
+      // The pair code must NOT appear in server stderr (where bridge logs go).
+      assert.ok(!srv.stderr.includes(code), `pair code "${code}" must not appear in server logs`);
+
+      ext.close();
+      cli.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Z11: pair_code string never appears in config.json after pairing ────────
+  await test("Z11 pair_code string never appears in config.json after pairing", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://cfgtest" });
+      const extMessages = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("pair_code", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+      const code = extMessages.find((m) => m.type === "pair_code").code;
+
+      const cli = new WebSocket(`ws://localhost:${port}`);
+      const cliMessages = [];
+      await new Promise((res) => cli.on("open", res));
+      cli.on("message", (raw) => cliMessages.push(JSON.parse(raw)));
+      cli.send(JSON.stringify({ type: "uploads_pair_submit", code }));
+      await waitFor("paired", () => cliMessages.some((m) => m.type === "uploads_pair_result" && m.ok), 3000);
+
+      const cfgPath = path.join(home, "config.json");
+      const cfgRaw = fs.readFileSync(cfgPath, "utf8");
+      assert.ok(!cfgRaw.includes(code), `pair code "${code}" must not appear in config.json`);
+
+      ext.close();
+      cli.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+
+  // ── Z12: uploads_pair_submit from chrome-extension origin is silently rejected
+  await test("Z12 WS: uploads_pair_submit from extension origin is silently rejected", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // Extension socket: sends uploads_pair_submit (should be ignored).
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://sneaky" });
+      const extMessages = [];
+      await new Promise((res) => ext.on("open", res));
+      ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+
+      // Wait for pair_code so server is fully ready.
+      await waitFor("pair_code", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+      const code = extMessages.find((m) => m.type === "pair_code").code;
+
+      // Extension sends uploads_pair_submit — must be silently ignored (no uploads_pair_result).
+      ext.send(JSON.stringify({ type: "uploads_pair_submit", code }));
+      await sleep(300);
+
+      const gotResult = extMessages.some((m) => m.type === "uploads_pair_result");
+      assert.ok(!gotResult, "extension socket must not receive uploads_pair_result from its own submit");
+
+      ext.close();
+    } finally {
+      await stop(srv);
+      cleanup(home);
+    }
+  });
+}
+
+module.exports = groupZ;

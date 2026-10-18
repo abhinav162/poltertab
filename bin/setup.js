@@ -30,6 +30,8 @@ const SNIPPET_SRC = path.join(PKG, "assets", "claude-md-snippet.md");
 // link would get the previous stable extension, because GitHub's
 // /releases/latest skips prereleases — a fresh, correctly-followed setup that
 // lands in version skew.
+const { addAllowlistEntry } = require("../mcp-server/uploads-config.js");
+const { validateAllowlistEntry } = require("../mcp-server/upload-paths.js");
 const updates = require("../mcp-server/update-check.js");
 const EXTENSION_URL = updates.extensionUrl(
   require("../package.json").version,
@@ -197,6 +199,30 @@ async function run(argv = []) {
   } else {
     console.log(`  ${c.yellow("!")} MCP server not registered — ${reg.reason}`);
     console.log(c.dim(`      run: claude mcp add --scope ${paths.mcpScope} poltertab poltertab`));
+  }
+
+  // Optional: allow a folder for uploads.
+  const rl2 = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const folderPath = (await ask(rl2, `\n  Allow a folder for uploads? Enter path (or press Enter to skip): `)).trim();
+    if (folderPath) {
+      const v = validateAllowlistEntry(folderPath);
+      if (!v.ok) {
+        console.log(`  ${c.yellow("!")} uploads folder skipped — ${v.errorText}`);
+      } else {
+        const added = addAllowlistEntry(folderPath);
+        if (added) {
+          console.log(`  ${c.green("✓")} uploads folder added  ${c.dim(folderPath)}`);
+        } else {
+          console.log(`  ${c.green("✓")} uploads folder        ${c.dim(folderPath)} (already present)`);
+        }
+      }
+    }
+  } finally {
+    rl2.close();
   }
 
   console.log(`\n  ${c.bold("One step left — install the Chrome extension:")}`);

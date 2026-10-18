@@ -70,11 +70,22 @@ function getTrustedExtensionIds() {
   return Array.isArray(v) ? v : [];
 }
 
+// Removes id from trusted_extension_ids. Returns true if removed, false if absent.
+function removeTrustedExtensionId(id) {
+  const cfg = _readConfig();
+  const list = Array.isArray(cfg.trusted_extension_ids) ? cfg.trusted_extension_ids : [];
+  const next = list.filter((e) => e !== id);
+  if (next.length === list.length) return false;
+  _writeConfig({ ...cfg, trusted_extension_ids: next });
+  return true;
+}
+
 module.exports = {
   getAllowlist,
   addAllowlistEntry,
   removeAllowlistEntry,
   addTrustedExtensionId,
   getTrustedExtensionIds,
+  removeTrustedExtensionId,
   CONFIG_PATH,
 };

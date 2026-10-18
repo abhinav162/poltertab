@@ -75,7 +75,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return key(a) !== key(b);
   }
 
+  // Cached pair code from background; updated via state_update broadcasts.
+  let cachedPairCode = null;
+
   function updateUI(state) {
+    if (state.pairCode !== undefined) cachedPairCode = state.pairCode;
     // Status
     statusEl.textContent = state.connected ? "Connected" : "Disconnected";
     statusEl.className =
@@ -204,7 +208,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (chrome.runtime.lastError || !reply) return; // leave hidden
         if (!uploadsRow || !uploadsText) return;
         if (reply.type === "uploads_not_paired") {
-          uploadsText.textContent = "Not paired";
+          uploadsText.textContent = cachedPairCode
+            ? `Pair code: ${cachedPairCode}`
+            : "Not paired — run poltertab uploads pair";
         } else if (reply.type === "uploads_config") {
           const n = (reply.allowlist || []).length;
           uploadsText.textContent =
