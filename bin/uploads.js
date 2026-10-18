@@ -14,6 +14,12 @@ const {
 } = require("../mcp-server/uploads-config.js");
 const { getRecentLog } = require("../mcp-server/uploads-log.js");
 const { validateAllowlistEntry, buildAlwaysBlocked } = require("../mcp-server/upload-paths.js");
+const {
+  resolveWsPort,
+  tryConnectToServer,
+  pairViaRunningServer,
+  pairViaTempListener,
+} = require("./pair-flow.js");
 
 async function run(argv) {
   const sub = argv[0];
@@ -115,236 +121,7 @@ async function run(argv) {
   process.exit(1);
 }
 
-// Reads the port poltertab is listening on from the configured value in
-// config.json (ws_port), or falls back to the default via resolvePort().
-function resolveWsPort() {
-  try {
-    const { resolvePort } = require("../mcp-server/config.js");
-    return resolvePort();
-  } catch (_) {
-    return 7822;
-  }
-}
-
-// Try to open a WebSocket connection to the server. Resolves with the open
-// socket on success; rejects with the error (err.code === "ECONNREFUSED"
-// means nothing is listening there).
-function tryConnectToServer(port, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    let WebSocket;
-    try { WebSocket = require("ws"); } catch (_) {
-      reject(new Error("ws module not available")); return;
-    }
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    const timer = setTimeout(() => {
-      ws.terminate();
-      reject(Object.assign(new Error("connection timed out"), { code: "ETIMEDOUT" }));
-    }, timeoutMs);
-    ws.on("open", () => { clearTimeout(timer); resolve(ws); });
-    ws.on("error", (err) => { clearTimeout(timer); reject(err); });
-  });
-}
-
-// Prompt the user for a 4-letter code on an already-open readline interface.
-// Returns the trimmed input, or null if the user pressed Enter with no input.
-function promptCode(rl) {
-  return new Promise((resolve) => {
-    rl.question(
-      "\nEnter the 4-letter code shown in the extension popup (Enter to cancel): ",
-      (ans) => resolve(ans.trim() || null),
-    );
-  });
-}
-
-// ── pair via a running Primary server ─────────────────────────────────────
-
-async function pairViaRunningServer(serverWs) {
-  return new Promise((resolve, reject) => {
-    let done = false;
-
-    const readline = require("readline");
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-    const finish = (err) => {
-      if (done) return;
-      done = true;
-      rl.close();
-      try { serverWs.close(); } catch (_) {}
-      if (err) reject(err); else resolve();
-    };
-
-    serverWs.on("error", (err) => finish(err));
-    serverWs.on("close", () => {
-      if (!done) finish(new Error("Server disconnected before pairing completed."));
-    });
-
-    serverWs.on("message", (raw) => {
-      let msg;
-      try { msg = JSON.parse(raw); } catch (_) { return; }
-      if (msg.type !== "uploads_pair_result") return;
-
-      if (msg.ok) {
-        console.log("\n  Paired! Upload config access is now enabled for this extension.\n");
-        finish(null);
-      } else if (msg.reason === "locked_out") {
-        console.error(`\n  Too many wrong attempts. Locked out for ${msg.secsLeft}s.\n`);
-        finish(null);
-      } else {
-        const triesLeft = msg.triesLeft !== undefined ? ` (${msg.triesLeft} tries left)` : "";
-        console.error(`\n  Wrong code${triesLeft}. Check the code in the extension popup.`);
-        // Re-prompt
-        askCode();
-      }
-    });
-
-    function askCode() {
-      rl.question(
-        "\nEnter the 4-letter code shown in the extension popup (Enter to cancel): ",
-        (ans) => {
-          const code = ans.trim();
-          if (!code) {
-            console.log("\n  Cancelled.\n");
-            finish(null);
-            return;
-          }
-          serverWs.send(JSON.stringify({ type: "uploads_pair_submit", code }));
-        },
-      );
-    }
-
-    process.on("SIGINT", () => { console.log(); finish(null); process.exit(0); });
-    askCode();
-  });
-}
-
-// ── pair via a temporary listener (no Primary running) ────────────────────
-
-const TEMP_IDLE_MS = 5 * 60 * 1000; // 5 minutes
-
-async function pairViaTempListener(port) {
-  const WebSocket = require("ws");
-  const { PairHost } = require("../mcp-server/pair-host.js");
-  const readline = require("readline");
-
-  const pairHost = new PairHost();
-  let idleTimer = null;
-  let server = null;
-  let done = false;
-
-  const cleanup = () => {
-    if (done) return;
-    done = true;
-    clearTimeout(idleTimer);
-    try { server && server.close(); } catch (_) {}
-  };
-
-  const resetIdle = () => {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      console.error("\n\n  Timed out waiting for extension. Closing listener.\n");
-      cleanup();
-      process.exit(0);
-    }, TEMP_IDLE_MS);
-  };
-
-  server = new WebSocket.WebSocketServer({ host: "127.0.0.1", port });
-
-  await new Promise((resolve, reject) => {
-    server.on("listening", resolve);
-    server.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        reject(new Error(`Port ${port} is in use. Is another poltertab already running?`));
-      } else {
-        reject(err);
-      }
-    });
-  });
-
-  console.log(`\n  No poltertab server found. Started a temporary pairing listener on port ${port}.`);
-  console.log("  Open the extension popup — it will connect automatically and show a 4-letter code.\n");
-  console.log("  (Ctrl-C or Enter with no code to cancel. Closes automatically in 5 minutes.)\n");
-
-  resetIdle();
-  process.on("SIGINT", () => { console.log(); cleanup(); process.exit(0); });
-
-  return new Promise((resolve, reject) => {
-    server.on("connection", (ws, req) => {
-      const origin = (req.headers && req.headers.origin) || null;
-      resetIdle();
-
-      // Only accept chrome-extension:// sockets; silently close anything else
-      // (browser-control Secondaries, MCP clients, etc.).
-      if (!origin || !origin.startsWith("chrome-extension://")) {
-        ws.close(4000, "pairing-only listener");
-        return;
-      }
-
-      ws.on("message", (raw) => {
-        resetIdle();
-        let msg;
-        try { msg = JSON.parse(raw); } catch (_) { return; }
-
-        if (msg.type === "extension_ready" || msg.type === "ping") {
-          pairHost.generateForSocket(ws, origin);
-
-          // Code has been pushed to the extension popup. Now prompt the user.
-          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-          rl.question(
-            "Enter the 4-letter code shown in the extension popup (Enter to cancel): ",
-            (ans) => {
-              rl.close();
-              const code = (ans || "").trim();
-              if (!code) {
-                console.log("\n  Cancelled.\n");
-                cleanup();
-                resolve();
-                return;
-              }
-
-              const result = pairHost.submitCode(code);
-              if (result.ok) {
-                const bareId = result.extensionId.slice("chrome-extension://".length).replace(/\/$/, "");
-                try { addTrustedExtensionId(bareId); } catch (e) {
-                  cleanup();
-                  reject(new Error(`Could not write config: ${e.message}`));
-                  return;
-                }
-                try {
-                  if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
-                    result.extWs.send(JSON.stringify({ type: "uploads_paired" }));
-                  }
-                } catch (_) {}
-                console.log("\n  Paired! Upload config access is now enabled for this extension.\n");
-                cleanup();
-                resolve();
-              } else if (result.reason === "locked_out") {
-                console.error(`\n  Too many wrong attempts. Locked out for ${result.secsLeft}s.\n`);
-                cleanup();
-                resolve();
-              } else {
-                const triesLeft = result.triesLeft !== undefined ? ` (${result.triesLeft} tries left)` : "";
-                console.error(`\n  Wrong code${triesLeft}. Check the code in the extension popup.\n`);
-                cleanup();
-                resolve();
-              }
-            },
-          );
-          return;
-        }
-
-        if (msg.type === "pair_code_request") {
-          pairHost.handleCodeRequest(ws, origin);
-          return;
-        }
-
-        // All other message types are refused by this listener.
-      });
-
-      ws.on("close", () => pairHost.onSocketClose(ws));
-      ws.on("error", () => pairHost.onSocketClose(ws));
-    });
-  });
-}
+// (pair primitives live in pair-flow.js and are imported above)
 
 // ── poltertab uploads pair ─────────────────────────────────────────────────
 
@@ -362,7 +139,8 @@ async function runPair(argv) {
     const added = addTrustedExtensionId(flagId);
     if (added) {
       console.log(`\n  Paired: ${flagId}`);
-      console.log("  Upload config access is now enabled for this extension.\n");
+      console.log("  Upload config access is now enabled for this extension.");
+      console.log(`  (undo: poltertab uploads unpair ${flagId})\n`);
     } else {
       console.log(`\n  Already paired: ${flagId}\n`);
     }
@@ -375,6 +153,9 @@ async function runPair(argv) {
     process.exit(1);
   }
 
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
   const port = resolveWsPort();
 
   let serverWs = null;
@@ -382,19 +163,48 @@ async function runPair(argv) {
     serverWs = await tryConnectToServer(port);
   } catch (err) {
     if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT") {
-      console.error(`\nCould not connect to port ${port}: ${err.message}`);
-      if (err.code && err.code !== "ETIMEDOUT") {
-        console.error("Something else may be using this port.\n");
+      rl.close();
+      if (err.code === "EADDRINUSE") {
+        console.error(
+          `\n  Port ${port} is in use by something that isn't poltertab.` +
+          " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
+        );
+      } else {
+        console.error(`\nCould not connect to port ${port}: ${err.message}\n`);
       }
       process.exit(1);
     }
     // Nothing listening — start temp listener.
   }
 
+  let result;
   if (serverWs) {
-    await pairViaRunningServer(serverWs);
+    result = await pairViaRunningServer(serverWs, rl);
   } else {
-    await pairViaTempListener(port);
+    console.log(
+      `\n  No poltertab server found. Starting a temporary pairing listener on port ${port}.`,
+    );
+    console.log("  Open the extension popup — it will connect automatically and show a 4-letter code.\n");
+    process.stdout.write("  waiting for the extension to connect…\n");
+
+    result = await pairViaTempListener(port, rl, {
+      onStatus: (msg) => process.stdout.write(`  ${msg}\n`),
+    });
+  }
+
+  rl.close();
+
+  if (result.ok) {
+    const shortId = result.extensionId.slice(0, 8);
+    console.log(
+      `\n  ✓ paired               extension ${shortId}… · uploads panel is live in the extension`,
+    );
+    console.log(`  (undo: poltertab uploads unpair ${result.extensionId})\n`);
+  } else if (result.reason === "skipped") {
+    console.log("\n  – pairing skipped      run poltertab uploads pair once the extension is loaded\n");
+  } else if (result.reason === "locked") {
+    console.error("\n  Too many wrong codes. Pairing is locked for 15 minutes.\n");
+    process.exit(1);
   }
 }
 

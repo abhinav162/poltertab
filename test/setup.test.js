@@ -938,48 +938,29 @@ test("H1  setup.js imports addAllowlistEntry and validateAllowlistEntry", () => 
   assert.ok(src.includes("validateAllowlistEntry"), "setup.js must import validateAllowlistEntry");
 });
 
-test("H2  setup.js contains a folder prompt step after MCP registration", () => {
+test("H2  setup.js contains the spec-compliant folder prompt text", () => {
   const src = fs.readFileSync(path.join(REPO, "bin", "setup.js"), "utf8");
-  assert.ok(src.includes("Allow a folder for uploads"), "setup.js must contain folder prompt text");
+  assert.ok(
+    src.includes("Let agents upload files from a folder?"),
+    "setup.js must contain the exact prompt text",
+  );
   assert.ok(src.includes("uploads folder"), "setup.js must contain 'uploads folder' label");
-  assert.ok(src.includes("rl2"), "setup.js must use a second readline interface (rl2) for the folder prompt");
+  assert.ok(
+    !src.includes("rl2"),
+    "setup.js must NOT open a second readline (rl2) — reuse the wizard's rl",
+  );
 });
 
-test("H3  setup run with Enter (skip) writes no folder to config", async (box) => {
-  const readline = require("readline");
-  const origCreate = readline.createInterface;
+test("H3  runFolderPrompt with Enter adds ~/Downloads", async (box) => {
+  const mockRl = { question(_q, cb) { cb(""); }, close() {} };
+  let addedPath = null;
+  const addFn = (p) => { addedPath = p; return true; };
+  const validateFn = () => ({ ok: true });
 
-  let rlCallCount = 0;
-  readline.createInterface = () => {
-    rlCallCount++;
-    return {
-      question(_q, cb) { cb(""); }, // empty = skip
-      close() {},
-    };
-  };
+  await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
 
-  try {
-    // Pass --global so scope selection skips the real chooseScope.
-    // Use a box home so we never touch ~/.poltertab.
-    const origHome = process.env.POLTERTAB_HOME;
-    process.env.POLTERTAB_HOME = box;
-    try {
-      await setup.run(["--global"], { home: box, cwd: box });
-    } finally {
-      if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
-      else delete process.env.POLTERTAB_HOME;
-    }
-  } finally {
-    readline.createInterface = origCreate;
-  }
-
-  const cfgPath = path.join(box, "config.json");
-  if (fs.existsSync(cfgPath)) {
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-    const list = cfg.upload_allowed_paths || [];
-    assert.strictEqual(list.length, 0, "empty Enter must not write any folder");
-  }
-  // No config.json is also fine (means no folder was added).
+  assert.strictEqual(addedPath, setup.DEFAULT_UPLOAD_FOLDER,
+    "Enter must add ~/Downloads, not skip");
 });
 
 test("H4  addAllowlistEntry writes folder to config in isolated home", (box) => {
@@ -1009,42 +990,34 @@ test("H4  addAllowlistEntry writes folder to config in isolated home", (box) => 
   }
 });
 
-test("H5  setup run with invalid path skips and does not throw", async (box) => {
-  const readline = require("readline");
-  const origCreate = readline.createInterface;
-
+test("H5  runFolderPrompt with invalid path shows warning and does not add", async (box) => {
   let consoleOut = "";
   const origLog = console.log;
   console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
 
-  readline.createInterface = () => ({
-    question(_q, cb) { cb("../relative/path"); }, // invalid
-    close() {},
-  });
+  // Provide 3 bad inputs (initial + 2 retries) so the loop exhausts and skips.
+  const inputs = ["../relative", "../also-bad", "../still-bad"];
+  let idx = 0;
+  const mockRl = { question(_q, cb) { cb(inputs[idx++] || ""); }, close() {} };
+  let addFnCalled = false;
+  const addFn = () => { addFnCalled = true; return true; };
+  const validateFn = (p) => (
+    p.startsWith("/") || p.startsWith("~/")
+      ? { ok: true }
+      : { ok: false, errorText: "must be an absolute path or ~/..." }
+  );
 
-  const origHome = process.env.POLTERTAB_HOME;
-  process.env.POLTERTAB_HOME = box;
   try {
-    await setup.run(["--global"], { home: box, cwd: box });
+    await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
   } finally {
-    if (origHome !== undefined) process.env.POLTERTAB_HOME = origHome;
-    else delete process.env.POLTERTAB_HOME;
-    readline.createInterface = origCreate;
     console.log = origLog;
   }
 
-  // Must print a skip notice, not throw.
+  assert.ok(!addFnCalled, "addFn must not be called on invalid path");
   assert.ok(
-    consoleOut.includes("skip") || consoleOut.includes("invalid") || consoleOut.includes("Error") || consoleOut.includes("!"),
-    "invalid path must produce a warning/skip line",
+    consoleOut.includes("uploads skipped"),
+    `expected skip message, got: ${consoleOut}`,
   );
-
-  // Config must not contain the invalid path.
-  const cfgPath = path.join(box, "config.json");
-  if (fs.existsSync(cfgPath)) {
-    const raw = fs.readFileSync(cfgPath, "utf8");
-    assert.ok(!raw.includes("../relative/path"), "invalid path must not appear in config");
-  }
 });
 
 test("H6  addAllowlistEntry with duplicate path is idempotent (returns false)", (box) => {
@@ -1072,6 +1045,176 @@ test("H6  addAllowlistEntry with duplicate path is idempotent (returns false)", 
     delete require.cache[configKey];
     delete require.cache[ucKey];
   }
+});
+
+test("H7  ~/Downloads is never inside buildAlwaysBlocked", (box) => {
+  const { buildAlwaysBlocked, validateAllowlistEntry } = require(
+    path.join(REPO, "mcp-server", "upload-paths.js"),
+  );
+  const blocked = buildAlwaysBlocked(box);
+  const expanded = path.join(box, "Downloads");
+  const directlyBlocked = blocked.some(
+    (b) => expanded === b || expanded.startsWith(b + path.sep),
+  );
+  assert.ok(!directlyBlocked, `~/Downloads is inside buildAlwaysBlocked: ${blocked}`);
+  // Also verify the validator accepts it.
+  const v = validateAllowlistEntry(setup.DEFAULT_UPLOAD_FOLDER, box);
+  assert.ok(v.ok, `validateAllowlistEntry("~/Downloads") returned not ok: ${v.errorText}`);
+});
+
+test("H8  runFolderPrompt Enter prints the ✓ uploads folder line", async (box) => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const mockRl = { question(_q, cb) { cb(""); }, close() {} };
+  const addFn = () => true;
+  const validateFn = () => ({ ok: true });
+
+  try {
+    await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(
+    consoleOut.includes("uploads folder") && consoleOut.includes("~/Downloads"),
+    `expected ✓ uploads folder ~/Downloads, got: ${consoleOut}`,
+  );
+  assert.ok(!consoleOut.includes("skipped"), "must not print skip on Enter");
+});
+
+test("H9  runFolderPrompt n skips with the spec-required message", async (box) => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const mockRl = { question(_q, cb) { cb("n"); }, close() {} };
+  let addFnCalled = false;
+  const addFn = () => { addFnCalled = true; return true; };
+  const validateFn = () => ({ ok: true });
+
+  try {
+    await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(!addFnCalled, "addFn must not be called when user types n");
+  assert.ok(
+    consoleOut.includes("uploads skipped") && consoleOut.includes("poltertab uploads allow"),
+    `expected skip + hint, got: ${consoleOut}`,
+  );
+});
+
+test("H10  runFolderPrompt already-present prints (already set)", async (box) => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const mockRl = { question(_q, cb) { cb(""); }, close() {} };
+  const addFn = () => false;  // false = already present
+  const validateFn = () => ({ ok: true });
+
+  try {
+    await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(
+    consoleOut.includes("already set"),
+    `expected "(already set)" in output, got: ${consoleOut}`,
+  );
+});
+
+test("H11  runFolderPrompt invalid path re-asks up to 2 times then skips", async (box) => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  let askCount = 0;
+  const mockRl = { question(_q, cb) { askCount++; cb("../bad"); }, close() {} };
+  let addFnCalled = false;
+  const addFn = () => { addFnCalled = true; return true; };
+  const validateFn = () => ({ ok: false, errorText: "must be absolute" });
+
+  try {
+    await setup.runFolderPrompt(mockRl, { homeDir: box, addFn, validateFn });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(!addFnCalled, "addFn must not be called on repeated invalid paths");
+  // Initial ask + 2 retries = 3 total calls to question, then skip.
+  assert.ok(askCount <= 3, `asked ${askCount} times — should stop after 2 retries`);
+  assert.ok(
+    consoleOut.includes("uploads skipped"),
+    `expected final skip message, got: ${consoleOut}`,
+  );
+});
+
+test("H12  non-TTY run skips the pairing step silently", async (box) => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  try {
+    await setup.run(["--global"], { home: box, cwd: box, isTTY: false });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(!consoleOut.includes("paired"), "paired must not appear in non-TTY output");
+  assert.ok(
+    !consoleOut.includes("waiting for the extension"),
+    "pairing listener must not start in non-TTY mode",
+  );
+});
+
+test("H13  runSetupPairingStep with skipped pairFlow prints skip message", async () => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const mockRl = { question(_q, cb) { cb(""); }, close() {} };
+  const mockPairFlow = async () => ({ ok: false, reason: "skipped" });
+
+  try {
+    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(
+    consoleOut.includes("pairing skipped"),
+    `expected "pairing skipped", got: ${consoleOut}`,
+  );
+});
+
+test("H14  runSetupPairingStep success shows first 8 chars of extension id", async () => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const mockRl = { question(_q, cb) { cb(""); }, close() {} };
+  const fakeId = "abcdef1234567890abcdef1234567890";
+  const mockPairFlow = async () => ({ ok: true, extensionId: fakeId });
+
+  try {
+    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(
+    consoleOut.includes("abcdef12"),
+    `expected first 8 chars "abcdef12" in output, got: ${consoleOut}`,
+  );
+  assert.ok(
+    consoleOut.includes("paired"),
+    `expected "paired" in output, got: ${consoleOut}`,
+  );
 });
 
 chain.then(() => {
