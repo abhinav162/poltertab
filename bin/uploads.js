@@ -174,6 +174,14 @@ async function runPair(argv) {
       process.exit(1);
     }
   } catch (err) {
+    if (err.code === "ETIMEDOUT") {
+      rl.close();
+      console.error(
+        `\n  Port ${port} is in use by something that isn't poltertab.` +
+        " Close it or set a different port in ~/.poltertab/config.json, then retry.\n",
+      );
+      process.exit(1);
+    }
     if (err.code !== "ECONNREFUSED" && err.code !== "ENOENT") {
       rl.close();
       console.error(`\nCould not connect to port ${port}: ${err.message}\n`);
@@ -222,6 +230,8 @@ async function runPair(argv) {
     console.log("\n  – pairing skipped      run poltertab uploads pair once the extension is loaded\n");
   } else if (result.reason === "locked") {
     console.error("\n  Too many wrong codes. Pairing is locked for 15 minutes.\n");
+    process.exit(1);
+  } else if (result.reason === "config_write_failed") {
     process.exit(1);
   }
 }

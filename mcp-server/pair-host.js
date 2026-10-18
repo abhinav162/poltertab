@@ -19,8 +19,6 @@ const REQUEST_THROTTLE_MS = 30 * 1000;   // 30 s per socket
 const LOCKOUT_MAX_WRONG = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
-module.exports._CODE_TTL_MS = CODE_TTL_MS; // exported for tests that need the value
-
 function _randomCode() {
   let s = "";
   for (let i = 0; i < CODE_LENGTH; i++) {
