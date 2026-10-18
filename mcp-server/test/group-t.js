@@ -22,10 +22,7 @@ const { freePort, fakeSecondary, stamped, stop } = require("./group-s.js");
 // case runs on its own free port with an 800 ms idle timeout.
 
 const IDLE_MS = 800;
-// The eviction check runs every Math.floor(IDLE_MS / 2) ms nominally, but
-// Node.js setInterval can be delayed several seconds under CI CPU saturation.
-// Budget 12 s beyond IDLE_MS so the assertion reliably outlasts timer drift.
-const EVICT_WITHIN_MS = IDLE_MS + 12000;
+const EVICT_WITHIN_MS = IDLE_MS + 3000;
 
 const count = (s, needle) => s.split(needle).length - 1;
 const nodeIdsIn = (s) => [...s.matchAll(/Node (\S+) running as Secondary/g)].map((m) => m[1]);
@@ -142,6 +139,12 @@ async function groupT() {
       await waitFor("idle accepted", () => accepted(idle), 3000);
       const t0 = Date.now();
       await waitFor("idle evicted", () => idle.closed, EVICT_WITHIN_MS).catch(() => {});
+      // idle.closed is set by the client-side WebSocket close event. The Primary
+      // writes its log line on the server side and may lag the close event by
+      // several ms under load. Wait for it before asserting.
+      if (idle.closed) {
+        await waitFor("primary logs disconnect", () => primary.stderr.includes(`Secondary node disconnected: ${idle.nodeId}`), 3000).catch(() => {});
+      }
 
       await test("T1 (T2) an idle v2 Secondary is closed with 4001 and a JSON reason", () => {
         assert.ok(idle.closed, `still open ${Date.now() - t0} ms after its last activity`);
