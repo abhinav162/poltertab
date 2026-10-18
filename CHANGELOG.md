@@ -2,6 +2,19 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.10.0-beta.2](https://github.com/abhinav162/poltertab/compare/v1.10.0-beta.1...v1.10.0-beta.2) (2026-10-18)
+
+
+### Features
+
+* **uploads:** pair with a short code and choose an upload folder during setup ([#48](https://github.com/abhinav162/poltertab/issues/48)) ([d591ff8](https://github.com/abhinav162/poltertab/commit/d591ff8945dbf87ab8bd42187360bc2903bf9331))
+
+
+### Bug Fixes
+
+* **uploads:** keep the pair code stable and visible, and exit after pairing ([#52](https://github.com/abhinav162/poltertab/issues/52)) ([362b6ef](https://github.com/abhinav162/poltertab/commit/362b6ef34c9706108a64ca7fa48b83dc9b7b6fe3))
+* **uploads:** pairing follow-ups from review ([#50](https://github.com/abhinav162/poltertab/issues/50)) ([4a19277](https://github.com/abhinav162/poltertab/commit/4a19277f448c279d71ec644097bc411adc97ef48))
+
 ## [1.10.0-beta.1](https://github.com/abhinav162/poltertab/compare/v1.9.0...v1.10.0-beta.1) (2026-10-16)
 
 
