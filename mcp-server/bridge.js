@@ -1194,6 +1194,10 @@ function setupPrimaryWss(wss) {
             try { addTrustedExtensionId(bareId); } catch (e) { trustErr = e; }
             if (trustErr) {
               // Config write failed — do NOT claim success to avoid a paired-but-not-stored split.
+              // Re-push a fresh code so the extension popup remains usable for a retry.
+              if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
+                pairHost.generateForSocket(result.extWs, result.extensionId);
+              }
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "uploads_pair_result", ok: false, reason: "config_write_failed" }));
               }

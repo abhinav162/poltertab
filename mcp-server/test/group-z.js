@@ -12,13 +12,14 @@
 //   Z10 pair_code string never appears in server logs after pairing
 //   Z11 pair_code string never appears in config.json after pairing
 //   Z12 uploads_pair_submit from chrome-extension origin is silently rejected
-//   Z13 MUST 1: ping must NOT regenerate code or stack a new prompt (temp listener)
+//   Z13 MUST 1: ping must NOT regenerate code or stack a new prompt (temp listener, real handler)
 //   Z14 MUST 3: expiry timer regenerates code; expired submission is not a wrong guess
 //   Z15 MUST 4: positional id unpairs only that id; --id still works
 //   Z16 SHOULD 3: temp listener closes on success
 //   Z17 SHOULD 3: temp listener closes on Enter-skip
 //   Z18 SHOULD 3: temp listener closes on lockout (5 wrong codes)
 //   Z19 SHOULD 3: port is free after temp listener resolves
+//   Z20 temp listener replies error to non-pairing messages (pairing-mode guard)
 
 "use strict";
 
@@ -393,30 +394,45 @@ async function groupZ() {
     }
   });
 
-  // ── Z13: MUST 1 — ping must NOT regenerate code or stack a prompt ────────────
-  await test("Z13 MUST 1: ping does not regenerate code or push new pair_code", async () => {
-    const { PairHost } = require(PAIR_HOST);
-    const ph = new PairHost();
+  // ── Z13: MUST 1 — ping must NOT regenerate code or stack a prompt (real handler) ─
+  await test("Z13 MUST 1: ping does not regenerate code or push new pair_code (real pair-flow handler)", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
 
-    const messages = [];
-    const ws = { readyState: 1, send: (s) => messages.push(JSON.parse(s)) };
+    let questionCount = 0;
+    let pendingCb = null;
+    const rl = {
+      question: (_prompt, cb) => { questionCount++; pendingCb = cb; },
+      close: () => {},
+    };
 
-    // First extension_ready → should generate a code.
-    ph.generateForSocket(ws, "chrome-extension://z13");
-    assert.strictEqual(messages.length, 1, "extension_ready must push exactly one pair_code");
-    const firstCode = messages[0].code;
+    const listenerPromise = pairViaTempListener(port, rl);
+    await sleep(50);
 
-    // A ping should NOT generate a new code.
-    // Simulate what pair-flow.js now does: only call generateForSocket for extension_ready
-    // when no code exists yet. We verify this by checking _socketCodes is unchanged.
-    const codeBefore = ph._socketCodes.get(ws);
-    // (No generateForSocket call for ping — that's the fix; verify state is unchanged)
-    const codeAfter = ph._socketCodes.get(ws);
-    assert.strictEqual(codeBefore, codeAfter, "ping must not change the socket's code");
-    assert.strictEqual(messages.length, 1, "ping must not push a new pair_code message");
-    assert.strictEqual(firstCode, ph._socketCodes.get(ws), "code must remain the same after a ping");
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z13" });
+    const extMessages = [];
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
 
-    ph.onSocketClose(ws);
+    // extension_ready → listener must push exactly one pair_code and call rl.question once.
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+    await waitFor("pair_code after extension_ready", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+    // Send two pings — must NOT push another pair_code or stack another rl.question.
+    ext.send(JSON.stringify({ type: "ping" }));
+    ext.send(JSON.stringify({ type: "ping" }));
+    await sleep(100);
+
+    assert.strictEqual(
+      extMessages.filter((m) => m.type === "pair_code").length, 1,
+      "ping must not push a new pair_code",
+    );
+    assert.strictEqual(questionCount, 1, "rl.question must be called exactly once (not once per ping)");
+
+    // Resolve the listener cleanly via Enter-skip.
+    if (pendingCb) pendingCb("");
+    ext.close();
+    await listenerPromise;
   });
 
   // ── Z14: MUST 3 — expiry timer regenerates code; expired ≠ wrong guess ──────
@@ -495,7 +511,7 @@ async function groupZ() {
     const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
     const { PairHost } = require(PAIR_HOST);
 
-    // We need to intercept the code that the temp listener generates.
+    // Intercept the generated code so the readline can feed it back.
     let capturedCode = null;
     const _orig = PairHost.prototype.generateForSocket;
     PairHost.prototype.generateForSocket = function (ws, extensionId) {
@@ -504,30 +520,30 @@ async function groupZ() {
       if (code) capturedCode = code;
     };
 
-    // Readline that waits until the code is captured, then answers.
-    const rl = {
-      question: (_prompt, cb) => {
-        const wait = () => {
-          if (capturedCode) { setImmediate(() => cb(capturedCode)); return; }
-          setTimeout(wait, 20);
-        };
-        wait();
-      },
-      close: () => {},
-    };
+    let result, ext;
+    try {
+      const rl = {
+        question: (_prompt, cb) => {
+          const wait = () => {
+            if (capturedCode) { setImmediate(() => cb(capturedCode)); return; }
+            setTimeout(wait, 20);
+          };
+          wait();
+        },
+        close: () => {},
+      };
 
-    const listenerPromise = pairViaTempListener(port, rl);
+      const listenerPromise = pairViaTempListener(port, rl);
+      await sleep(50);
+      ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z16" });
+      await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+      ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      result = await listenerPromise;
+    } finally {
+      PairHost.prototype.generateForSocket = _orig;
+    }
 
-    // Connect a fake extension.
-    await sleep(50);
-    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z16" });
-    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
-    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-
-    const result = await listenerPromise;
-    PairHost.prototype.generateForSocket = _orig;
-
-    ext.close();
+    if (ext) ext.close();
     assert.ok(result.ok, `should succeed, got: ${JSON.stringify(result)}`);
     assert.ok(typeof result.extensionId === "string" && result.extensionId.length > 0, "must return extensionId");
   });
@@ -602,6 +618,45 @@ async function groupZ() {
       probe.listen(port, "127.0.0.1", () => { probe.close(resolve); });
       probe.on("error", reject);
     });
+  });
+
+  // ── Z20: temp listener replies error to non-pairing messages ──────────────
+  await test("Z20 temp listener replies pairing-mode error to non-pairing messages", async () => {
+    const port = await freePort();
+    const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+
+    let pendingCb = null;
+    const rl = {
+      question: (_prompt, cb) => { pendingCb = cb; },
+      close: () => {},
+    };
+
+    const listenerPromise = pairViaTempListener(port, rl);
+    await sleep(50);
+
+    const ext = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z20" });
+    const extMessages = [];
+    await new Promise((res, rej) => { ext.on("open", res); ext.on("error", rej); });
+    ext.on("message", (raw) => extMessages.push(JSON.parse(raw)));
+
+    ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+    await waitFor("pair_code", () => extMessages.some((m) => m.type === "pair_code"), 3000);
+
+    // Send a non-pairing message (simulates an AI tool or Secondary dialing in).
+    ext.send(JSON.stringify({ type: "get_status" }));
+    await waitFor("error reply", () => extMessages.some((m) => m.type === "error"), 2000);
+
+    const errMsg = extMessages.find((m) => m.type === "error");
+    assert.ok(errMsg, "extension must receive an error reply for a non-pairing message");
+    assert.strictEqual(
+      errMsg.error,
+      "pairing mode — restart your AI tool for browser control",
+      "error text must match spec",
+    );
+
+    if (pendingCb) pendingCb("");
+    ext.close();
+    await listenerPromise;
   });
 }
 
