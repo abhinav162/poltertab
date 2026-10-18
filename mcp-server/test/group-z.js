@@ -715,6 +715,9 @@ async function groupZ() {
 
       result = await listenerPromise;
 
+      // The re-push send and finish() run in the same tick; wait for ext2's socket to deliver.
+      await waitFor("ext2 re-push pair_code", () => ext2Messages.filter((m) => m.type === "pair_code").length >= 2, 3000);
+
       const ext1PairCodes = ext1Messages.filter((m) => m.type === "pair_code").length;
       const ext2PairCodes = ext2Messages.filter((m) => m.type === "pair_code").length;
       assert.ok(ext2PairCodes >= 2, `ext2 must receive a re-pushed pair_code (got ${ext2PairCodes})`);
