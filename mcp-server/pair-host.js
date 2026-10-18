@@ -69,7 +69,7 @@ class PairHost {
       this._socketCodes.delete(ws);
       // Track as recently-expired so a late submitCode returns "expired" not "wrong".
       this._recentlyExpired.add(old);
-      setTimeout(() => this._recentlyExpired.delete(old), this._codeTtlMs);
+      setTimeout(() => this._recentlyExpired.delete(old), this._codeTtlMs).unref();
     }
 
     const code = this._uniqueCode();
@@ -81,7 +81,7 @@ class PairHost {
         // Track as recently-expired so a late submitCode returns "expired" (not
         // "wrong") and does not burn a lockout try.
         this._recentlyExpired.add(code);
-        setTimeout(() => this._recentlyExpired.delete(code), this._codeTtlMs);
+        setTimeout(() => this._recentlyExpired.delete(code), this._codeTtlMs).unref();
         // Spec: push a fresh code down the same socket so the popup never shows
         // a dead code. If the socket is already closed, nothing to do.
         if (ws.readyState === 1 /* OPEN */) {

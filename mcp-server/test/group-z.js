@@ -21,6 +21,11 @@
 //   Z19 SHOULD 3: port is free after temp listener resolves
 //   Z20 temp listener replies error to non-pairing messages (pairing-mode guard)
 //   Z21 write failure re-pushes to the matched extension, not the closure socket
+//   Z22 running server: pings do not regenerate pair code; voided code returns "expired"
+//   Z23 temp listener replies uploads_not_paired + _replyId to uploads_get_config
+//   Z24 popup shows pairCode from state_update even when server is unreachable
+//   Z25 temp listener terminates connected extension socket after pair; port freed (own POLTERTAB_HOME)
+//   Z26 SHOULD: _recentlyExpired timers unref'd — process exits at once when code replaced before pair
 
 "use strict";
 
@@ -917,8 +922,18 @@ async function groupZ() {
   // ── Z25: temp listener terminates connected clients after pair; port freed ──
   await test("Z25 temp listener terminates connected extension socket after pair; port is free", async () => {
     const port = await freePort();
-    const freshKey2 = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
-    if (freshKey2) delete require.cache[freshKey2];
+    const home = makeTmpHome();
+    const savedHome = process.env.POLTERTAB_HOME;
+    process.env.POLTERTAB_HOME = home;
+
+    // Clear caches so pair-flow re-requires uploads-config pointed at the tmp home.
+    const pairFlowKey25 = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+    if (pairFlowKey25) delete require.cache[pairFlowKey25];
+    const uploadsKey25 = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/uploads-config.js"));
+    if (uploadsKey25) delete require.cache[uploadsKey25];
+    const configKey25 = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/config.js"));
+    if (configKey25) delete require.cache[configKey25];
+
     const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
     const { PairHost } = require(PAIR_HOST);
     const net = require("net");
@@ -965,10 +980,39 @@ async function groupZ() {
       });
     } finally {
       PairHost.prototype.generateForSocket = _orig;
-      const cleanKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
-      if (cleanKey) delete require.cache[cleanKey];
+      const cleanKey25 = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+      if (cleanKey25) delete require.cache[cleanKey25];
+      const cleanUploads25 = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/uploads-config.js"));
+      if (cleanUploads25) delete require.cache[cleanUploads25];
+      if (savedHome === undefined) delete process.env.POLTERTAB_HOME;
+      else process.env.POLTERTAB_HOME = savedHome;
+      cleanup(home);
       if (ext) { try { ext.terminate(); } catch (_) {} }
     }
+  });
+
+  // ── Z26: SHOULD — _recentlyExpired timers are unref'd; process exits after pair ─
+  await test("Z26 SHOULD: _recentlyExpired timers unref'd — process exits at once when code was replaced before pair", async () => {
+    const { execFileSync } = require("child_process");
+    // Spawn a child that replaces a code (code1 → _recentlyExpired timer) then pairs
+    // with the replacement code2. The child has NO process.exit() call — if the
+    // _recentlyExpired timer is not unref'd, it holds the event loop for codeTtlMs
+    // (4 s) and execFileSync times out. With .unref() it exits at once (< 2 s).
+    const script = `
+      "use strict";
+      const { PairHost } = require(${JSON.stringify(PAIR_HOST)});
+      const ws = { readyState: 1, sent: [], send(d) { this.sent.push(JSON.parse(d)); } };
+      const ph = new PairHost({ codeTtlMs: 4000 });
+      ph.generateForSocket(ws, "chrome-extension://z26-a");
+      const code1 = ws.sent[0].code;
+      ph.generateForSocket(ws, "chrome-extension://z26-a"); // replaces code1 → _recentlyExpired timer
+      const code2 = ws.sent[1].code;
+      const r = ph.submitCode(code2); // clears code2's main timer via clearTimeout
+      if (!r.ok) { process.stderr.write("submitCode failed: " + JSON.stringify(r) + "\\n"); process.exit(1); }
+      // Only the unref'd _recentlyExpired timer for code1 remains.
+      // With .unref(): process exits immediately. Without: hangs ~4 s → timeout fires.
+    `;
+    execFileSync(process.execPath, ["-e", script], { timeout: 2000 });
   });
 }
 
