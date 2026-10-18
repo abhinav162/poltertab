@@ -79,7 +79,14 @@ document.addEventListener("DOMContentLoaded", () => {
   let cachedPairCode = null;
 
   function updateUI(state) {
-    if (state.pairCode !== undefined) cachedPairCode = state.pairCode;
+    if (state.pairCode !== undefined) {
+      cachedPairCode = state.pairCode;
+      // Surface the pair code immediately; loadUploadsSummary may overwrite when config is available.
+      if (cachedPairCode && uploadsRow && uploadsText && uploadsRow.hidden) {
+        uploadsText.textContent = `Pair code: ${cachedPairCode}`;
+        uploadsRow.hidden = false;
+      }
+    }
     // Status
     statusEl.textContent = state.connected ? "Connected" : "Disconnected";
     statusEl.className =
@@ -216,7 +223,8 @@ document.addEventListener("DOMContentLoaded", () => {
           uploadsText.textContent =
             n === 0 ? "Uploads off" : `Uploads: ${n} folder${n === 1 ? "" : "s"} allowed`;
         } else {
-          return; // error / offline → stay hidden
+          if (!cachedPairCode) return; // offline/error with no code → stay hidden
+          uploadsText.textContent = `Pair code: ${cachedPairCode}`;
         }
         uploadsRow.hidden = false;
       });

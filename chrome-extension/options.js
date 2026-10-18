@@ -321,12 +321,10 @@ document.getElementById("saveBtn").addEventListener("click", () => {
   // Flip live when the extension is paired (background.js broadcasts this).
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "uploads_paired_notice") load();
-    if (msg.type === "state_update" && msg.state && msg.state.pairCode !== undefined) {
-      // Refresh the not-paired UI only when we're actually showing it (not the
-      // config view or the offline notice — both also have .u-notice).
-      const offlineEl = document.querySelector(".u-offline");
+    if (msg.type === "state_update" && msg.state && msg.state.pairCode) {
+      // Show the pair code unless the config view is already open.
       const configEl = document.querySelector(".u-sub");
-      if (!offlineEl && !configEl) renderNotPaired(msg.state.pairCode);
+      if (!configEl) renderNotPaired(msg.state.pairCode);
     }
   });
 })();

@@ -1160,7 +1160,7 @@ function setupPrimaryWss(wss) {
             // Push a pair code to unpaired extensions so the UI can display it
             // without the user running any CLI command first.
             // Per-origin check: an already-trusted extension must not receive a code.
-            if (!isUploadsAuthorized(ws.handshakeOrigin) && pairHost && ws.handshakeOrigin) {
+            if (pairHost && ws.handshakeOrigin && !pairHost._socketCodes.has(ws) && !isUploadsAuthorized(ws.handshakeOrigin)) {
               pairHost.generateForSocket(ws, ws.handshakeOrigin);
             }
           }
