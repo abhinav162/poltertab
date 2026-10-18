@@ -20,6 +20,7 @@
 //   Z18 SHOULD 3: temp listener closes on lockout (5 wrong codes)
 //   Z19 SHOULD 3: port is free after temp listener resolves
 //   Z20 temp listener replies error to non-pairing messages (pairing-mode guard)
+//   Z21 write failure re-pushes to the matched extension, not the closure socket
 
 "use strict";
 
@@ -657,6 +658,75 @@ async function groupZ() {
     if (pendingCb) pendingCb("");
     ext.close();
     await listenerPromise;
+  });
+
+  // ── Z21: write failure re-pushes to the matched extension ─────────────────
+  await test("Z21 write failure re-pushes to the matched extension, not the closure socket", async () => {
+    const port = await freePort();
+    const { PairHost } = require(PAIR_HOST);
+
+    // Patch uploads-config to throw, then load pair-flow fresh so it captures the thrower.
+    const uploadsConfigKey = Object.keys(require.cache).find((k) => k.endsWith("mcp-server/uploads-config.js"));
+    const pairFlowKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+    const _origAddFn = uploadsConfigKey && require.cache[uploadsConfigKey].exports.addTrustedExtensionId;
+    if (uploadsConfigKey) require.cache[uploadsConfigKey].exports.addTrustedExtensionId = () => { throw new Error("write fail"); };
+    if (pairFlowKey) delete require.cache[pairFlowKey];
+
+    let ext1, ext2, result;
+    try {
+      const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+
+      // ext1's askCode callback (first question) will answer with ext2's code.
+      // ext2's askCode callback (second question) is held open — it's never answered.
+      let firstCb = null;
+      let callCount = 0;
+      const rl = {
+        question: (_prompt, cb) => {
+          callCount++;
+          if (callCount === 1) firstCb = cb;
+          // second and beyond: held open; listener resolves without needing them.
+        },
+        close: () => {},
+      };
+
+      const listenerPromise = pairViaTempListener(port, rl);
+      await sleep(50);
+
+      // Connect ext1.
+      const ext1Messages = [];
+      ext1 = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z21-first" });
+      await new Promise((res, rej) => { ext1.on("open", res); ext1.on("error", rej); });
+      ext1.on("message", (raw) => ext1Messages.push(JSON.parse(raw)));
+      ext1.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext1 pair_code", () => ext1Messages.some((m) => m.type === "pair_code"), 3000);
+      await waitFor("ext1 rl.question", () => firstCb !== null, 1000);
+
+      // Connect ext2.
+      const ext2Messages = [];
+      ext2 = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://z21-second" });
+      await new Promise((res, rej) => { ext2.on("open", res); ext2.on("error", rej); });
+      ext2.on("message", (raw) => ext2Messages.push(JSON.parse(raw)));
+      ext2.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("ext2 pair_code", () => ext2Messages.some((m) => m.type === "pair_code"), 3000);
+
+      // Submit ext2's code from ext1's askCode callback → write fails → re-push must target ext2.
+      const ext2Code = ext2Messages.find((m) => m.type === "pair_code").code;
+      firstCb(ext2Code);
+
+      result = await listenerPromise;
+
+      const ext1PairCodes = ext1Messages.filter((m) => m.type === "pair_code").length;
+      const ext2PairCodes = ext2Messages.filter((m) => m.type === "pair_code").length;
+      assert.ok(ext2PairCodes >= 2, `ext2 must receive a re-pushed pair_code (got ${ext2PairCodes})`);
+      assert.strictEqual(ext1PairCodes, 1, `ext1 must not receive a re-push (got ${ext1PairCodes})`);
+      assert.strictEqual(result.reason, "config_write_failed", `expected config_write_failed, got ${result.reason}`);
+    } finally {
+      if (uploadsConfigKey && _origAddFn) require.cache[uploadsConfigKey].exports.addTrustedExtensionId = _origAddFn;
+      const freshKey = Object.keys(require.cache).find((k) => k.endsWith("bin/pair-flow.js"));
+      if (freshKey) delete require.cache[freshKey];
+    }
+    if (ext1) ext1.close();
+    if (ext2) ext2.close();
   });
 }
 

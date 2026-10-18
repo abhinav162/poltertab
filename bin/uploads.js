@@ -231,6 +231,8 @@ async function runPair(argv) {
   } else if (result.reason === "locked") {
     console.error("\n  Too many wrong codes. Pairing is locked for 15 minutes.\n");
     process.exit(1);
+  } else if (result.reason === "config_write_failed") {
+    process.exit(1);
   }
 }
 

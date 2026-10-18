@@ -232,8 +232,10 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
             let writeErr = null;
             try { addTrustedExtensionId(bareId); } catch (e) { writeErr = e; }
             if (writeErr) {
-              // Re-push a fresh code so the popup stays live for a retry.
-              pairHost.generateForSocket(ws, origin);
+              // Re-push to the specific extension that matched, not the enclosing socket.
+              if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
+                pairHost.generateForSocket(result.extWs, result.extensionId);
+              }
               process.stderr.write(
                 "  Pairing failed — could not save the extension ID to config.json.\n" +
                 "  Check that the file is writable, then try again.\n",
