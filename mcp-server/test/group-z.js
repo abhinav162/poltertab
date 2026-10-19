@@ -26,6 +26,7 @@
 //   Z24 popup shows pairCode from state_update even when server is unreachable
 //   Z25 temp listener terminates connected extension socket after pair; port freed (own POLTERTAB_HOME)
 //   Z26 SHOULD: _recentlyExpired timers unref'd — process exits at once when code replaced before pair
+//   Z27 CWS extension id trusted without pairing; different 32-char id refused
 
 "use strict";
 
@@ -1013,6 +1014,52 @@ async function groupZ() {
       // With .unref(): process exits immediately. Without: hangs ~4 s → timeout fires.
     `;
     execFileSync(process.execPath, ["-e", script], { timeout: 2000 });
+  });
+
+  // ── Z27: CWS extension id is trusted without pairing; different id refused ─
+  await test("Z27 CWS id trusted without pairing; different 32-char id refused", async () => {
+    const CWS_ID = "lcijocampajjmennelacdfehmhndfmbd";
+    const OTHER_ID = "aaaabbbbccccddddeeeeffffgggghhhh";
+    const port = await freePort();
+    const home = makeTmpHome();
+    // No config.json → only CWS_EXTENSION_ID is trusted.
+    const srv = startServer({ port, home });
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+
+      // ── accepted: CWS origin gets uploads_get_config response ──────────────
+      const cwsExt = new WebSocket(`ws://localhost:${port}`, { origin: `chrome-extension://${CWS_ID}` });
+      const cwsMessages = [];
+      await new Promise((res) => cwsExt.on("open", res));
+      cwsExt.on("message", (raw) => cwsMessages.push(JSON.parse(raw)));
+      cwsExt.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      cwsExt.send(JSON.stringify({ type: "uploads_get_config", _replyId: "r1" }));
+      await waitFor("cws uploads_get_config reply", () =>
+        cwsMessages.some((m) => m.type === "uploads_config" || m.type === "uploads_error"), 3000);
+      const cwsReply = cwsMessages.find((m) => m.type === "uploads_config" || m.type === "uploads_error");
+      assert.ok(cwsReply, "CWS extension must receive a config reply (not uploads_not_paired)");
+      assert.notStrictEqual(cwsReply.type, "uploads_not_paired",
+        `CWS origin must not be rejected; got: ${JSON.stringify(cwsReply)}`);
+      cwsExt.close();
+
+      // ── refused: different 32-char id gets uploads_not_paired ──────────────
+      const otherExt = new WebSocket(`ws://localhost:${port}`, { origin: `chrome-extension://${OTHER_ID}` });
+      const otherMessages = [];
+      await new Promise((res) => otherExt.on("open", res));
+      otherExt.on("message", (raw) => otherMessages.push(JSON.parse(raw)));
+      otherExt.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      otherExt.send(JSON.stringify({ type: "uploads_get_config", _replyId: "r2" }));
+      await waitFor("other uploads_not_paired", () =>
+        otherMessages.some((m) => m.type === "uploads_not_paired" || m.type === "uploads_config"), 3000);
+      const otherReply = otherMessages.find((m) => m.type === "uploads_not_paired" || m.type === "uploads_config");
+      assert.ok(otherReply, "other extension must receive a reply");
+      assert.strictEqual(otherReply.type, "uploads_not_paired",
+        `different 32-char id must be refused; got: ${JSON.stringify(otherReply)}`);
+      otherExt.close();
+    } finally {
+      stop(srv);
+      cleanup(home);
+    }
   });
 }
 

@@ -44,13 +44,13 @@ const path = require("path");
 
 // ── Trusted extension IDs ─────────────────────────────────────────────────
 // Upload config/log WS messages are restricted to origins paired via
-// `poltertab uploads pair`. The CWS-assigned ID will go here once the Store
-// publishes the extension; until then it is an empty string (unused).
+// `poltertab uploads pair`. The CWS-assigned ID (below) is also trusted
+// unconditionally — the Store build does not need to be paired separately.
 //
 // Caveat (design §4): a non-browser local process can forge any Origin header;
 // this gate stops other Chrome extensions, not a hostile process with raw socket
 // access. The always-blocked list and allowlist are the server-side guards.
-const CWS_EXTENSION_ID = ""; // filled when the Chrome Web Store assigns it
+const CWS_EXTENSION_ID = "lcijocampajjmennelacdfehmhndfmbd"; // Chrome Web Store extension id
 
 // isUploadsAuthorized and isPaired may throw on malformed config.json —
 // callers must catch and send uploads_error.
