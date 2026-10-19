@@ -2,6 +2,18 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.10.1-beta.1](https://github.com/abhinav162/poltertab/compare/v1.10.0...v1.10.1-beta.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **bridge:** trust the Chrome Web Store extension id ([#57](https://github.com/abhinav162/poltertab/issues/57)) ([5cd3f2a](https://github.com/abhinav162/poltertab/commit/5cd3f2a0638e2ae129ad4bfc018fe981e1852c95))
+
+
+### Miscellaneous Chores
+
+* remove release-as after 1.10.0 final ([#56](https://github.com/abhinav162/poltertab/issues/56)) ([1b91802](https://github.com/abhinav162/poltertab/commit/1b91802d07edb9a28bda6002bb62341c00ffb13a))
+
 ## [1.10.0](https://github.com/abhinav162/poltertab/compare/v1.10.0-beta.2...v1.10.0) (2026-10-18)
 
 
