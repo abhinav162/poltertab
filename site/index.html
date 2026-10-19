@@ -3,7 +3,7 @@
 <head>
   <script>document.documentElement.classList.add('js');</script>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>PolterTab: a ghost in your browser, doing your work</title>
   <meta name="description" content="PolterTab gives any MCP agent hands inside the Chrome you're already signed into. It clicks, fills, scrolls, and scrapes with your sessions, on your machine. Open source, ISC." />
   <meta name="color-scheme" content="light dark" />
@@ -26,7 +26,7 @@
 
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="index.html">
+      <a class="brand" href="#top" aria-label="PolterTab, home">
         <img src="assets/logo.svg" alt="" width="30" height="30" />
         <span>PolterTab</span>
       </a>
@@ -36,182 +36,451 @@
         <a class="nav-link" href="#install">Install</a>
         <a class="nav-link" href="#faq">FAQ</a>
         <a class="btn-pill" href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+        <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-sheet" aria-label="Open menu">
+          <svg class="bars" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          <svg class="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </nav>
+      <div class="nav-sheet" id="nav-sheet">
+        <a href="#how">How it works</a>
+        <a href="#security">Security</a>
+        <a href="#install">Install</a>
+        <a href="#faq">FAQ</a>
+      </div>
     </div>
   </header>
 
   <main id="main">
+    <span id="top"></span>
 
     <!-- ===== Hero ===== -->
     <section class="hero">
       <div class="wrap">
         <div class="hero-copy">
-          <h1>There&rsquo;s a ghost in your browser. It&rsquo;s doing your&nbsp;work.</h1>
-          <p class="lede">PolterTab gives any MCP agent, from <strong>Claude Code</strong> to <strong>Cursor</strong> to one you wrote yourself, hands inside the Chrome you&rsquo;re already signed into. It clicks, fills, scrolls, and scrapes with your sessions, on your machine.</p>
-
+          <h1>There’s a ghost in your browser. It’s doing your&nbsp;work.</h1>
+          <p class="lede">PolterTab gives any MCP agent, from <strong>Claude Code</strong> to <strong>Cursor</strong> to one you wrote yourself, hands inside the Chrome you’re already signed into. It clicks, fills, scrolls, and scrapes with your sessions, on your machine.</p>
           <div class="cmd">
             <code id="install-cmd">npm install -g poltertab &amp;&amp; poltertab setup</code>
             <button class="copy-btn" type="button" data-copy="#install-cmd" aria-label="Copy install command">Copy</button>
           </div>
-
           <div class="hero-ctas">
             <a class="btn btn-primary" href="#install">Install in two steps</a>
             <a class="btn btn-secondary" href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>
           </div>
-
           <p class="fine">Open source, ISC. The server makes one outbound call a day, a version check, and <a href="#security">you can turn it off</a>.</p>
         </div>
 
-        <!-- Hero visual: a RESERVED 16:10 video slot (human decision 2026-10-16).
-             The hand-built Chrome window is the poster-frame placeholder.
-             GO LIVE — one-line swap: replace the <div class="win">…</div> below with
-               <video class="hero-video" autoplay muted loop playsinline poster="assets/demo/hero-poster.png"></video>
-             For prefers-reduced-motion, ship the <video> WITHOUT autoplay (poster only). -->
-        <div class="scene">
-          <div class="hero-media" role="img" aria-label="A Chrome window where the PolterTab ghost is filling a new support ticket: the customer, priority, and subject fields are complete and a CSV is attached. A tool-call sticker reads browser_fill #subject, ok in 218 milliseconds.">
+        <div class="scene hero-scene" role="img" aria-label="A Chrome window where the PolterTab ghost files a support ticket: it fills the customer, priority and subject fields, attaches a CSV, and clicks Create ticket. A log beneath the window shows each tool call succeeding.">
+          <div class="stage">
             <div class="win">
               <div class="win-tabs">
-                <div class="win-tab"><span class="fav"></span> Support console</div>
+                <div class="win-tab"><span class="fav"></span>Support console</div>
                 <div class="win-tab is-bg">Inbox (3)</div>
               </div>
               <div class="win-addr">
-                <span class="lock" aria-hidden="true">&#128274;</span>
+                <svg class="lock" viewBox="0 0 12 14" aria-hidden="true" style="color:var(--ecto-deep)"><rect x="1.5" y="6" width="9" height="7" rx="1.5" fill="currentColor"/><path d="M3.5 6V4a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
                 <span class="url">support.yourcompany.com/tickets/new</span>
                 <span class="avatar" aria-hidden="true">AB</span>
               </div>
               <div class="win-page">
-                <h3>New ticket</h3>
+                <p class="win-h">New ticket</p>
                 <div class="form-row">
-                  <div class="form-field is-done"><span class="lbl">Customer</span>Acme Logistics</div>
-                  <div class="form-field is-done"><span class="lbl">Priority</span>High</div>
+                  <div class="form-field anim" style="animation-name:f-customer"><span class="lbl">Customer</span><span class="val anim" style="animation-name:v-customer">Acme Logistics</span></div>
+                  <div class="form-field anim" style="animation-name:f-priority"><span class="lbl">Priority</span><span class="val anim" style="animation-name:v-priority">High</span></div>
                 </div>
                 <div class="form-row">
-                  <div class="form-field is-done seq"><span class="lbl">Subject</span>Invoices missing from March export</div>
+                  <div class="form-field anim" style="animation-name:f-subject"><span class="lbl">Subject</span><span class="val anim" style="animation-name:v-subject;animation-timing-function:steps(34)">Invoices missing from March export</span></div>
                 </div>
                 <div class="form-row">
-                  <div class="form-field"><span class="lbl">Attachment</span>march-invoices.csv &#10003; attached</div>
+                  <div class="form-field anim" style="animation-name:f-attach"><span class="lbl">Attachment</span><span class="val anim" style="animation-name:v-attach">march-invoices.csv <span class="ok">✓ attached</span></span></div>
                 </div>
-                <span class="form-submit">Create ticket</span>
+                <span class="form-submit anim" style="animation-name:press">Create ticket</span>
+                <div class="toast anim" style="animation-name:toast-in"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Ticket #4821 created</div>
               </div>
             </div>
-            <span class="hero-media-tag" aria-hidden="true">Reserved for live capture</span>
+            <svg class="overlay" viewBox="0 0 100 68.75" aria-hidden="true">
+              <g class="trail">
+                <path class="anim" style="animation-name:seg1" d="M102 30 C 86 20, 72 40, 50 30"/>
+                <path class="anim" style="animation-name:seg2" d="M50 30 C 62 20, 84 20, 96 30"/>
+                <path class="anim" style="animation-name:seg3" d="M96 30 C 103 33, 103 37, 96 40"/>
+                <path class="anim" style="animation-name:seg4" d="M96 40 C 90 44, 90 48, 96 51"/>
+                <path class="anim" style="animation-name:seg5" d="M96 51 C 80 60, 52 46, 34 56"/>
+              </g>
+              <g class="ghost anim" style="animation-name:g-hero">
+                <g transform="scale(.62)">
+                  <path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/>
+                  <g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g>
+                </g>
+              </g>
+            </svg>
           </div>
-          <svg class="trail" viewBox="0 0 300 100" fill="none" aria-hidden="true"><path d="M8 90 C 90 10, 180 95, 292 38" stroke="#E8A13D" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/></svg>
-          <svg class="ghost" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z" fill="#0E8C7F" opacity=".94"/><g class="eyes"><circle cx="12.5" cy="14" r="2" fill="#FAF9F6"/><circle cx="19.5" cy="14" r="2" fill="#FAF9F6"/></g></svg>
-          <svg class="cursor" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l16 11-7 1.5L16 22l-3.6 1.4L9 16l-5 4V2z" fill="#23211C"/></svg>
-          <div class="toolcall" aria-hidden="true">browser_fill <b>"#subject"</b> &rarr; ok (218ms)</div>
+          <div class="calls" aria-hidden="true">
+            <div class="toolcall ok anim" style="animation-name:chip1">browser_fill <b>"#customer"</b> → ok (142ms)</div>
+            <div class="toolcall ok anim" style="animation-name:chip2">browser_upload_file <b>march-invoices.csv</b> → attached</div>
+            <div class="toolcall ok anim" style="animation-name:chip3">browser_click <b>"Create ticket"</b> → ok (218ms)</div>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- ===== Problem ===== -->
     <section class="band band-mint">
-      <div class="wrap">
-        <div class="section-head">
+      <div class="wrap split">
+        <div>
           <h2>Headless browsers start logged out of everything.</h2>
+          <p class="section-intro">Every automation tool hands your agent a factory-fresh browser. Its first task becomes the login wall, then the CAPTCHA, then the two-factor prompt, and the real job never starts. PolterTab points the agent at the browser where you already got past all of that, once, yourself. The dashboard you checked this morning and the admin tool your company runs are already open to it.</p>
         </div>
-        <p class="section-intro">Every automation tool hands your agent a factory-fresh browser. Its first task becomes the login wall, then the CAPTCHA, then the two-factor prompt, and the real job never starts. PolterTab points the agent at the browser where you already got past all of that, once, yourself. The dashboard you checked this morning and the admin tool your company runs are already open to it.</p>
+        <div class="scene problem-scene" role="img" aria-label="Two browser windows side by side. In a fresh headless browser, a grey ghost is stopped by a sign-in form, then a CAPTCHA, then a two-factor prompt, and shrugs. In your signed-in Chrome, the PolterTab ghost arrives at a live dashboard immediately.">
+          <svg viewBox="0 0 560 300" aria-hidden="true">
+            <!-- left: a fresh browser -->
+            <rect class="pane" x="10" y="20" width="250" height="250" rx="12"/>
+            <path class="pane-head" d="M22 20h226a12 12 0 0 1 12 12v16H10V32a12 12 0 0 1 12-12z"/>
+            <text class="cap" x="24" y="39">A fresh headless browser</text>
+            <g class="anim" style="animation-name:shrug;transform-box:fill-box;transform-origin:center bottom">
+              <g class="ghost faint" transform="translate(96 186) scale(1.75)">
+                <path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/>
+                <g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g>
+              </g>
+            </g>
+            <text class="q anim" style="animation-name:qmark" x="160" y="200">?</text>
+            <g class="anim" style="animation-name:wall1;transform-box:fill-box">
+              <rect class="wall" x="48" y="66" width="174" height="80" rx="10"/>
+              <text class="wall-t" x="62" y="86">Sign in</text>
+              <rect class="field" x="62" y="96" width="146" height="14" rx="4"/>
+              <rect class="field" x="62" y="114" width="146" height="14" rx="4"/>
+              <rect class="btn-ink" x="62" y="132" width="60" height="8" rx="3"/>
+            </g>
+            <g class="anim" style="animation-name:wall2;transform-box:fill-box">
+              <rect class="wall" x="62" y="88" width="174" height="80" rx="10"/>
+              <text class="wall-t" x="76" y="108">Verify you’re human</text>
+              <rect class="field" x="76" y="120" width="16" height="16" rx="3"/>
+              <text class="wall-s" x="100" y="132">I’m not a robot</text>
+              <rect class="field" x="76" y="146" width="146" height="8" rx="3"/>
+            </g>
+            <g class="anim" style="animation-name:wall3;transform-box:fill-box">
+              <rect class="wall" x="76" y="110" width="174" height="80" rx="10"/>
+              <text class="wall-t" x="90" y="130">Enter the 6-digit code</text>
+              <text class="wall-s" x="90" y="144">We sent it to your phone</text>
+              <rect class="field" x="90" y="154" width="18" height="22" rx="4"/><rect class="field" x="112" y="154" width="18" height="22" rx="4"/><rect class="field" x="134" y="154" width="18" height="22" rx="4"/><rect class="field" x="156" y="154" width="18" height="22" rx="4"/><rect class="field" x="178" y="154" width="18" height="22" rx="4"/><rect class="field" x="200" y="154" width="18" height="22" rx="4"/>
+            </g>
+            <text class="tag-bad anim" style="animation-name:tag-bad" x="12" y="292">login → captcha → 2fa → the job never starts</text>
+
+            <!-- right: your Chrome -->
+            <rect class="pane" x="300" y="20" width="250" height="250" rx="12"/>
+            <path class="pane-head" d="M312 20h226a12 12 0 0 1 12 12v16H300V32a12 12 0 0 1 12-12z"/>
+            <text class="cap" x="314" y="39">Your Chrome, signed in</text>
+            <circle cx="532" cy="34" r="8" fill="var(--trail)"/><text x="526.5" y="37" font-size="6.5" fill="#fff" font-weight="700" font-family="var(--body)">AB</text>
+            <rect class="kpi" x="314" y="60" width="70" height="42" rx="7"/><text class="kpi-l" x="322" y="74">Total users</text><text class="kpi-v" x="322" y="92">24,812</text>
+            <rect class="kpi" x="390" y="60" width="70" height="42" rx="7"/><text class="kpi-l" x="398" y="74">Revenue</text><text class="kpi-v" x="398" y="92">$148K</text>
+            <rect class="kpi" x="466" y="60" width="70" height="42" rx="7"/><text class="kpi-l" x="474" y="74">Conversion</text><text class="kpi-v" x="474" y="92">3.6%</text>
+            <rect class="kpi" x="314" y="112" width="222" height="88" rx="7"/>
+            <text class="kpi-l" x="322" y="126">Sessions over time</text>
+            <g>
+              <rect class="bar anim" style="animation-name:bar-a" x="326" y="160" width="12" height="32"/>
+              <rect class="bar anim" style="animation-name:bar-b" x="344" y="152" width="12" height="40"/>
+              <rect class="bar anim" style="animation-name:bar-a" x="362" y="156" width="12" height="36"/>
+              <rect class="bar anim" style="animation-name:bar-b" x="380" y="146" width="12" height="46"/>
+              <rect class="bar anim" style="animation-name:bar-a" x="398" y="150" width="12" height="42"/>
+              <rect class="bar anim" style="animation-name:bar-b" x="416" y="140" width="12" height="52"/>
+              <rect class="bar anim" style="animation-name:bar-a" x="434" y="144" width="12" height="48"/>
+              <rect class="bar anim" style="animation-name:bar-b" x="452" y="136" width="12" height="56"/>
+              <rect class="bar anim" style="animation-name:bar-a" x="470" y="138" width="12" height="54"/>
+              <rect class="bar anim" style="animation-name:bar-b" x="488" y="132" width="12" height="60"/>
+              <rect class="bar anim" style="animation-name:bar-a" x="506" y="134" width="12" height="58"/>
+            </g>
+            <rect class="kpi" x="314" y="210" width="222" height="48" rx="7"/>
+            <rect x="322" y="220" width="120" height="6" rx="3" fill="var(--hairline)"/><rect x="322" y="232" width="160" height="6" rx="3" fill="var(--hairline)"/><rect x="322" y="244" width="90" height="6" rx="3" fill="var(--hairline)"/>
+            <g class="anim" style="animation-name:g-in">
+              <g class="ghost" transform="translate(486 196) scale(1.75)">
+                <path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/>
+                <g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g>
+              </g>
+            </g>
+            <text class="tag anim" style="animation-name:tag-in" x="302" y="292">already past the login → the job starts now</text>
+          </svg>
+        </div>
       </div>
     </section>
 
     <!-- ===== Demos ===== -->
     <section class="band" aria-labelledby="demos-h">
       <div class="wrap">
-        <div class="section-head">
-          <h2 id="demos-h">Four jobs a logged-out browser fails.</h2>
-        </div>
-        <p class="section-intro">Captured from real sessions in a test profile.</p>
+        <h2 id="demos-h">Four jobs a logged-out browser fails.</h2>
+        <p class="section-intro">Each scene is drawn from a real session in a test profile. The tool calls underneath are the ones the agent actually made.</p>
 
         <div class="demos">
+
+          <!-- 1 · gated dashboard -->
           <article class="demo">
             <div class="demo-media">
-              <img class="demo-shot" src="assets/demo/dashboard.png" width="1280" height="800" loading="lazy" decoding="async" alt="A login-gated analytics dashboard open in Chrome, showing KPI cards, a bar chart, and an events table." />
+              <div class="scene s1" role="img" aria-label="A login wall blocks an analytics dashboard. The PolterTab ghost passes through it, the wall dissolves, and the KPI cards, bar chart and events table fill in. The log reads: browser_click, live KPIs, no sign-in step.">
+                <div class="win">
+                  <div class="win-tabs"><div class="win-tab"><span class="fav"></span>Acme Analytics</div><div class="win-tab is-bg">Calendar</div></div>
+                  <div class="win-addr"><svg class="lock" viewBox="0 0 12 14" aria-hidden="true" style="color:var(--ecto-deep)"><rect x="1.5" y="6" width="9" height="7" rx="1.5" fill="currentColor"/><path d="M3.5 6V4a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="url">analytics.acme.io/overview</span><span class="avatar">AB</span></div>
+                  <div class="win-body">
+                    <svg viewBox="0 0 560 320" aria-hidden="true">
+                      <rect x="0" y="0" width="110" height="320" class="soft"/>
+                      <text x="16" y="28" class="t">Acme Analytics</text>
+                      <rect x="12" y="44" width="86" height="18" rx="5" class="pill"/><text x="20" y="56" class="pill-t">Overview</text>
+                      <rect x="18" y="76" width="56" height="6" rx="3" class="line"/><rect x="18" y="94" width="44" height="6" rx="3" class="line"/><rect x="18" y="112" width="52" height="6" rx="3" class="line"/><rect x="18" y="130" width="40" height="6" rx="3" class="line"/>
+                      <text x="130" y="36" class="t" style="font-size:14px">Overview</text><text x="196" y="36" class="s">Last 30 days</text>
+                      <circle cx="536" cy="30" r="9" fill="var(--trail)"/><text x="530.5" y="33" font-size="7" fill="#fff" font-weight="700">AB</text>
+                      <g>
+                        <rect class="card" x="130" y="52" width="96" height="56" rx="8"/><text class="s" x="140" y="70">Total users</text><text class="v anim" style="animation-name:s1-kpi" x="140" y="94">24,812</text>
+                        <rect class="card" x="236" y="52" width="96" height="56" rx="8"/><text class="s" x="246" y="70">Revenue</text><text class="v anim" style="animation-name:s1-kpi" x="246" y="94">$148.2K</text>
+                        <rect class="card" x="342" y="52" width="96" height="56" rx="8"/><text class="s" x="352" y="70">Conversion</text><text class="v anim" style="animation-name:s1-kpi" x="352" y="94">3.6%</text>
+                        <rect class="card" x="448" y="52" width="96" height="56" rx="8"/><text class="s" x="458" y="70">Avg. session</text><text class="v anim" style="animation-name:s1-kpi" x="458" y="94">4m 22s</text>
+                      </g>
+                      <rect class="card" x="130" y="122" width="250" height="110" rx="8"/><text class="s" x="140" y="140">Sessions over time</text>
+                      <g>
+                        <rect class="bar anim" style="animation-name:s1-bar-a" x="142" y="182" width="10" height="40"/><rect class="bar anim" style="animation-name:s1-bar-b" x="159" y="170" width="10" height="52"/><rect class="bar anim" style="animation-name:s1-bar-a" x="176" y="176" width="10" height="46"/><rect class="bar anim" style="animation-name:s1-bar-b" x="193" y="162" width="10" height="60"/><rect class="bar anim" style="animation-name:s1-bar-a" x="210" y="167" width="10" height="55"/><rect class="bar anim" style="animation-name:s1-bar-b" x="227" y="156" width="10" height="66"/><rect class="bar anim" style="animation-name:s1-bar-a" x="244" y="164" width="10" height="58"/><rect class="bar anim" style="animation-name:s1-bar-b" x="261" y="150" width="10" height="72"/><rect class="bar anim" style="animation-name:s1-bar-a" x="278" y="158" width="10" height="64"/><rect class="bar anim" style="animation-name:s1-bar-b" x="295" y="152" width="10" height="70"/><rect class="bar anim" style="animation-name:s1-bar-a" x="312" y="146" width="10" height="76"/><rect class="bar anim" style="animation-name:s1-bar-b" x="329" y="154" width="10" height="68"/><rect class="bar anim" style="animation-name:s1-bar-a" x="346" y="142" width="10" height="80"/><rect class="bar anim" style="animation-name:s1-bar-b" x="363" y="148" width="10" height="74"/>
+                      </g>
+                      <rect class="card" x="392" y="122" width="152" height="110" rx="8"/><text class="s" x="402" y="140">Top channels</text>
+                      <g class="anim" style="animation-name:s1-rows">
+                        <text class="s" x="402" y="160" fill="var(--ink)">Organic</text><rect class="ecto" x="462" y="154" width="64" height="6" rx="3"/>
+                        <text class="s" x="402" y="178" fill="var(--ink)">Direct</text><rect class="ecto" x="462" y="172" width="46" height="6" rx="3"/>
+                        <text class="s" x="402" y="196" fill="var(--ink)">Referral</text><rect class="ecto" x="462" y="190" width="30" height="6" rx="3"/>
+                        <text class="s" x="402" y="214" fill="var(--ink)">Social</text><rect class="ecto" x="462" y="208" width="22" height="6" rx="3"/>
+                      </g>
+                      <rect class="card" x="130" y="244" width="414" height="64" rx="8"/>
+                      <g class="anim" style="animation-name:s1-rows">
+                        <text class="s" x="140" y="262" fill="var(--ink)">alice@corp.com</text><text class="s" x="240" y="262">Checkout complete</text><rect class="pill" x="470" y="254" width="52" height="12" rx="6"/><text class="pill-t" x="478" y="263">success</text>
+                        <text class="s" x="140" y="280" fill="var(--ink)">bob@startup.io</text><text class="s" x="240" y="280">File download</text><rect class="pill" x="470" y="272" width="52" height="12" rx="6"/><text class="pill-t" x="478" y="281">success</text>
+                        <text class="s" x="140" y="298" fill="var(--ink)">carol@design.co</text><text class="s" x="240" y="298">Form submit</text><rect x="470" y="290" width="52" height="12" rx="6" fill="color-mix(in srgb, var(--trail-bright) 28%, transparent)"/><text class="pill-t" x="478" y="299" fill="var(--trail)">pending</text>
+                      </g>
+                      <!-- the login wall -->
+                      <g class="anim" style="animation-name:s1-wall">
+                        <rect class="wall" x="0" y="0" width="560" height="320"/>
+                        <rect class="card" x="190" y="66" width="180" height="188" rx="12"/>
+                        <rect class="lock" x="271" y="96" width="18" height="14" rx="3"/><path class="lock" d="M275 96v-4a5 5 0 0 1 10 0v4"/>
+                        <text class="t" x="280" y="134" text-anchor="middle">Sign in to Acme</text>
+                        <rect class="card" x="210" y="148" width="140" height="22" rx="6"/><text class="s" x="220" y="163">Work email</text>
+                        <rect class="card" x="210" y="178" width="140" height="22" rx="6"/><text class="s" x="220" y="193">Password</text>
+                        <rect class="btn-ink" x="210" y="212" width="140" height="24" rx="6"/><text class="btn-t" x="280" y="228" text-anchor="middle">Continue</text>
+                      </g>
+                      <g class="ghost anim" style="animation-name:s1-ghost">
+                        <g transform="scale(1.7)"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></g>
+                      </g>
+                    </svg>
+                  </div>
+                </div>
+                <div class="calls" aria-hidden="true"><div class="toolcall ok anim" style="animation-name:s1-chip">browser_click <b>"Overview"</b> → live KPIs, no sign-in step</div></div>
+              </div>
             </div>
             <div class="demo-copy">
               <h3>Read a gated dashboard.</h3>
               <p>Read a dashboard that lives behind your company login. The agent never sees a password; it borrows the session your browser already holds.</p>
-              <p class="demo-tool"><code>browser_click</code> <span class="arrow">&rarr;</span> live KPIs, no sign-in step</p>
+              <div class="demo-tool"><code>browser_click</code> <span class="arrow">→</span> live KPIs, no sign-in step</div>
             </div>
           </article>
 
+          <!-- 2 · upload with allowlist -->
           <article class="demo">
             <div class="demo-media">
-              <img class="demo-shot" src="assets/demo/form-upload.png" width="1280" height="800" loading="lazy" decoding="async" alt="A support-ticket form with every field filled, and a confirmation line below the upload zone showing upload-test.csv attached." />
+              <div class="scene s2" role="img" aria-label="The ghost drags upload-test.csv from an allowed folder into a ticket’s upload zone, which turns green and shows it attached. It then tries id_rsa from the ~/.ssh folder; the file bounces off a barrier and the folder is marked refused. The log reads: browser_upload_file, upload-test.csv attached.">
+                <div class="win">
+                  <div class="win-tabs"><div class="win-tab"><span class="fav"></span>Support console</div><div class="win-tab is-bg">Finder</div></div>
+                  <div class="win-addr"><svg class="lock" viewBox="0 0 12 14" aria-hidden="true" style="color:var(--ecto-deep)"><rect x="1.5" y="6" width="9" height="7" rx="1.5" fill="currentColor"/><path d="M3.5 6V4a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="url">support.yourcompany.com/tickets/new</span><span class="avatar">AB</span></div>
+                  <div class="win-body">
+                    <svg viewBox="0 0 560 320" aria-hidden="true">
+                      <!-- the tray of folders on this Mac -->
+                      <rect class="card" x="12" y="14" width="152" height="292" rx="10" style="fill:var(--paper)"/>
+                      <text class="t" x="26" y="38">Your Mac</text>
+                      <path d="M26 58h8l3 3h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H26a2 2 0 0 1-2-2V60a2 2 0 0 1 2-2z" class="ecto"/>
+                      <text class="s mono" x="56" y="70" fill="var(--ink)">~/exports</text>
+                      <rect class="pill" x="24" y="82" width="54" height="13" rx="6.5"/><text class="pill-t" x="32" y="91.5">allowed</text>
+                      <path class="trail anim" style="animation-name:s2-trail" d="M76 118 C 170 50, 250 250, 346 206"/>
+                      <g class="anim" style="animation-name:s2-csv">
+                        <path d="M44 104h18l8 8v26a2 2 0 0 1-2 2H44a2 2 0 0 1-2-2v-32a2 2 0 0 1 2-2z" fill="var(--surface)" stroke="var(--ecto)" stroke-width="1.5"/><path d="M62 104v8h8" fill="none" stroke="var(--ecto)" stroke-width="1.5"/>
+                        <rect x="48" y="122" width="14" height="2.5" rx="1" class="ecto"/><rect x="48" y="128" width="18" height="2.5" rx="1" class="ecto"/>
+                        <text class="s mono" x="42" y="154" fill="var(--ink)">upload-test.csv</text>
+                      </g>
+                      <path d="M26 182h8l3 3h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H26a2 2 0 0 1-2-2v-14a2 2 0 0 1 2-2z" fill="var(--block)"/>
+                      <text class="s mono" x="56" y="194" fill="var(--ink)">~/.ssh</text>
+                      <rect x="24" y="206" width="54" height="13" rx="6.5" fill="color-mix(in srgb, var(--block) 16%, transparent)"/><text class="pill-t" x="32" y="215.5" fill="var(--block)">blocked</text>
+                      <g class="anim" style="animation-name:s2-key">
+                        <path d="M44 228h18l8 8v26a2 2 0 0 1-2 2H44a2 2 0 0 1-2-2v-32a2 2 0 0 1 2-2z" fill="var(--surface)" stroke="var(--block)" stroke-width="1.5"/><path d="M62 228v8h8" fill="none" stroke="var(--block)" stroke-width="1.5"/>
+                        <circle cx="52" cy="246" r="3.5" fill="none" stroke="var(--block)" stroke-width="1.5"/><path d="M55 246h9m-3 0v3" fill="none" stroke="var(--block)" stroke-width="1.5"/>
+                        <text class="s mono" x="42" y="278" fill="var(--ink)">id_rsa</text>
+                      </g>
+                      <text class="s mono anim" style="animation-name:s2-refused" x="24" y="298" fill="var(--block)">refused: not allowed</text>
+                      <line class="anim" style="animation-name:s2-wallflash" x1="177" y1="22" x2="177" y2="298" stroke="var(--block)" stroke-width="3" stroke-dasharray="6 5" stroke-linecap="round"/>
+
+                      <!-- the ticket form -->
+                      <text class="t" x="196" y="38" style="font-size:14px">New support ticket</text>
+                      <rect class="done" x="196" y="52" width="352" height="34" rx="6"/><text class="s" x="206" y="65" fill="var(--ecto-deep)">Subject</text><text class="s" x="206" y="79" fill="var(--ink)" style="font-size:10.5px">Export button is broken in the reports view</text>
+                      <rect class="done" x="196" y="96" width="352" height="64" rx="6"/><text class="s" x="206" y="109" fill="var(--ecto-deep)">Description</text><text class="s" x="206" y="124" fill="var(--ink)" style="font-size:10.5px">When I click Export → CSV on the monthly report, the download</text><text class="s" x="206" y="138" fill="var(--ink)" style="font-size:10.5px">starts but the file is empty (0 bytes). Expected: populated CSV.</text><text class="s" x="206" y="152" fill="var(--ink)" style="font-size:10.5px">Sample attached.</text>
+                      <rect class="anim" style="animation-name:s2-zone" x="196" y="176" width="352" height="86" rx="10" fill="var(--surface)" stroke="var(--hairline)" stroke-width="1.5" stroke-dasharray="6 4"/>
+                      <g class="anim" style="animation-name:s2-drop"><text class="s" x="372" y="214" text-anchor="middle" style="font-size:11px">Drop a file here, or click to upload</text><text class="s" x="372" y="232" text-anchor="middle">CSV, PDF or PNG up to 10 MB</text></g>
+                      <g class="anim" style="animation-name:s2-ok">
+                        <path d="M300 200h14l6 6v20a2 2 0 0 1-2 2h-18a2 2 0 0 1-2-2v-24a2 2 0 0 1 2-2z" fill="var(--surface)" stroke="var(--ecto)" stroke-width="1.5"/><path d="M314 200v6h6" fill="none" stroke="var(--ecto)" stroke-width="1.5"/>
+                        <text class="t" x="332" y="214">upload-test.csv</text><text class="pill-t" x="332" y="230" style="font-size:10px">✓ attached · 12 KB</text>
+                      </g>
+                      <rect class="btn-ink" x="448" y="276" width="100" height="28" rx="7"/><text class="btn-t" x="498" y="294" text-anchor="middle">Submit ticket</text>
+                      <g class="ghost anim" style="animation-name:s2-ghost">
+                        <g transform="scale(1.7)"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></g>
+                      </g>
+                    </svg>
+                  </div>
+                </div>
+                <div class="calls" aria-hidden="true"><div class="toolcall ok anim" style="animation-name:s2-chip">browser_upload_file <b>upload-test.csv</b> → attached</div></div>
+              </div>
             </div>
             <div class="demo-copy">
               <h3>Fill a form, attach a file.</h3>
               <p>File a support ticket and attach the CSV. Uploads come only from folders you listed in config. The ghost cannot reach into <code>~/.ssh</code>, even if you ask it to.</p>
-              <p class="demo-tool"><code>browser_upload_file</code> <span class="arrow">&rarr;</span> upload-test.csv attached</p>
+              <div class="demo-tool"><code>browser_upload_file</code> <span class="arrow">→</span> upload-test.csv attached</div>
             </div>
           </article>
 
+          <!-- 3 · a feed that fights back -->
           <article class="demo">
             <div class="demo-media">
-              <img class="demo-shot" src="assets/demo/feed.png" width="1280" height="800" loading="lazy" decoding="async" alt="A news feed mid-scroll as lazy-loading adds more stories." />
+              <div class="scene s3" role="img" aria-label="A news feed scrolls in paced steps as more stories lazy-load in. Beside it, a JSON panel fills line by line with each story’s title and score. The log reads: browser_smart_scroll plus browser_scrape, 24 stories as JSON.">
+                <div class="win">
+                  <div class="win-tabs"><div class="win-tab"><span class="fav"></span>TechFeed</div><div class="win-tab is-bg">Drafts</div></div>
+                  <div class="win-addr"><svg class="lock" viewBox="0 0 12 14" aria-hidden="true" style="color:var(--ecto-deep)"><rect x="1.5" y="6" width="9" height="7" rx="1.5" fill="currentColor"/><path d="M3.5 6V4a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="url">techfeed.example/top?infinite=1</span><span class="avatar">AB</span></div>
+                  <div class="win-body">
+                    <svg viewBox="0 0 560 320" aria-hidden="true">
+                      <defs><clipPath id="feedclip"><rect x="0" y="0" width="334" height="320"/></clipPath></defs>
+                      <g clip-path="url(#feedclip)">
+                        <g class="anim" style="animation-name:s3-roll">
+                          <g><rect class="card" x="14" y="14" width="300" height="66" rx="8"/><rect class="pill" x="24" y="24" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="28" width="150" height="8" rx="4"/><rect class="line" x="80" y="44" width="210" height="6" rx="3"/><rect class="line" x="80" y="56" width="170" height="6" rx="3"/><text class="s" x="80" y="72">2h ago · 412 points</text></g>
+                          <g><rect class="card" x="14" y="90" width="300" height="66" rx="8"/><rect class="pill" x="24" y="100" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="104" width="120" height="8" rx="4"/><rect class="line" x="80" y="120" width="200" height="6" rx="3"/><rect class="line" x="80" y="132" width="150" height="6" rx="3"/><text class="s" x="80" y="148">3h ago · 388 points</text></g>
+                          <g><rect class="card" x="14" y="166" width="300" height="66" rx="8"/><rect class="pill" x="24" y="176" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="180" width="170" height="8" rx="4"/><rect class="line" x="80" y="196" width="190" height="6" rx="3"/><rect class="line" x="80" y="208" width="160" height="6" rx="3"/><text class="s" x="80" y="224">5h ago · 301 points</text></g>
+                          <g><rect class="card" x="14" y="242" width="300" height="66" rx="8"/><rect class="pill" x="24" y="252" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="256" width="140" height="8" rx="4"/><rect class="line" x="80" y="272" width="210" height="6" rx="3"/><rect class="line" x="80" y="284" width="130" height="6" rx="3"/><text class="s" x="80" y="300">6h ago · 276 points</text></g>
+                          <g><rect class="card" x="14" y="318" width="300" height="66" rx="8"/><rect class="pill" x="24" y="328" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="332" width="160" height="8" rx="4"/><rect class="line" x="80" y="348" width="180" height="6" rx="3"/><rect class="line" x="80" y="360" width="150" height="6" rx="3"/><text class="s" x="80" y="376">8h ago · 240 points</text></g>
+                          <g class="anim" style="animation-name:s3-lazy1"><rect class="card" x="14" y="394" width="300" height="66" rx="8"/><rect class="pill" x="24" y="404" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="408" width="130" height="8" rx="4"/><rect class="line" x="80" y="424" width="200" height="6" rx="3"/><rect class="line" x="80" y="436" width="140" height="6" rx="3"/><text class="s" x="80" y="452">9h ago · 198 points</text></g>
+                          <g class="anim" style="animation-name:s3-lazy2"><rect class="card" x="14" y="470" width="300" height="66" rx="8"/><rect class="pill" x="24" y="480" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="484" width="150" height="8" rx="4"/><rect class="line" x="80" y="500" width="190" height="6" rx="3"/><rect class="line" x="80" y="512" width="160" height="6" rx="3"/><text class="s" x="80" y="528">11h ago · 171 points</text></g>
+                          <g class="anim" style="animation-name:s3-lazy3"><rect class="card" x="14" y="546" width="300" height="66" rx="8"/><rect class="pill" x="24" y="556" width="46" height="46" rx="6"/><rect class="line-ink" x="80" y="560" width="120" height="8" rx="4"/><rect class="line" x="80" y="576" width="210" height="6" rx="3"/><rect class="line" x="80" y="588" width="130" height="6" rx="3"/><text class="s" x="80" y="604">12h ago · 150 points</text></g>
+                        </g>
+                      </g>
+                      <rect class="soft" x="322" y="14" width="6" height="292" rx="3"/>
+                      <rect class="ecto anim" style="animation-name:s3-thumb" x="322" y="14" width="6" height="72" rx="3"/>
+                      <g class="ghost anim" style="animation-name:s3-ghost">
+                        <g transform="translate(262 26) scale(1.5)"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></g>
+                      </g>
+                      <!-- the JSON the agent gets back -->
+                      <rect class="term" x="346" y="14" width="200" height="292" rx="10"/>
+                      <text class="code anim" style="animation-name:s3-l1" x="358" y="38">[</text>
+                      <text class="code anim" style="animation-name:s3-l2" x="358" y="60">{ <tspan class="k">"title"</tspan>: "New benchmark…",</text>
+                      <text class="code anim" style="animation-name:s3-l3" x="358" y="82">  <tspan class="k">"score"</tspan>: 412 },</text>
+                      <text class="code anim" style="animation-name:s3-l4" x="358" y="104">{ <tspan class="k">"title"</tspan>: "Run 2.0 ships…",</text>
+                      <text class="code anim" style="animation-name:s3-l5" x="358" y="126">  <tspan class="k">"score"</tspan>: 388 },</text>
+                      <text class="code anim" style="animation-name:s3-l6" x="358" y="148">{ <tspan class="k">"title"</tspan>: "YC W26 leans…",</text>
+                      <text class="code anim" style="animation-name:s3-l7" x="358" y="170">  <tspan class="k">"score"</tspan>: 301 },</text>
+                      <text class="code anim" style="animation-name:s3-l8" x="358" y="192">{ <tspan class="k">"title"</tspan>: "Vision models…",</text>
+                      <text class="code anim" style="animation-name:s3-l9" x="358" y="214">  <tspan class="k">"score"</tspan>: 276 },</text>
+                      <text class="code anim" style="animation-name:s3-l10" x="358" y="248">]  <tspan class="n">// 24 stories</tspan></text>
+                    </svg>
+                  </div>
+                </div>
+                <div class="calls" aria-hidden="true"><div class="toolcall ok anim" style="animation-name:s3-chip">browser_scrape → <b>24 stories</b>, as JSON</div></div>
+              </div>
             </div>
             <div class="demo-copy">
               <h3>Scrape a feed that fights back.</h3>
               <p>Walk a feed that loads as it scrolls. <code>browser_smart_scroll</code> paces the page while network capture reads the API responses behind it, so obfuscated markup stops being your problem.</p>
-              <p class="demo-tool"><code>browser_smart_scroll</code> + <code>browser_scrape</code> <span class="arrow">&rarr;</span> every story, as JSON</p>
+              <div class="demo-tool"><code>browser_smart_scroll</code> + <code>browser_scrape</code> <span class="arrow">→</span> every story, as JSON</div>
             </div>
           </article>
 
+          <!-- 4 · two agents, one browser -->
           <article class="demo">
             <div class="demo-media">
-              <img class="demo-shot" src="assets/demo/two-agents.png" width="1280" height="800" loading="lazy" decoding="async" alt="A split-pane campaign manager with two agent sessions running live, each showing its own browser tool calls." />
+              <div class="scene s4" role="img" aria-label="Two tabs in a PolterTab tab group. A teal ghost labelled Claude Code works through a checklist in the left tab and clicks Publish; an amber ghost labelled Cursor works through its own list in the right tab and clicks Run audit. A localhost:7822 badge between them is wired to both. The log reads: browser_session_create, two agents, separate tabs.">
+                <div class="win">
+                  <div class="win-tabs"><div class="win-group">PolterTab</div><div class="win-tab"><span class="fav"></span>Campaign A</div><div class="win-tab"><span class="fav amber"></span>Audit B</div></div>
+                  <div class="win-addr"><svg class="lock" viewBox="0 0 12 14" aria-hidden="true" style="color:var(--ecto-deep)"><rect x="1.5" y="6" width="9" height="7" rx="1.5" fill="currentColor"/><path d="M3.5 6V4a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="url">ads.acme.io/campaigns · ads.acme.io/audit</span><span class="avatar">AB</span></div>
+                  <div class="win-body">
+                    <svg viewBox="0 0 560 320" aria-hidden="true">
+                      <!-- left pane -->
+                      <rect class="card" x="12" y="14" width="262" height="292" rx="10"/>
+                      <text class="t" x="24" y="38">Campaign manager</text>
+                      <rect class="pill" x="24" y="50" width="86" height="18" rx="9"/><circle cx="36" cy="59" r="3.5" class="ecto"/><text class="pill-t" x="44" y="62.5">Claude Code</text>
+                      <rect x="24" y="86" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="34" y="96" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--ecto)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-c1" d="M37 104l4 4 8-8" fill="none" stroke="var(--ecto-deep)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="60" y="108" fill="var(--ink)" style="font-size:10px">Pause ad set “Retargeting”</text>
+                      <rect x="24" y="130" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="34" y="140" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--ecto)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-c2" d="M37 148l4 4 8-8" fill="none" stroke="var(--ecto-deep)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="60" y="152" fill="var(--ink)" style="font-size:10px">Raise budget on Q4 launch</text>
+                      <rect x="24" y="174" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="34" y="184" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--ecto)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-c3" d="M37 192l4 4 8-8" fill="none" stroke="var(--ecto-deep)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="60" y="196" fill="var(--ink)" style="font-size:10px">Schedule the weekly report</text>
+                      <rect class="btn-ink anim" style="animation-name:s4-pa;transform-box:fill-box;transform-origin:center" x="24" y="224" width="112" height="30" rx="7"/><text class="btn-t" x="80" y="243" text-anchor="middle">Publish changes</text>
+                      <text class="pill-t anim" style="animation-name:s4-ra;font-size:10px" x="146" y="243">✓ Published</text>
+                      <!-- right pane -->
+                      <rect class="card" x="286" y="14" width="262" height="292" rx="10"/>
+                      <text class="t" x="298" y="38">Creative auditor</text>
+                      <rect x="472" y="50" width="64" height="18" rx="9" fill="color-mix(in srgb, var(--trail-bright) 24%, transparent)"/><circle cx="484" cy="59" r="3.5" fill="var(--trail)"/><text class="pill-t" x="492" y="62.5" fill="var(--trail)">Cursor</text>
+                      <rect x="298" y="86" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="308" y="96" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--trail)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-d1" d="M311 104l4 4 8-8" fill="none" stroke="var(--trail)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="334" y="108" fill="var(--ink)" style="font-size:10px">Check ad copy length</text>
+                      <rect x="298" y="130" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="308" y="140" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--trail)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-d2" d="M311 148l4 4 8-8" fill="none" stroke="var(--trail)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="334" y="152" fill="var(--ink)" style="font-size:10px">Flag missing alt text</text>
+                      <rect x="298" y="174" width="238" height="36" rx="8" fill="var(--paper)" stroke="var(--hairline)"/><rect x="308" y="184" width="16" height="16" rx="4" fill="var(--surface)" stroke="var(--trail)" stroke-width="1.5"/><path class="anim" style="animation-name:s4-d3" d="M311 192l4 4 8-8" fill="none" stroke="var(--trail)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text class="s" x="334" y="196" fill="var(--ink)" style="font-size:10px">Compare CTR by variant</text>
+                      <rect class="btn-ink anim" style="animation-name:s4-pb;transform-box:fill-box;transform-origin:center" x="298" y="224" width="90" height="30" rx="7"/><text class="btn-t" x="343" y="243" text-anchor="middle">Run audit</text>
+                      <text class="anim" style="animation-name:s4-rb;font-size:10px;font-weight:600" x="398" y="243" fill="var(--trail)">✓ 3 issues found</text>
+                      <!-- the shared port -->
+                      <path class="wire" d="M246 59 H 112"/>
+                      <path class="wire" d="M314 59 H 470"/>
+                      <rect class="term" x="246" y="48" width="68" height="22" rx="11"/><text class="code" x="280" y="63" text-anchor="middle" style="font-size:9.5px">:7822</text>
+                      <g class="ghost anim" style="animation-name:s4-ga">
+                        <g transform="scale(1.5)"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></g>
+                      </g>
+                      <g class="ghost amber anim" style="animation-name:s4-gb">
+                        <g transform="scale(1.5)"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></g>
+                      </g>
+                    </svg>
+                  </div>
+                </div>
+                <div class="calls" aria-hidden="true"><div class="toolcall ok anim" style="animation-name:s4-chip">browser_session_create → <b>two agents</b>, separate tabs</div></div>
+              </div>
             </div>
             <div class="demo-copy">
               <h3>Two agents, one browser.</h3>
               <p>Point Claude Code and Cursor at the same Chrome. The first server to claim port <code>7822</code> coordinates, later ones proxy through it, and each agent keeps to its own tab.</p>
-              <p class="demo-tool"><code>browser_session_create</code> <span class="arrow">&rarr;</span> two agents, separate tabs</p>
+              <div class="demo-tool"><code>browser_session_create</code> <span class="arrow">→</span> two agents, separate tabs</div>
             </div>
           </article>
+
         </div>
       </div>
     </section>
 
     <!-- ===== How it works ===== -->
-    <section class="band band-mint" id="how">
+    <section class="band band-mint" id="how" aria-labelledby="how-h">
       <div class="wrap">
-        <div class="section-head">
-          <h2>Four hops, all on your machine.</h2>
-        </div>
+        <h2 id="how-h">Four hops, all on your machine.</h2>
         <p class="section-intro">Your agent speaks MCP (Model Context Protocol, the standard AI tools use to call external tools) to a small Node server. The server relays each command to the Chrome extension over a WebSocket on <code>localhost:7822</code>. The extension does the clicking, typing, and reading, and the result travels the same path back. No hop crosses the network.</p>
-
-        <div class="hops">
-          <div class="hop">
-            <h3>Your AI agent</h3>
-            <p>Any MCP client, speaking over stdio.</p>
-            <span class="wire">stdio</span>
-          </div>
-          <div class="hop">
-            <h3>PolterTab server</h3>
-            <p>A local Node.js process.</p>
-            <span class="wire">localhost:7822</span>
-          </div>
-          <div class="hop">
-            <h3>PolterTab extension</h3>
-            <p>Runs the commands with Chrome APIs and the DOM.</p>
-            <span class="wire">in the page</span>
-          </div>
-          <div class="hop">
-            <h3>Your Chrome</h3>
-            <p>The profile you&rsquo;re signed into, in the window you can see.</p>
-            <span class="wire">back, same path</span>
+        <div class="scene hops">
+          <div class="rail" aria-hidden="true"><div class="packet anim"></div></div>
+          <div class="hops-grid">
+            <div class="hop">
+              <h3>Your AI agent</h3>
+              <p>Any MCP client, speaking over stdio.</p>
+              <span class="wire-l">stdio →</span>
+            </div>
+            <div class="hop">
+              <h3>PolterTab server</h3>
+              <p>A local Node.js process.</p>
+              <span class="wire-l">localhost:7822 →</span>
+            </div>
+            <div class="hop">
+              <svg class="mini ghost" viewBox="0 0 32 32" aria-hidden="true"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></svg>
+              <h3>PolterTab extension</h3>
+              <p>Runs the commands with Chrome APIs and the DOM.</p>
+              <span class="wire-l">in the page →</span>
+            </div>
+            <div class="hop">
+              <h3>Your Chrome</h3>
+              <p>The profile you’re signed into, in the window you can see.</p>
+              <span class="wire-l">← back, same path</span>
+            </div>
           </div>
         </div>
         <p class="fig-caption">Several agents can share one browser with zero configuration. The first server to claim the port serves the extension; up to 50 more proxy through it, each with its own current tab.</p>
       </div>
     </section>
 
-    <!-- ===== Security & privacy (the longest section, on purpose) ===== -->
+    <!-- ===== Security ===== -->
     <section class="band" id="security" aria-labelledby="sec-h">
       <div class="wrap">
-        <div class="section-head">
+        <div class="sec-head">
           <h2 id="sec-h">The whole thing makes one network call.</h2>
+          <p class="section-intro">It’s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/abhinav162/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
         </div>
-        <p class="section-intro">It&rsquo;s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/abhinav162/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
-
         <div class="sec-grid">
           <div class="sec-item">
             <h3>Everything stays local</h3>
@@ -223,56 +492,56 @@
           </div>
           <div class="sec-item">
             <h3>You can watch it work</h3>
-            <p>The ghost acts in your visible browser, inside a tab group labeled &ldquo;PolterTab&rdquo;. You can follow every click, and you can close the tab mid-task.</p>
+            <p>The ghost acts in your visible browser, inside a tab group labeled “PolterTab”. You can follow every click, and you can close the tab mid-task.</p>
           </div>
           <div class="sec-item">
-            <h3>Audit it, don&rsquo;t trust it</h3>
+            <h3>Audit it, don’t trust it</h3>
             <p>Extension and server are open source under ISC, and npm builds are published with provenance, which ties the package you installed to the exact commit it was built from.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ===== Works with ===== -->
-    <section class="band band-mint">
+    <!-- ===== Clients ===== -->
+    <section class="band band-mint" aria-labelledby="clients-h">
       <div class="wrap">
-        <div class="section-head">
-          <h2>Any MCP client.</h2>
-        </div>
+        <h2 id="clients-h">Any MCP client.</h2>
         <p class="section-intro"><code>poltertab setup</code> registers the server with Claude Code for you. Claude Desktop, Cursor, and anything else that speaks MCP take one entry in their config file; the <a href="https://github.com/abhinav162/poltertab#readme" rel="noopener">README</a> shows each one.</p>
+        <ul class="clients" aria-label="Clients">
+          <li class="client"><span class="dot"></span>Claude Code</li>
+          <li class="client"><span class="dot"></span>Claude Desktop</li>
+          <li class="client"><span class="dot"></span>Cursor</li>
+          <li class="client"><span class="dot"></span>An agent you wrote</li>
+          <li class="client any"><span class="dot"></span>Anything that speaks MCP</li>
+        </ul>
       </div>
     </section>
 
     <!-- ===== Install ===== -->
     <section class="band" id="install" aria-labelledby="install-h">
       <div class="wrap">
-        <div class="section-head">
-          <h2 id="install-h">Install in two steps.</h2>
-        </div>
+        <h2 id="install-h">Install in two steps.</h2>
         <p class="section-intro">Node 18 or newer.</p>
-
         <div class="steps">
           <div class="step">
-            <span class="step-n">Step 1 &middot; the server</span>
+            <span class="step-n">Step 1: the server</span>
             <h3>Install and run setup</h3>
             <div class="cmd">
               <code id="install-cmd-2">npm install -g poltertab
 poltertab setup</code>
-              <button class="copy-btn" type="button" data-copy="#install-cmd-2" aria-label="Copy install commands">Copy</button>
+              <button class="copy-btn" type="button" data-copy="#install-cmd-2" aria-label="Copy install command">Copy</button>
             </div>
             <p>Setup runs in about 5 seconds. The wizard registers the MCP server, installs a browser-navigation skill, and adds a CLAUDE.md note so your agent knows the tools exist. Re-running it is safe; each step detects its own prior work.</p>
           </div>
           <div class="step">
-            <span class="step-n">Step 2 &middot; the extension</span>
+            <span class="step-n">Step 2: the extension</span>
             <h3>Load it into Chrome</h3>
             <ol class="step-list">
               <li>Download the latest <a href="https://github.com/abhinav162/poltertab/releases" rel="noopener">release zip</a> and unzip it.</li>
               <li>Open <code>chrome://extensions/</code> and switch on Developer mode.</li>
-              <li>Click &ldquo;Load unpacked&rdquo; and pick the unzipped folder, the one containing <code>manifest.json</code>.</li>
+              <li>Click “Load unpacked” and pick the unzipped folder, the one containing <code>manifest.json</code>.</li>
               <li>Restart your AI tool.</li>
             </ol>
-            <!-- Hidden slot: when the Chrome Web Store listing is live, step 2 collapses to one click. [NEED: CWS listing] -->
-            <p class="cws-line" hidden><a id="cws-link" href="#" rel="noopener">Add to Chrome from the Web Store</a> for a one-click install.</p>
           </div>
         </div>
       </div>
@@ -280,19 +549,17 @@ poltertab setup</code>
 
     <!-- ===== FAQ ===== -->
     <section class="band band-mint" id="faq" aria-labelledby="faq-h">
-      <div class="wrap">
-        <div class="section-head">
-          <h2 id="faq-h">Fair questions.</h2>
-        </div>
-
+      <div class="wrap faq-wrap">
+        <svg class="faq-ghost ghost" viewBox="0 0 32 32" aria-hidden="true"><path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/><g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g></svg>
+        <h2 id="faq-h">Fair questions.</h2>
         <div class="faq">
           <details>
             <summary>Does PolterTab send my browsing data anywhere?</summary>
-            <div class="answer"><p>No. Commands and page content travel from agent to server to extension over stdio and a <code>localhost</code> WebSocket. The server&rsquo;s only outbound request is the daily version check described above, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> disables it.</p></div>
+            <div class="answer"><p>No. Commands and page content travel from agent to server to extension over stdio and a <code>localhost</code> WebSocket. The server’s only outbound request is the daily version check described above, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> disables it.</p></div>
           </details>
           <details>
             <summary>Can the agent read my passwords or cookies?</summary>
-            <div class="answer"><p>It can&rsquo;t open your password manager or Chrome&rsquo;s cookie store. It sees what a script running in the page sees: the rendered page and the network responses that page loads. It acts with your session, because that&rsquo;s the product, but the credentials behind that session are never read or transmitted.</p></div>
+            <div class="answer"><p>It can’t open your password manager or Chrome’s cookie store. It sees what a script running in the page sees: the rendered page and the network responses that page loads. It acts with your session, because that’s the product, but the credentials behind that session are never read or transmitted.</p></div>
           </details>
           <details>
             <summary>Can the agent upload any file from my disk?</summary>
@@ -308,7 +575,7 @@ poltertab setup</code>
           </details>
           <details>
             <summary>Why does the extension need the debugger permission?</summary>
-            <div class="answer"><p>For one feature: file uploads through the OS file picker, which Chrome&rsquo;s DevTools Protocol is the only way to intercept. It attaches to the one tab for the length of the upload and detaches after, and Chrome shows its banner the whole time.</p></div>
+            <div class="answer"><p>For one feature: file uploads through the OS file picker, which Chrome’s DevTools Protocol is the only way to intercept. It attaches to the one tab for the length of the upload and detaches after, and Chrome shows its banner the whole time.</p></div>
           </details>
           <details>
             <summary>Is it open source?</summary>
@@ -319,103 +586,49 @@ poltertab setup</code>
     </section>
 
     <!-- ===== Final CTA ===== -->
-    <section class="band final">
-      <div class="wrap">
-        <h2>Let the ghost get to work.</h2>
-        <div class="cmd" style="max-width:520px">
-          <code id="install-cmd-3">npm install -g poltertab &amp;&amp; poltertab setup</code>
-          <button class="copy-btn" type="button" data-copy="#install-cmd-3" aria-label="Copy install command">Copy</button>
+    <section class="final" aria-labelledby="final-h">
+      <div class="wrap split">
+        <div>
+          <h2 id="final-h">Let the ghost get to work.</h2>
+          <p class="section-intro">Two commands, one extension, and your agent has hands in the browser you already trust.</p>
+          <div class="cmd">
+            <code id="install-cmd-3">npm install -g poltertab &amp;&amp; poltertab setup</code>
+            <button class="copy-btn" type="button" data-copy="#install-cmd-3" aria-label="Copy install command">Copy</button>
+          </div>
+          <div class="hero-ctas">
+            <a class="btn btn-primary" href="#install">Install in two steps</a>
+            <a class="btn btn-secondary" href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>
+          </div>
         </div>
-        <div class="hero-ctas">
-          <a class="btn btn-primary" href="#install">Install in two steps</a>
-          <a class="btn btn-secondary" href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>
+        <div class="final-ghost" aria-hidden="true">
+          <svg viewBox="0 0 320 320">
+            <path class="glow" d="M40 272 C 120 236, 200 300, 290 250"/>
+            <g class="ghost" transform="translate(60 40) scale(6.25)">
+              <path class="body" d="M16 3C9.4 3 5 8.2 5 14.5V27c0 1.4 1.7 2 2.6 1l2-2.2 2.1 2.3c.5.6 1.4.6 2 0l2.2-2.4 2.2 2.4c.6.6 1.5.6 2 0l2.1-2.3 2 2.2c.9 1 2.6.4 2.6-1V14.5C27 8.2 22.6 3 16 3Z"/>
+              <g class="eyes"><circle class="eye" cx="12.5" cy="14" r="2"/><circle class="eye" cx="19.5" cy="14" r="2"/></g>
+            </g>
+          </svg>
         </div>
       </div>
     </section>
-
   </main>
 
   <footer class="site-footer">
-    <div class="wrap">
-      <div class="footer-grid">
-        <a class="brand" href="index.html">
-          <img src="assets/logo.svg" alt="" width="28" height="28" />
-          <span>PolterTab</span>
-        </a>
-        <nav class="footer-links" aria-label="Footer">
-          <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
-          <a href="https://www.npmjs.com/package/poltertab" rel="noopener">npm</a>
-          <a href="https://github.com/abhinav162/poltertab/releases" rel="noopener">Releases</a>
-          <a href="privacy.html">Privacy</a>
-        </nav>
-      </div>
-      <p class="footer-note">PolterTab runs locally and drives your own browser. Use it only on sites and accounts you&rsquo;re authorized to access.</p>
+    <div class="wrap footer-grid">
+      <a class="brand" href="#top" aria-label="PolterTab, back to top">
+        <img src="assets/logo.svg" alt="" width="28" height="28" />
+        <span>PolterTab</span>
+      </a>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+        <a href="https://www.npmjs.com/package/poltertab" rel="noopener">npm</a>
+        <a href="https://github.com/abhinav162/poltertab/releases" rel="noopener">Releases</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+      <p class="footer-note">PolterTab runs locally and drives your own browser. Use it only on sites and accounts you’re authorized to access.</p>
     </div>
   </footer>
 
-  <script>
-    // Copy-to-clipboard for the install command. Progressive enhancement only.
-    document.querySelectorAll('.copy-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var target = document.querySelector(btn.getAttribute('data-copy'));
-        if (!target) return;
-        var text = target.textContent;
-        navigator.clipboard && navigator.clipboard.writeText(text).then(function () {
-          var prev = btn.textContent, cmd = btn.closest('.cmd');
-          btn.textContent = '\u2713 Copied';
-          btn.classList.add('is-copied');
-          if (cmd) { cmd.classList.remove('is-flash'); void cmd.offsetWidth; cmd.classList.add('is-flash'); }
-          setTimeout(function () {
-            btn.textContent = prev;
-            btn.classList.remove('is-copied');
-            if (cmd) cmd.classList.remove('is-flash');
-          }, 1600);
-        });
-      });
-    });
-
-    // Scroll-reveal. Content is never left hidden: the hidden state only
-    // exists under html.js (set in <head>); with no IntersectionObserver or
-    // reduced motion everything is shown at once; elements already in view on
-    // load are shown without waiting; a late safety pass reveals anything the
-    // observer missed. Each element reveals once.
-    (function () {
-      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      var groups = ['.section-head', '.steps', '.demos', '.sec-grid', '.hops', '.faq', '.clients', '.final .wrap'];
-      var items = [];
-      groups.forEach(function (sel) {
-        document.querySelectorAll(sel).forEach(function (g) {
-          var kids = g.classList.contains('section-head') ? [g] : Array.prototype.slice.call(g.children);
-          kids.forEach(function (el, i) {
-            el.classList.add('reveal');
-            el.style.setProperty('--i', String(Math.min(i, 6)));
-            items.push(el);
-          });
-        });
-      });
-      function show(el, now) { el.classList.add('in'); if (now) el.classList.add('now'); }
-      if (reduce || !('IntersectionObserver' in window)) { items.forEach(function (el) { show(el, true); }); return; }
-      var vh = window.innerHeight || document.documentElement.clientHeight;
-      var io = new IntersectionObserver(function (entries) {
-        entries.forEach(function (e) {
-          if (!e.isIntersecting) return;
-          show(e.target, false);
-          io.unobserve(e.target);
-        });
-      }, { threshold: 0.15, rootMargin: '0px 0px -8% 0px' });
-      items.forEach(function (el) {
-        if (el.getBoundingClientRect().top < vh * 0.9) { show(el, true); }
-        else { io.observe(el); }
-      });
-      // Safety: nothing stays hidden if the observer never fires for it.
-      window.addEventListener('load', function () {
-        setTimeout(function () {
-          items.forEach(function (el) {
-            if (!el.classList.contains('in') && el.getBoundingClientRect().top < vh) show(el, true);
-          });
-        }, 1500);
-      });
-    })();
-  </script>
+  <script src="assets/site.js" defer></script>
 </body>
 </html>
