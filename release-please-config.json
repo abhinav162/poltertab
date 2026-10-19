@@ -19,6 +19,7 @@
   ],
   "packages": {
     ".": {
+      "release-as": "1.10.1",
       "exclude-paths": ["site"]
     }
   }
