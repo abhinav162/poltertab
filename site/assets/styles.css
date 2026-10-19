@@ -177,6 +177,8 @@ html:not(.js) .scene .anim { animation-play-state: running; }
 @keyframes flash { 0% { opacity: 0; } 30% { opacity: .16; } 100% { opacity: 0; } }
 @keyframes pop { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
 .cmd .copy-btn.is-copied { background: var(--mint); color: var(--ecto-deep); animation: pop .22s var(--ease-out); }
+.cmd .copy-btn.is-failed { background: var(--surface); color: var(--ink-soft); box-shadow: inset 0 0 0 1px var(--hairline); }
+html:not(.js) .cmd .copy-btn { display: none; } /* no JS: the button could do nothing, so it is not shown */
 .hero-ctas { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
 
 /* The haunted window, act one */

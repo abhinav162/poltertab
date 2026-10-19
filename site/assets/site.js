@@ -1,20 +1,30 @@
 // PolterTab site: copy buttons, mobile menu, scene play/pause. Progressive
 // enhancement only; the page reads and works with this file absent.
-// Copy-to-clipboard for the install commands.
+// Copy-to-clipboard for the install commands. The original label is cached
+// once per button and one pending timer restores it, so repeated clicks never
+// capture the swapped label or race each other.
 document.querySelectorAll('.copy-btn').forEach(function (btn) {
+  var label = btn.textContent, timer = 0, cmd = btn.closest('.cmd');
+  function show(text, cls) {
+    clearTimeout(timer);
+    btn.textContent = text;
+    btn.classList.remove('is-copied', 'is-failed');
+    btn.classList.add(cls);
+    if (cmd) cmd.classList.toggle('is-flash', cls === 'is-copied');
+    timer = setTimeout(function () {
+      btn.textContent = label;
+      btn.classList.remove('is-copied', 'is-failed');
+      if (cmd) cmd.classList.remove('is-flash');
+    }, 1600);
+  }
   btn.addEventListener('click', function () {
     var target = document.querySelector(btn.getAttribute('data-copy'));
-    if (!target || !navigator.clipboard) return;
+    if (!target) return;
+    if (!navigator.clipboard) { show('Copy failed', 'is-failed'); return; }
     navigator.clipboard.writeText(target.textContent).then(function () {
-      var prev = btn.textContent, cmd = btn.closest('.cmd');
-      btn.textContent = '\u2713 Copied';
-      btn.classList.add('is-copied');
-      if (cmd) cmd.classList.add('is-flash');
-      setTimeout(function () {
-        btn.textContent = prev;
-        btn.classList.remove('is-copied');
-        if (cmd) cmd.classList.remove('is-flash');
-      }, 1600);
+      show('\u2713 Copied', 'is-copied');
+    }).catch(function () {
+      show('Copy failed', 'is-failed');
     });
   });
 });
