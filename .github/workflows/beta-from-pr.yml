@@ -19,6 +19,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip npm publish and GitHub release creation (true by default for manual runs)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write       # create the prerelease GitHub release
@@ -27,13 +32,20 @@ permissions:
 
 jobs:
   beta:
-    # For pull_request: refuse forks and only run on the release-please branch.
-    # For workflow_dispatch: always run (no PR context to check).
+    # For pull_request: refuse forks and only run on the release-please main branch.
+    # For workflow_dispatch: only run when dispatched on the release-please main branch
+    # (prevents a maintainer accidentally dragging @beta backwards by dispatching on main).
+    # Branch pattern: release-please uses 'release-please--branches--main' (no component)
+    # or 'release-please--branches--main--components--<pkg>' — startsWith on the
+    # '--main--' separator catches both without matching 'release-please--branches--main-evil'.
     if: |
-      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (startsWith(github.ref_name, 'release-please--branches--main--') || github.ref_name == 'release-please--branches--main')
+      ) ||
       (
         github.event.pull_request.head.repo.full_name == github.repository &&
-        startsWith(github.head_ref, 'release-please--branches--main')
+        (startsWith(github.head_ref, 'release-please--branches--main--') || github.head_ref == 'release-please--branches--main')
       )
 
     concurrency:
@@ -58,21 +70,23 @@ jobs:
       # Compute the next beta version: <package.json version>-beta.<N>
       # N = (highest published beta.N for this base version on npm) + 1,
       # or 1 if none exists yet.
+      # Registry output is passed via env vars, not spliced into JS source.
       - name: Compute beta version
         id: version
         run: |
           BASE=$(node -e "process.stdout.write(require('./package.json').version)")
           ALL_VERSIONS=$(npm view poltertab versions --json 2>/dev/null || echo '[]')
-          N=$(node -e "
-            const base = '$BASE';
-            const all = $ALL_VERSIONS;
-            const prefix = base + '-beta.';
-            const ns = all
-              .filter(v => v.startsWith(prefix))
-              .map(v => parseInt(v.slice(prefix.length), 10))
-              .filter(n => Number.isFinite(n));
-            console.log(ns.length ? Math.max(...ns) + 1 : 1);
-          ")
+          N=$(BASE="$BASE" ALL_VERSIONS="$ALL_VERSIONS" node - <<'SEMVER'
+const base = process.env.BASE;
+const all  = JSON.parse(process.env.ALL_VERSIONS);
+const prefix = base + '-beta.';
+const ns = all
+  .filter(v => v.startsWith(prefix))
+  .map(v => parseInt(v.slice(prefix.length), 10))
+  .filter(n => Number.isFinite(n));
+process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
+SEMVER
+          )
           FULL="${BASE}-beta.${N}"
           echo "base_version=${BASE}" >> "$GITHUB_OUTPUT"
           echo "beta_n=${N}"         >> "$GITHUB_OUTPUT"

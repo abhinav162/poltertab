@@ -102,9 +102,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # After a *final* release, move the `beta` dist-tag — but only when the new
-  # stable version is semver-greater than the version beta currently resolves to.
-  # This prevents a hotfix (e.g. 1.10.2) from clobbering an active beta that is
-  # ahead of it (e.g. 1.11.0-beta.3): the major-release beta stays where it is.
+  # stable is strictly semver-greater than what @beta currently resolves to.
+  # Full semver ordering is used: 1.11.0 > 1.11.0-beta.3 (stable outranks its
+  # own prerelease) and 1.10.2 < 1.11.0-beta.3 (hotfix behind active major beta).
+  # Test cases: node scripts/test-move-beta-tag.js
   move-beta-tag:
     needs: publish
     if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
@@ -119,28 +120,34 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name || inputs.tag }}"
           VERSION="${TAG#v}"
-
-          # The base of the current beta (strip any prerelease suffix for comparison).
           CURRENT_BETA=$(npm view poltertab@beta version 2>/dev/null || echo "0.0.0")
 
-          node -e "
-            const semverParts = (v) => v.split('-')[0].split('.').map(Number);
-            const cmp = (a, b) => {
-              for (let i = 0; i < 3; i++) {
-                const diff = (a[i] || 0) - (b[i] || 0);
-                if (diff !== 0) return diff;
-              }
-              return 0;
-            };
-            const stable = semverParts('$VERSION');
-            const beta   = semverParts('$CURRENT_BETA');
-            if (cmp(stable, beta) > 0) {
-              const { execSync } = require('child_process');
-              execSync('npm dist-tag add poltertab@$VERSION beta', { stdio: 'inherit' });
-              console.log('Moved beta -> $VERSION (was $CURRENT_BETA)');
-            } else {
-              console.log('Skipped: $VERSION is not semver-greater than $CURRENT_BETA; beta stays at $CURRENT_BETA');
-            }
-          "
+          # Evaluate full semver ordering via env vars — no registry output spliced
+          # into JS source or execSync command line.
+          DECISION=$(VERSION="$VERSION" CURRENT_BETA="$CURRENT_BETA" node - <<'SEMVER'
+const semverParts = (v) => v.split('-')[0].split('.').map(Number);
+const cmp = (a, b) => {
+  for (let i = 0; i < 3; i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+};
+const stable  = semverParts(process.env.VERSION);
+const beta    = semverParts(process.env.CURRENT_BETA);
+const baseCmp = cmp(stable, beta);
+// stable > beta-base: always move.
+// stable == beta-base and beta is a prerelease: stable wins (1.11.0 > 1.11.0-beta.3).
+const move = baseCmp > 0 || (baseCmp === 0 && process.env.CURRENT_BETA.includes('-'));
+process.stdout.write(move ? 'move' : 'skip');
+SEMVER
+          )
+
+          if [ "$DECISION" = "move" ]; then
+            npm dist-tag add "poltertab@${VERSION}" beta
+            echo "Moved beta -> ${VERSION} (was ${CURRENT_BETA})"
+          else
+            echo "Skipped: ${VERSION} is not semver-greater than ${CURRENT_BETA}; beta stays at ${CURRENT_BETA}"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

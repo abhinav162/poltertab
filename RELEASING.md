@@ -108,16 +108,18 @@ git push -u origin merge-hotfix-1.10.2-to-main
 
 ## publish.yml: move-beta-tag guard
 
-After every stable release the `move-beta-tag` job runs this check:
+After every stable release the `move-beta-tag` job compares the new stable
+version against what `@beta` currently resolves to using **full semver ordering**
+(prerelease versions sort below their release):
 
 ```
-current @beta = npm view poltertab@beta version  (e.g. 1.11.0-beta.3)
-new stable    = 1.10.2
-cmp(1.10.2, 1.11.0) < 0  →  skip: beta stays at 1.11.0-beta.3
+new stable: 1.11.0  |  current @beta: 1.11.0-beta.3  →  MOVE  (1.11.0 > 1.11.0-beta.3)
+new stable: 1.10.2  |  current @beta: 1.11.0-beta.3  →  SKIP  (1.10.2 < 1.11.0)
+new stable: 1.11.0  |  current @beta: 1.10.1         →  MOVE  (advancement)
+new stable: 1.11.0  |  current @beta: 1.11.0         →  SKIP  (no-op, already at stable)
 ```
 
-Only if the new stable is semver-greater than the current @beta base does the
-tag move.  This keeps `@beta` pointing at the most advanced published version.
+Test the logic locally: `node scripts/test-move-beta-tag.js`
 
 ---
 
