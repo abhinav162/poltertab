@@ -2,6 +2,13 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.10.1](https://github.com/abhinav162/poltertab/compare/v1.10.1-beta.1...v1.10.1) (2026-10-19)
+
+
+### Miscellaneous Chores
+
+* release 1.10.1 final ([#60](https://github.com/abhinav162/poltertab/issues/60)) ([2073b53](https://github.com/abhinav162/poltertab/commit/2073b5393e0e0c121a9b4d03a71c986c7a53b163))
+
 ## [1.10.1-beta.1](https://github.com/abhinav162/poltertab/compare/v1.10.0...v1.10.1-beta.1) (2026-10-19)
 
 
