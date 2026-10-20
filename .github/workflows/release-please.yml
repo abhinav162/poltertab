@@ -33,6 +33,10 @@ jobs:
         with:
           config-file:   release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Direct release-please to manage a release PR against the branch
+          # that was actually pushed — main or hotfix/**.  Without this,
+          # v4 defaults to the repo default branch (main) for every trigger.
+          target-branch: ${{ github.ref_name }}
           # Use the PAT so the release PR gets CI under the main ruleset.
           # Falls back to GITHUB_TOKEN when the secret is absent (e.g. forks),
           # but CI will not run on the PR in that case.
