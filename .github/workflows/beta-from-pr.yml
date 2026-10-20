@@ -1,0 +1,144 @@
+name: Beta from release PR
+
+# Publishes a beta to npm whenever the release-please release PR is updated.
+# The version is <release-PR-version>-beta.<N> where N is one past the highest
+# published beta for that base version on npm.
+#
+# Guards:
+#   - Only runs on the release-please PR branch (release-please--branches--main).
+#   - Fork PRs are refused: head.repo.full_name must equal github.repository,
+#     so secrets are never exposed to forked workflows.
+#   - Branch-name check is on the job `if`, not in a step, so the job is skipped
+#     entirely (not failed) for unrelated PRs.
+#   - concurrency per PR number prevents two pushes from publishing the same N.
+#
+# No commit is pushed back to the PR.  The version is set only in the CI
+# checkout, so it leaves no churn on the branch and cannot re-trigger itself.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: write       # create the prerelease GitHub release
+  id-token: write       # npm provenance attestation
+  pull-requests: write  # post the result comment
+
+jobs:
+  beta:
+    # For pull_request: refuse forks and only run on the release-please branch.
+    # For workflow_dispatch: always run (no PR context to check).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.head_ref, 'release-please--branches--main')
+      )
+
+    concurrency:
+      group: beta-pr-${{ github.event.pull_request.number || 'manual' }}
+      cancel-in-progress: true
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      # Compute the next beta version: <package.json version>-beta.<N>
+      # N = (highest published beta.N for this base version on npm) + 1,
+      # or 1 if none exists yet.
+      - name: Compute beta version
+        id: version
+        run: |
+          BASE=$(node -e "process.stdout.write(require('./package.json').version)")
+          ALL_VERSIONS=$(npm view poltertab versions --json 2>/dev/null || echo '[]')
+          N=$(node -e "
+            const base = '$BASE';
+            const all = $ALL_VERSIONS;
+            const prefix = base + '-beta.';
+            const ns = all
+              .filter(v => v.startsWith(prefix))
+              .map(v => parseInt(v.slice(prefix.length), 10))
+              .filter(n => Number.isFinite(n));
+            console.log(ns.length ? Math.max(...ns) + 1 : 1);
+          ")
+          FULL="${BASE}-beta.${N}"
+          echo "base_version=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "beta_n=${N}"         >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "Computed beta version: $FULL"
+
+      # Set version in the CI checkout only — no commit back to the PR.
+      - name: Set version (CI checkout only)
+        run: |
+          npm pkg set version="${{ steps.version.outputs.full_version }}"
+          node scripts/sync-manifest-version.js
+
+      - name: Test
+        run: npm test
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish beta to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --tag beta --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build extension zip
+        run: |
+          (cd chrome-extension && zip -rq \
+            "../poltertab-extension-v${{ steps.version.outputs.full_version }}.zip" \
+            . -x '*.DS_Store')
+
+      # Create a prerelease pointing at the PR head sha (or the dispatched sha).
+      - name: Create GitHub prerelease
+        id: prerelease
+        run: |
+          TAG="v${{ steps.version.outputs.full_version }}"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          NOTES="Beta build from release PR ${PR_URL:-'(manual workflow_dispatch)'}.
+
+          Install: \`npm install -g poltertab@beta\`"
+          gh release create "$TAG" \
+            --prerelease \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes "$NOTES" \
+            "poltertab-extension-v${{ steps.version.outputs.full_version }}.zip"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Post a comment on the PR with the published version details.
+      - name: Post PR comment
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          VERSION="${{ steps.version.outputs.full_version }}"
+          SHASUM=$(npm view "poltertab@${VERSION}" dist.shasum 2>/dev/null || echo "pending")
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "**Beta published:** \`poltertab@${VERSION}\`
+
+| | |
+|---|---|
+| npm tag | \`beta\` |
+| shasum | \`${SHASUM}\` |
+| head sha | \`${HEAD_SHA}\` |
+| install | \`npm install -g poltertab@beta\` |
+| release | ${{ steps.prerelease.outputs.tag }} |"
+        env:
+          GH_TOKEN: ${{ github.token }}

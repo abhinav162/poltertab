@@ -12,7 +12,9 @@ name: Release Please
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "hotfix/**"
 
 permissions:
   contents: write        # create releases and push manifest-sync commits
