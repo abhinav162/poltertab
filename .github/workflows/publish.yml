@@ -105,12 +105,18 @@ jobs:
   # stable is strictly semver-greater than what @beta currently resolves to.
   # Full semver ordering is used: 1.11.0 > 1.11.0-beta.3 (stable outranks its
   # own prerelease) and 1.10.2 < 1.11.0-beta.3 (hotfix behind active major beta).
+  # Decision logic lives in scripts/move-beta-tag-decision.js (shared with the
+  # test script) so the workflow and the test always exercise the same code.
   # Test cases: node scripts/test-move-beta-tag.js
   move-beta-tag:
     needs: publish
     if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -122,26 +128,9 @@ jobs:
           VERSION="${TAG#v}"
           CURRENT_BETA=$(npm view poltertab@beta version 2>/dev/null || echo "0.0.0")
 
-          # Evaluate full semver ordering via env vars — no registry output spliced
-          # into JS source or execSync command line.
-          DECISION=$(VERSION="$VERSION" CURRENT_BETA="$CURRENT_BETA" node - <<'SEMVER'
-const semverParts = (v) => v.split('-')[0].split('.').map(Number);
-const cmp = (a, b) => {
-  for (let i = 0; i < 3; i++) {
-    const diff = (a[i] || 0) - (b[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-};
-const stable  = semverParts(process.env.VERSION);
-const beta    = semverParts(process.env.CURRENT_BETA);
-const baseCmp = cmp(stable, beta);
-// stable > beta-base: always move.
-// stable == beta-base and beta is a prerelease: stable wins (1.11.0 > 1.11.0-beta.3).
-const move = baseCmp > 0 || (baseCmp === 0 && process.env.CURRENT_BETA.includes('-'));
-process.stdout.write(move ? 'move' : 'skip');
-SEMVER
-          )
+          # Decision delegated to scripts/move-beta-tag-decision.js (same module
+          # the test suite requires) — no logic duplicated in this heredoc.
+          DECISION=$(VERSION="$VERSION" CURRENT_BETA="$CURRENT_BETA" node scripts/move-beta-tag-decision.js)
 
           if [ "$DECISION" = "move" ]; then
             npm dist-tag add "poltertab@${VERSION}" beta

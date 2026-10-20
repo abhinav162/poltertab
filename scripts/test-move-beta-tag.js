@@ -1,21 +1,8 @@
 // Test the semver guard used by the move-beta-tag job in publish.yml.
 // Run: node scripts/test-move-beta-tag.js
+// Exercises the same module publish.yml calls, so logic drift is caught here.
 
-const semverParts = (v) => v.split('-')[0].split('.').map(Number);
-const cmp = (a, b) => {
-  for (let i = 0; i < 3; i++) {
-    const diff = (a[i] || 0) - (b[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-};
-
-function shouldMove(stable, currentBeta) {
-  const s = semverParts(stable);
-  const b = semverParts(currentBeta);
-  const baseCmp = cmp(s, b);
-  return baseCmp > 0 || (baseCmp === 0 && currentBeta.includes('-'));
-}
+const { shouldMoveTag } = require('./move-beta-tag-decision');
 
 const cases = [
   { stable: '1.11.0', beta: '1.11.0-beta.3', expected: true,  label: 'normal release: stable outranks its own prerelease' },
@@ -26,7 +13,7 @@ const cases = [
 
 let pass = 0, fail = 0;
 for (const { stable, beta, expected, label } of cases) {
-  const got = shouldMove(stable, beta);
+  const got = shouldMoveTag(stable, beta);
   const ok = got === expected;
   console.log(`${ok ? 'PASS' : 'FAIL'} [${stable} vs ${beta}] expected=${expected} got=${got}  — ${label}`);
   if (ok) pass++; else fail++;

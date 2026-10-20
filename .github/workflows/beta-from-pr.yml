@@ -118,8 +118,11 @@ SEMVER
             . -x '*.DS_Store')
 
       # Create a prerelease pointing at the PR head sha (or the dispatched sha).
+      # Skipped on a dry run: creating the tag would squat the name and cause
+      # the next real run to fail at `gh release create` with a tag collision.
       - name: Create GitHub prerelease
         id: prerelease
+        if: ${{ !inputs.dry_run }}
         run: |
           TAG="v${{ steps.version.outputs.full_version }}"
           SHA="${{ github.event.pull_request.head.sha || github.sha }}"
@@ -137,9 +140,20 @@ SEMVER
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Dry-run summary: print what would have been published/released.
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "DRY RUN — nothing published or tagged."
+          echo "  npm publish --tag beta  (skipped)"
+          echo "  gh release create v${{ steps.version.outputs.full_version }}  (skipped)"
+          echo "  PR comment  (skipped)"
+          echo "Beta version that would have been published: ${{ steps.version.outputs.full_version }}"
+
       # Post a comment on the PR with the published version details.
+      # Not relevant on workflow_dispatch (no PR); skipped on dry runs.
       - name: Post PR comment
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ !inputs.dry_run && github.event_name == 'pull_request' }}
         run: |
           VERSION="${{ steps.version.outputs.full_version }}"
           SHASUM=$(npm view "poltertab@${VERSION}" dist.shasum 2>/dev/null || echo "pending")
