@@ -13,7 +13,8 @@ const arg = process.argv[2];
 if (arg === "setup") {
   require("./setup.js").run(process.argv.slice(3)).catch((err) => {
     if (err.code === "CANCELLED") {
-      // Ctrl-C: 130 is the shell's code for "interrupted by SIGINT".
+      // Ctrl-C or Ctrl-D: 130 is the shell's code for "interrupted by SIGINT";
+      // EOF uses it too so a script sees one "user cancelled" code.
       console.log("\n  Cancelled.\n");
       process.exit(130);
     }

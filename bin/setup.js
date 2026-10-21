@@ -139,9 +139,9 @@ function registerServer(mcpScope) {
 
 // --- wizard ----------------------------------------------------------------
 
-// Ctrl-C anywhere in the wizard. On a TTY readline holds the terminal in raw
-// mode, so Ctrl-C is a keypress delivered to rl as "SIGINT", not a signal; with
-// no listener readline would just close and leave the wizard half-run.
+// Ctrl-C or Ctrl-D anywhere in the wizard. On a TTY readline holds the terminal
+// in raw mode, so Ctrl-C is a keypress delivered to rl as "SIGINT", not a
+// signal, and Ctrl-D (EOF) closes rl; either one left the wizard half-run.
 function cancelled() {
   return Object.assign(new Error("cancelled"), { code: "CANCELLED" });
 }
@@ -149,12 +149,14 @@ function cancelled() {
 function ask(rl, question) {
   return new Promise((resolve, reject) => {
     const hasRlEvents = typeof rl.on === "function";
-    const onSigint = () => reject(cancelled());
-    if (hasRlEvents) rl.once("SIGINT", onSigint);
-    rl.question(question, (answer) => {
-      if (hasRlEvents) rl.removeListener("SIGINT", onSigint);
-      resolve(answer);
-    });
+    const stop = () => {
+      if (!hasRlEvents) return;
+      rl.removeListener("SIGINT", onCancel);
+      rl.removeListener("close", onCancel);
+    };
+    const onCancel = () => { stop(); reject(cancelled()); };
+    if (hasRlEvents) { rl.on("SIGINT", onCancel); rl.on("close", onCancel); }
+    rl.question(question, (answer) => { stop(); resolve(answer); });
   });
 }
 

@@ -1322,7 +1322,7 @@ async function runInPty(box, args, steps, { port, during } = {}) {
 
 function assertCancelled(res, port, free) {
   const tail = res.text.trim().split(/\r?\n/).slice(-3).join(" | ");
-  assert.ok(res.exited, `still running 3 s after Ctrl-C; last output: ${tail}`);
+  assert.ok(res.exited, `still running 3 s after the key; last output: ${tail}`);
   assert.strictEqual(res.code, 130, `exit code ${res.code}, want 130; last output: ${tail}`);
   assert.ok(/Cancelled\./.test(res.text), `no "Cancelled." line; last output: ${tail}`);
   assert.ok(res.icanon && res.echo, "terminal left in raw mode (ICANON/ECHO off)");
@@ -1396,6 +1396,87 @@ ptyTest("I5  Ctrl-C while `uploads pair` waits cancels with exit 130", async (bo
   const res = await runInPty(box, ["uploads", "pair"],
     [["waiting for the extension to connect", "\x03"]], { port });
   assertCancelled(res, port, await portIsFree(port));
+});
+
+// Ctrl-D on an empty line is EOF: readline closes the interface, which left the
+// same traps as Ctrl-C (a prompt exiting 0, the extension wait hanging). It is
+// treated as a cancel too: "Cancelled.", exit 130.
+const EOF_CASES = [
+  ["I9 ", "scope prompt", ["setup"], [["Choose \\[1\\]: ", "\x04"]]],
+  ["I10", "uploads-folder prompt", ["setup", "--global"], [["  > ", "\x04"]]],
+  ["I11", "extension wait", ["setup", "--global"], [["  > ", "n\r"], ["waiting for the extension to connect", "\x04"]]],
+  ["I13", "`uploads pair` wait", ["uploads", "pair"], [["waiting for the extension to connect", "\x04"]]],
+];
+for (const [id, where, args, steps] of EOF_CASES) {
+  ptyTest(`${id}  Ctrl-D at the ${where} cancels with exit 130`, async (box) => {
+    const port = await freePort();
+    const res = await runInPty(box, args, steps, { port });
+    assertCancelled(res, port, await portIsFree(port));
+  });
+}
+
+ptyTest("I12  Ctrl-D at the pairing-code prompt cancels and frees the port", async (box) => {
+  const WebSocket = require(path.join(REPO, "node_modules", "ws"));
+  const port = await freePort();
+  let ext = null;
+  const res = await runInPty(box, ["setup", "--global"],
+    [["  > ", "n\r"], ["Code \\(Enter to skip\\): ", "\x04"]], {
+      port,
+      during: async () => {
+        for (let i = 0; i < 100 && !ext; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          ext = await new Promise((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://i12test" });
+            ws.on("open", () => { ws.send(JSON.stringify({ type: "extension_ready", version: "test" })); resolve(ws); });
+            ws.on("error", () => resolve(null));
+          });
+        }
+      },
+    });
+  if (ext) ext.terminate();
+  assert.ok(ext, "fake extension never reached the temp listener");
+  assertCancelled(res, port, await portIsFree(port));
+});
+
+test("I14  readline closing (EOF) cancels the temp listener and drops its hooks", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+  const port = await freePort();
+  const rl = Object.assign(new EventEmitter(), { question() {}, close() {} });
+  const pending = pairViaTempListener(port, rl);
+  await new Promise((r) => setTimeout(r, 50));
+  rl.emit("close");
+  assert.deepStrictEqual(await within(2000, pending, "temp listener after EOF"), { ok: false, reason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(await portIsFree(port), "temp listener still bound after EOF");
+  assert.strictEqual(rl.listenerCount("close"), 0, "readline close hook left behind");
+});
+
+ptyTest("I15  answering every prompt still finishes with exit 0 and no cancel", async (box) => {
+  const WebSocket = require(path.join(REPO, "node_modules", "ws"));
+  const port = await freePort();
+  let ext = null;
+  const res = await runInPty(box, ["setup"],
+    [["Choose \\[1\\]: ", "1\r"], ["  > ", "n\r"], ["Code \\(Enter to skip\\): ", "\r"]], {
+      port,
+      during: async () => {
+        for (let i = 0; i < 100 && !ext; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          ext = await new Promise((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://i15test" });
+            ws.on("open", () => { ws.send(JSON.stringify({ type: "extension_ready", version: "test" })); resolve(ws); });
+            ws.on("error", () => resolve(null));
+          });
+        }
+      },
+    });
+  if (ext) ext.terminate();
+  assert.ok(res.exited, "setup did not finish");
+  assert.strictEqual(res.code, 0, `exit code ${res.code}`);
+  assert.ok(/pairing skipped/.test(res.text), "expected the skip line");
+  assert.ok(!/Cancelled\./.test(res.text), "closing readline at the end must not read as a cancel");
+  assert.ok(res.icanon && res.echo, "terminal left in raw mode");
+  assert.ok(await portIsFree(port), "temp listener still bound");
 });
 
 test("I6  a Ctrl-C on the temp listener closes it and drops its SIGINT hooks", async () => {

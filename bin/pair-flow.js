@@ -40,15 +40,16 @@ function tryConnectToServer(port, timeoutMs = 3000) {
 
 // On a TTY readline runs the terminal in raw mode, so Ctrl-C reaches it as a
 // keypress and no SIGINT is ever raised: with no "SIGINT" listener on rl the
-// interface just closes and the pairing wait hangs. Listen on both rl and the
-// process (a real SIGINT still arrives from `kill -INT` or a non-raw terminal)
-// and return a function that removes both listeners.
+// interface just closes and the pairing wait hangs. Ctrl-D (EOF) closes rl the
+// same way. Treat rl's "SIGINT" and "close", and a real process SIGINT (from
+// `kill -INT` or a non-raw terminal), as a cancel; the returned function
+// removes all three listeners, and must run before the caller closes rl.
 function onCancel(rl, handler) {
   const hasRlEvents = rl && typeof rl.on === "function";
-  if (hasRlEvents) rl.on("SIGINT", handler);
+  if (hasRlEvents) { rl.on("SIGINT", handler); rl.on("close", handler); }
   process.on("SIGINT", handler);
   return () => {
-    if (hasRlEvents) rl.removeListener("SIGINT", handler);
+    if (hasRlEvents) { rl.removeListener("SIGINT", handler); rl.removeListener("close", handler); }
     process.removeListener("SIGINT", handler);
   };
 }
@@ -64,7 +65,7 @@ function onCancel(rl, handler) {
 //   { ok: true, extensionId }              — success
 //   { ok: false, reason: 'skipped' }       — user pressed Enter with no code
 //   { ok: false, reason: 'locked' }        — 5-attempt lockout triggered
-//   { ok: false, reason: 'cancelled' }     — user pressed Ctrl-C
+//   { ok: false, reason: 'cancelled' }     — user pressed Ctrl-C or Ctrl-D
 //   { ok: false, reason: 'error'|... }     — connection or server error
 function pairViaRunningServer(serverWs, rl) {
   return new Promise((resolve) => {
@@ -143,7 +144,7 @@ const TEMP_IDLE_MS = 5 * 60 * 1000; // 5-minute idle timeout
 //   to print the "extension connected" status line.
 //
 // Returns { ok: true, extensionId } | { ok: false, reason }; reason is
-// 'cancelled' on Ctrl-C, after the listener has been closed.
+// 'cancelled' on Ctrl-C or Ctrl-D, after the listener has been closed.
 async function pairViaTempListener(port, rl, { onStatus } = {}) {
   const WebSocket = require("ws");
   const { PairHost } = require("../mcp-server/pair-host.js");
