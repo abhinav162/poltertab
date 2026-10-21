@@ -1217,6 +1217,177 @@ test("H14  runSetupPairingStep success shows first 8 chars of extension id", asy
   );
 });
 
+// --- I  Ctrl-C in a real terminal ------------------------------------------
+//
+// readline puts a TTY in raw mode, so Ctrl-C arrives as a keypress, not as a
+// SIGINT. Without a readline SIGINT handler the interface just closes: a prompt
+// exits 0 as if setup had finished, and the pairing wait hangs until its 5-minute
+// idle timeout. Only a real pseudo-terminal reproduces that, so these cases drive
+// the CLI through python3's pty module (skipped where it is unavailable).
+
+const { spawn } = require("child_process");
+const net = require("net");
+
+const PTY_DRIVER = String.raw`
+import os, pty, sys, json, time, re, select, termios, signal
+cfg = json.loads(sys.argv[1])
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(cfg["cwd"]); os.execvpe(cfg["cmd"][0], cfg["cmd"], cfg["env"])
+buf = b""
+def read(t):
+    global buf
+    r, _, _ = select.select([fd], [], [], t)
+    if not r: return None
+    try: d = os.read(fd, 4096)
+    except OSError: return False
+    if not d: return False
+    buf += d
+    return True
+t_send = None; status = None; t_exit = None
+for wait, send in cfg["steps"]:
+    end = time.time() + 15
+    while not re.search(wait.encode(), buf) and time.time() < end:
+        if read(0.1) is False: break
+    if not re.search(wait.encode(), buf): break
+    time.sleep(0.3)
+    os.write(fd, send.encode()); t_send = time.time()
+end = time.time() + cfg["exitTimeout"]
+while time.time() < end:
+    p, st = os.waitpid(pid, os.WNOHANG)
+    if p: status = st; t_exit = time.time(); break
+    read(0.05)
+while read(0.05): pass
+a = termios.tcgetattr(fd)
+res = {"output": buf.decode("utf8", "replace"), "exited": status is not None,
+       "icanon": bool(a[3] & termios.ICANON), "echo": bool(a[3] & termios.ECHO)}
+if status is None:
+    os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+else:
+    res["code"] = os.WEXITSTATUS(status) if os.WIFEXITED(status) else None
+    res["secs"] = round(t_exit - t_send, 2) if t_send else None
+print(json.dumps(res))
+`;
+
+const hasPty = process.platform !== "win32" &&
+  spawnSync("python3", ["-c", "import pty, termios"]).status === 0;
+
+function freePort() {
+  return new Promise((resolve) => {
+    const s = net.createServer().listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+function portIsFree(port) {
+  return new Promise((resolve) => {
+    const s = net.createServer()
+      .once("error", () => resolve(false))
+      .listen(port, "127.0.0.1", () => s.close(() => resolve(true)));
+  });
+}
+
+// Runs `poltertab <args>` in a pty under a throwaway HOME, with a stub `claude`
+// on PATH so registerServer never touches the real Claude config. steps are
+// [promptRegex, keys] pairs; onPrompt runs when a step's prompt shows up.
+async function runInPty(box, args, steps, { port, during } = {}) {
+  const bin = path.join(box, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const env = {
+    ...process.env,
+    HOME: box,
+    POLTERTAB_HOME: path.join(box, ".poltertab"),
+    MCP_BROWSER_WS_PORT: String(port),
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    TERM: "xterm",
+    POLTERTAB_NO_UPDATE_CHECK: "1",
+  };
+  for (const k of ["NO_COLOR", "FORCE_COLOR", "CLAUDE_CONFIG_DIR"]) delete env[k];
+  const cfg = {
+    cmd: [process.execPath, path.join(REPO, "bin", "poltertab.js"), ...args],
+    cwd: box, env, steps, exitTimeout: 3,
+  };
+  const child = spawn("python3", ["-c", PTY_DRIVER, JSON.stringify(cfg)]);
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  if (during) await during();
+  await new Promise((resolve) => child.on("close", resolve));
+  const res = JSON.parse(out);
+  res.text = res.output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+  return res;
+}
+
+function assertCancelled(res, port, free) {
+  const tail = res.text.trim().split(/\r?\n/).slice(-3).join(" | ");
+  assert.ok(res.exited, `still running 3 s after Ctrl-C; last output: ${tail}`);
+  assert.strictEqual(res.code, 130, `exit code ${res.code}, want 130; last output: ${tail}`);
+  assert.ok(/Cancelled\./.test(res.text), `no "Cancelled." line; last output: ${tail}`);
+  assert.ok(res.icanon && res.echo, "terminal left in raw mode (ICANON/ECHO off)");
+  assert.ok(free, `port ${port} is still bound after exit`);
+}
+
+function ptyTest(name, fn) {
+  if (hasPty) return test(name, fn);
+  chain = chain.then(() => console.log(`  SKIP  ${name} (no python3 pty)`));
+}
+
+group("I  Ctrl-C in a real terminal");
+
+ptyTest("I1  Ctrl-C at the scope prompt cancels with exit 130", async (box) => {
+  const port = await freePort();
+  const res = await runInPty(box, ["setup"], [["Choose \\[1\\]: ", "\x03"]], { port });
+  assertCancelled(res, port, await portIsFree(port));
+});
+
+ptyTest("I2  Ctrl-C at the uploads-folder prompt cancels with exit 130", async (box) => {
+  const port = await freePort();
+  const res = await runInPty(box, ["setup", "--global"], [["  > ", "\x03"]], { port });
+  assertCancelled(res, port, await portIsFree(port));
+  assert.ok(!/uploads folder skipped/.test(res.text), "a cancel is not a skipped step");
+});
+
+ptyTest("I3  Ctrl-C while waiting for the extension cancels and frees the port", async (box) => {
+  const port = await freePort();
+  const res = await runInPty(box, ["setup", "--global"],
+    [["  > ", "n\r"], ["waiting for the extension to connect", "\x03"]], { port });
+  assertCancelled(res, port, await portIsFree(port));
+  assert.ok(!/pairing skipped/.test(res.text), "a cancel must not report the step as skipped");
+});
+
+ptyTest("I4  Ctrl-C at the pairing-code prompt cancels and frees the port", async (box) => {
+  const WebSocket = require(path.join(REPO, "node_modules", "ws"));
+  const port = await freePort();
+  let ext = null;
+  const res = await runInPty(box, ["setup", "--global"],
+    [["  > ", "n\r"], ["Code \\(Enter to skip\\): ", "\x03"]], {
+      port,
+      // Play the extension: dial the temp listener once it is up and say hello.
+      during: async () => {
+        for (let i = 0; i < 100 && !ext; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          ext = await new Promise((resolve) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin: "chrome-extension://i4test" });
+            ws.on("open", () => { ws.send(JSON.stringify({ type: "extension_ready", version: "test" })); resolve(ws); });
+            ws.on("error", () => resolve(null));
+          });
+        }
+      },
+    });
+  if (ext) ext.terminate();
+  assert.ok(ext, "fake extension never reached the temp listener");
+  assertCancelled(res, port, await portIsFree(port));
+});
+
+ptyTest("I5  Ctrl-C while `uploads pair` waits cancels with exit 130", async (box) => {
+  const port = await freePort();
+  const res = await runInPty(box, ["uploads", "pair"],
+    [["waiting for the extension to connect", "\x03"]], { port });
+  assertCancelled(res, port, await portIsFree(port));
+});
+
 chain.then(() => {
   console.log(
     `\n${pass} passed, ${failures.length} failed` +
