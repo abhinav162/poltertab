@@ -442,6 +442,14 @@ html:not(.js) .cmd .copy-btn { display: none; } /* no JS: the button could do no
 .step-list { margin-top: 14px; padding-left: 1.3rem; color: var(--ink-soft); }
 .step-list li { margin-bottom: 8px; }
 .step-list li::marker { color: var(--ecto-deep); font-family: var(--mono); font-size: .9em; }
+.step .btn { margin-top: 16px; }
+.alt-install { margin-top: 22px; border-top: 1px solid var(--hairline); padding-top: 14px; }
+.alt-install summary { cursor: pointer; font-weight: 600; color: var(--ink-soft); list-style: none; display: flex; align-items: center; gap: 10px; }
+.alt-install summary::-webkit-details-marker { display: none; }
+.alt-install summary::before { content: ""; width: 8px; height: 8px; border-right: 2px solid var(--ecto-deep); border-bottom: 2px solid var(--ecto-deep); transform: rotate(-45deg); flex: none; transition: transform .18s var(--ease-out); }
+.alt-install[open] summary::before { transform: rotate(45deg); }
+.alt-install summary:hover { color: var(--ink); }
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
 /* ---- FAQ -------------------------------------------------- */
 .faq-wrap { position: relative; }
@@ -528,7 +536,7 @@ html:not(.js) .cmd .copy-btn { display: none; } /* no JS: the button could do no
   .anim, .scene.play .anim, html:not(.js) .scene .anim { animation-play-state: paused !important; animation-delay: calc(var(--dur, 10s) * -0.998) !important; }
   .ghost .eyes, .faq-ghost, .final-ghost, .win-body .wire { animation: none; }
   .hero h1, .hero .lede, .hero .cmd, .hero .hero-ctas, .hero .fine, .hero-scene { animation: none; }
-  .btn, .btn-pill, .cmd .copy-btn, .brand svg, .nav-link::after, .footer-links a::after, .cmd { transition: none; }
+  .btn, .btn-pill, .cmd .copy-btn, .brand svg, .nav-link::after, .footer-links a::after, .cmd, .alt-install summary::before { transition: none; }
   .btn:hover, .btn:focus-visible, .btn:active, .brand:hover img, .brand:hover svg, .cmd .copy-btn:hover, .cmd .copy-btn:active { transform: none; }
   .cmd.is-flash::after, .cmd .copy-btn.is-copied { animation: none; }
 }
