@@ -2,6 +2,13 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.10.2](https://github.com/abhinav162/poltertab/compare/v1.10.1...v1.10.2) (2026-10-21)
+
+
+### Documentation
+
+* make the Chrome Web Store the main extension install path ([#63](https://github.com/abhinav162/poltertab/issues/63)) ([d020b62](https://github.com/abhinav162/poltertab/commit/d020b625fc318b460128d9b4a73865b153ed86de))
+
 ## [1.10.1](https://github.com/abhinav162/poltertab/compare/v1.10.1-beta.1...v1.10.1) (2026-10-19)
 
 
