@@ -220,6 +220,11 @@ async function runPair(argv) {
 
   rl.close();
 
+  if (result.reason === "cancelled") {
+    console.log("\n  Cancelled.\n");
+    process.exit(130);
+  }
+
   if (result.ok) {
     const shortId = result.extensionId.slice(0, 8);
     console.log(

@@ -12,6 +12,11 @@ const arg = process.argv[2];
 
 if (arg === "setup") {
   require("./setup.js").run(process.argv.slice(3)).catch((err) => {
+    if (err.code === "CANCELLED") {
+      // Ctrl-C: 130 is the shell's code for "interrupted by SIGINT".
+      console.log("\n  Cancelled.\n");
+      process.exit(130);
+    }
     console.error(`\n  setup failed: ${err.message}\n`);
     process.exit(1);
   });

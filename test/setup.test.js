@@ -1329,6 +1329,16 @@ function assertCancelled(res, port, free) {
   assert.ok(free, `port ${port} is still bound after exit`);
 }
 
+// A pairing promise that never settles would otherwise park the suite until the
+// 5-minute idle timeout.
+function within(ms, promise, what) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${what} did not settle in ${ms} ms`)), ms); }),
+  ]).finally(() => clearTimeout(t));
+}
+
 function ptyTest(name, fn) {
   if (hasPty) return test(name, fn);
   chain = chain.then(() => console.log(`  SKIP  ${name} (no python3 pty)`));
@@ -1386,6 +1396,49 @@ ptyTest("I5  Ctrl-C while `uploads pair` waits cancels with exit 130", async (bo
   const res = await runInPty(box, ["uploads", "pair"],
     [["waiting for the extension to connect", "\x03"]], { port });
   assertCancelled(res, port, await portIsFree(port));
+});
+
+test("I6  a Ctrl-C on the temp listener closes it and drops its SIGINT hooks", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+  const port = await freePort();
+  const rl = Object.assign(new EventEmitter(), { question() {}, close() {} });
+  const before = process.listenerCount("SIGINT");
+  const pending = pairViaTempListener(port, rl);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(rl.listenerCount("SIGINT"), 1, "listener must hook readline's SIGINT");
+  rl.emit("SIGINT");
+  const result = await within(2000, pending, "temp listener after Ctrl-C");
+  assert.deepStrictEqual(result, { ok: false, reason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(await portIsFree(port), "temp listener still bound after cancel");
+  assert.strictEqual(rl.listenerCount("SIGINT"), 0, "readline SIGINT hook left behind");
+  assert.strictEqual(process.listenerCount("SIGINT"), before, "process SIGINT hook left behind");
+});
+
+test("I7  a Ctrl-C while paired through a running server closes that socket", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaRunningServer } = require(path.join(REPO, "bin", "pair-flow.js"));
+  let closed = false;
+  const ws = Object.assign(new EventEmitter(), { send() {}, close() { closed = true; } });
+  const rl = Object.assign(new EventEmitter(), { question() {}, close() {} });
+  const before = process.listenerCount("SIGINT");
+  const pending = pairViaRunningServer(ws, rl);
+  rl.emit("SIGINT");
+  assert.deepStrictEqual(await within(2000, pending, "running-server pairing after Ctrl-C"), { ok: false, reason: "cancelled" });
+  assert.ok(closed, "server socket left open");
+  assert.strictEqual(rl.listenerCount("SIGINT"), 0, "readline SIGINT hook left behind");
+  assert.strictEqual(process.listenerCount("SIGINT"), before, "process SIGINT hook left behind");
+});
+
+test("I8  a pairing that ends normally leaves no SIGINT hook behind", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaRunningServer } = require(path.join(REPO, "bin", "pair-flow.js"));
+  const ws = Object.assign(new EventEmitter(), { send() {}, close() {} });
+  const rl = Object.assign(new EventEmitter(), { question(_q, cb) { cb(""); }, close() {} });
+  const before = process.listenerCount("SIGINT");
+  assert.deepStrictEqual(await pairViaRunningServer(ws, rl), { ok: false, reason: "skipped" });
+  assert.strictEqual(process.listenerCount("SIGINT"), before, "process SIGINT hook left behind");
 });
 
 chain.then(() => {
