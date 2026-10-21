@@ -50,7 +50,7 @@ jobs:
         run: |
           node scripts/release-meta.js \
             "${{ github.event.release.tag_name || inputs.tag }}" \
-            "${{ github.event.release.prerelease || inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            "${{ github.event.release.prerelease || 'false' }}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
         run: npm pack
@@ -101,22 +101,42 @@ jobs:
             echo "| dry run | ${{ inputs.dry_run && 'yes — nothing published' || 'no' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # After a *final* release, move the `beta` dist-tag so `@beta` always
-  # resolves to the latest stable version.
+  # After a *final* release, move the `beta` dist-tag — but only when the new
+  # stable is strictly semver-greater than what @beta currently resolves to.
+  # Full semver ordering is used: 1.11.0 > 1.11.0-beta.3 (stable outranks its
+  # own prerelease) and 1.10.2 < 1.11.0-beta.3 (hotfix behind active major beta).
+  # Decision logic lives in scripts/move-beta-tag-decision.js (shared with the
+  # test script) so the workflow and the test always exercise the same code.
+  # Test cases: node scripts/test-move-beta-tag.js
   move-beta-tag:
     needs: publish
     if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Move beta dist-tag to final
+      - name: Move beta dist-tag to final (semver-guarded)
         run: |
           TAG="${{ github.event.release.tag_name || inputs.tag }}"
           VERSION="${TAG#v}"
-          npm dist-tag add "poltertab@${VERSION}" beta
+          CURRENT_BETA=$(npm view poltertab@beta version 2>/dev/null || echo "0.0.0")
+
+          # Decision delegated to scripts/move-beta-tag-decision.js (same module
+          # the test suite requires) — no logic duplicated in this heredoc.
+          DECISION=$(VERSION="$VERSION" CURRENT_BETA="$CURRENT_BETA" node scripts/move-beta-tag-decision.js)
+
+          if [ "$DECISION" = "move" ]; then
+            npm dist-tag add "poltertab@${VERSION}" beta
+            echo "Moved beta -> ${VERSION} (was ${CURRENT_BETA})"
+          else
+            echo "Skipped: ${VERSION} is not semver-greater than ${CURRENT_BETA}; beta stays at ${CURRENT_BETA}"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

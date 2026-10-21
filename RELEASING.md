@@ -1,184 +1,173 @@
 # Releasing PolterTab
 
-All releases go through **release-please** and require a beta before the final.
-No local `npm version`, no hand-moved tags.
+Two lanes: **normal** (feature work on `main`) and **hotfix** (patch-only,
+skips beta). Both use release-please; no local `npm version`, no hand-moved tags.
 
-## The flow
+---
+
+## Normal lane
 
 ```
 feat: / fix: commits land on main
         ↓
-release-please opens (or updates) a release PR proposing 1.x.0-beta.1
+release-please opens (or updates) the release PR  →  version N.M.0 (or N.M.P)
         ↓
-CI uploads tarball + extension zip as GitHub Actions artifacts
+beta-from-pr.yml fires on every push to the release PR:
+  - publishes poltertab@N.M.0-beta.<next> to npm (@beta)
+  - creates a GitHub prerelease v<ver>-beta.<next> with the extension zip
+  - posts a PR comment: version, shasum, head sha
         ↓
-Dwight downloads and lab-checks the artifacts (see below)  →  SHIP: merge the PR
+Andy tests the beta.  God says SHIP.
         ↓
-Tag v1.x.0-beta.1 created → GitHub (pre-)release → npm @beta published
+Human merges the release PR
         ↓
-More fixes: beta.2, beta.3 …
-        ↓
-Human says "this beta is good"  →  promote to final (file-based, below)
-        ↓
-release-please updates the PR to 1.x.0 (final)
-        ↓
-Merge → v1.x.0 tagged → GitHub release (not pre-release) → npm @latest published → @beta moved to @latest
-        ↓
-Dwight runs registry smoke test
+publish.yml fires (release: published):
+  - publishes poltertab@N.M.0 to npm (@latest)
+  - attaches extension zip to the release
+  - moves @beta to @latest (only if N.M.0 is semver-greater than current @beta)
 ```
 
-## Downloading lab-check artifacts
+### PR title rules
 
-On a release-please PR, CI uploads the tarball and extension zip.  Download them:
-
-```bash
-# Find the CI run for the release-please PR:
-gh run list --branch release-please--node--main --repo abhinav162/poltertab
-
-# Download all artifacts from that run (no --name needed):
-gh run download <run-id> --repo abhinav162/poltertab
-```
-
-## PR title rules
-
-Every PR **title** must follow Conventional Commits — GitHub squash-merges to main
-with the PR title as the commit, and release-please builds the CHANGELOG from those.
+Every PR title must follow Conventional Commits (GitHub squash-merges using
+the PR title).  release-please builds the CHANGELOG from those.
 
 | Prefix | CHANGELOG | Version bump |
 |--------|-----------|--------------|
-| `feat:` | visible → Features | Yes — next beta.N on the current series |
-| `fix:` | visible → Bug Fixes | Yes — next beta.N on the current series |
-| `feat!:` or `fix!:` | visible | Yes — next major beta.N |
-| `perf:` | visible → Performance Improvements | No |
-| `revert:` | visible → Reverts | No |
-| `docs:` | visible → Documentation | No |
-| `chore:` | visible → Miscellaneous Chores | No |
-| `refactor:`, `test:`, `build:`, `ci:` | hidden from CHANGELOG | No |
+| `feat:` | visible → Features | minor bump |
+| `fix:` | visible → Bug Fixes | patch bump |
+| `feat!:` / `fix!:` | visible | major bump |
+| `perf:` | visible → Performance Improvements | patch bump |
+| `revert:` | visible → Reverts | — |
+| `docs:` | visible → Documentation | — |
+| `chore:` | visible → Miscellaneous Chores | — |
+| `refactor:`, `test:`, `build:`, `ci:` | hidden | — |
 
-With `prerelease: true` in the config, `feat:` and `fix:` both increment the
-beta counter rather than bumping minor or patch directly.  The semantic type
-only matters for the eventual final: a series with `feat:` will ship as a minor
-bump (e.g. `1.9.0`); a series with only `fix:` will ship as a patch (`1.8.2`).
+### Beta workflow guards
 
-## Beta → final promotion
+`beta-from-pr.yml` enforces three guards:
 
-When a beta is approved, open a PR that edits `release-please-config.json` to
-pin the exact final version in the package entry:
+1. **Fork refusal** — `github.event.pull_request.head.repo.full_name ==
+   github.repository` on the job `if`, so the job is skipped entirely for fork
+   PRs and secrets are never exposed.
+2. **Branch-name check** — `startsWith(github.head_ref,
+   'release-please--branches--main')` on the same `if`, so pushes to
+   unrelated PRs are skipped, not failed.
+3. **Concurrency** — `group: beta-pr-<PR number>` with `cancel-in-progress:
+   true`, so two pushes to the same PR can't publish the same beta.N.
 
-```json
-"packages": {
-  ".": {
-    "release-as": "1.9.0"
-  }
-}
+---
+
+## Hotfix lane
+
+Use this when a fix must ship before the next planned release (e.g. a security
+patch against the current `v1.10.x` while `v1.11.0` work is in progress).
+
+```
+Branch hotfix/1.10.2 from the last stable tag (e.g. v1.10.1)
+        ↓
+Open fix PR targeting hotfix/1.10.2 → merge
+        ↓
+release-please opens release PR targeting hotfix/1.10.2  →  version 1.10.2
+        ↓
+Human merges the hotfix release PR (no beta step required)
+        ↓
+publish.yml fires → poltertab@1.10.2 published to @latest
+  move-beta-tag skips if 1.10.2 is NOT semver-greater than current @beta
+  (e.g. 1.11.0-beta.3 stays put)
+        ↓
+Open merge-back PR: hotfix/1.10.2 → main
+Merge it so main's pending release PR re-computes above 1.10.2.
+Delete the hotfix branch.
 ```
 
-Commit with a title like `chore: promote 1.9.0 to final`.  Merge to main.
-release-please reads the config on the next push and opens (or updates) the
-release PR showing `1.9.0` (no `-beta` suffix).
-
-**Verify:** after merging the promotion commit, check the open release PR title.
-It must read `chore(main): release 1.9.0` (no `-beta`).  If it still shows a
-beta version, the config edit did not reach main — check CI for errors.
-
-After the final ships, open a follow-up PR that removes `release-as` from the
-package entry and commits as `chore: remove release-as after X.Y.Z final`.
-Without this cleanup every subsequent release PR will propose the same version
-again.  The restored package entry should keep `"exclude-paths": ["site"]` (see
-below) rather than reverting to an empty object.
-
-> **Alternative — commit footer:** A commit body containing `Release-As: 1.9.0`
-> also works, but **only** when the repo's squash-commit template is set to
-> "PR title **and description**" (not "PR title only", which drops the body and
-> silently leaves the release PR on the beta version).  Prefer the file-based
-> approach above; use the footer only after confirming the squash-message setting.
-
-## Excluding paths from release-please
-
-By default, release-please treats any conventional commit that lands on main as
-a trigger for a new release PR, regardless of which files the commit touched.
-This means a `chore:` commit that only touches `site/` (the landing page) will
-open a release PR for the next version.
-
-To prevent this, `release-please-config.json` keeps `"exclude-paths": ["site"]`
-in the package entry:
-
-```json
-"packages": {
-  ".": {
-    "exclude-paths": ["site"]
-  }
-}
-```
-
-With this setting, commits whose changed files all fall under `site/` are ignored
-by release-please and do not open or advance a release PR.  Commits that touch
-files outside `site/` behave normally.
-
-> **History:** during the 1.9.0 cycle, `chore(site): redesign landing page` (#40)
-> merged to main and caused release-please to open PR #41 proposing 1.9.0-beta.3,
-> even though no functional code changed.  The `exclude-paths` setting prevents
-> this from recurring.
-
-## GitHub release pre-release flag
-
-release-please sets the GitHub release's Pre-release flag automatically: tags
-containing `-` (betas) are marked Pre-release; tags without `-` (finals) are
-marked as regular releases.  No manual checkbox is needed.
-
-The guard in `scripts/release-meta.js` that rejects a stable version marked
-Pre-release on GitHub is intentional — it catches the case where someone manually
-creates a GitHub release, marks it Pre-release, but the tag has no prerelease
-identifier (which would otherwise publish to `@latest`).  Do not remove it as
-dead code.
-
-## Dry-run command
-
-To verify what publish.yml would do against an existing tag without pushing to npm:
+### Commands
 
 ```bash
-gh workflow run publish.yml \
-  -f tag=v1.9.0-beta.1 \
-  -f dry_run=true
+# 1. Create hotfix branch from the last stable tag
+git fetch origin --tags
+git checkout -b hotfix/1.10.2 v1.10.1
+git push -u origin hotfix/1.10.2
+
+# 2. Apply the fix (normal PR targeting hotfix/1.10.2)
+# ... open PR, merge ...
+
+# 3. release-please will open a release PR for hotfix/1.10.2 automatically.
+# Merge it. publish.yml ships 1.10.2.
+
+# 4. Merge back to main
+git fetch origin
+git checkout -b merge-hotfix-1.10.2-to-main origin/main
+git merge --no-ff origin/hotfix/1.10.2
+# Resolve any conflicts (expect manifest/CHANGELOG divergence)
+git push -u origin merge-hotfix-1.10.2-to-main
+# Open PR: merge-hotfix-1.10.2-to-main → main
 ```
 
-This runs the full pipeline (npm ci, npm test, npm pack, extension zip) and
-attaches nothing. Check the Actions run summary for the channel and install
+---
+
+## publish.yml: move-beta-tag guard
+
+After every stable release the `move-beta-tag` job compares the new stable
+version against what `@beta` currently resolves to using **full semver ordering**
+(prerelease versions sort below their release):
+
+```
+new stable: 1.11.0  |  current @beta: 1.11.0-beta.3  →  MOVE  (1.11.0 > 1.11.0-beta.3)
+new stable: 1.10.2  |  current @beta: 1.11.0-beta.3  →  SKIP  (1.10.2 < 1.11.0)
+new stable: 1.11.0  |  current @beta: 1.10.1         →  MOVE  (advancement)
+new stable: 1.11.0  |  current @beta: 1.11.0         →  SKIP  (no-op, already at stable)
+```
+
+Test the logic locally: `node scripts/test-move-beta-tag.js`
+
+---
+
+## Dry-run
+
+```bash
+gh workflow run publish.yml -f tag=v1.10.2 -f dry_run=true
+```
+
+Runs the full pipeline (npm ci, npm test, npm pack, extension zip) and
+attaches nothing.  Check the Actions run summary for the channel and install
 command that *would* have been used.
+
+---
 
 ## Rollback
 
-npm does not allow unpublish after 72 hours. For a bad publish:
+npm does not allow unpublish after 72 hours.  For a bad publish:
 
-1. `npm deprecate poltertab@<bad-version> "do not use this version"`
-2. Publish a patch or new beta immediately: `npm publish --tag beta` (or `latest`).
-3. If `latest` was poisoned, move it: `npm dist-tag add poltertab@<good-version> latest`.
-4. File a GitHub issue describing what shipped and what callers should do.
+1. `npm deprecate poltertab@<bad> "do not use this version"`
+2. Publish a patch or new beta immediately.
+3. If `latest` was poisoned: `npm dist-tag add poltertab@<good> latest`
+4. File a GitHub issue.
+
+---
 
 ## Creating the RELEASE_PLEASE_TOKEN secret
 
-The release-please workflow needs a fine-grained PAT so that release PRs it
-opens trigger CI under the main branch ruleset (GITHUB_TOKEN-opened PRs do not).
+release-please needs a fine-grained PAT so release PRs it opens trigger CI
+under the main branch ruleset (GITHUB_TOKEN-opened PRs do not).
 
-1. Go to **GitHub → Settings → Developer settings → Personal access tokens →
-   Fine-grained tokens → Generate new token**.
-2. Set **Resource owner** to this repo's owner.
-3. Set **Repository access** to _Only select repositories_ → `poltertab`.
-4. Under **Repository permissions**, grant:
-   - **Contents**: Read and write
-   - **Pull requests**: Read and write
-5. Name it `poltertab-release-please` and set an expiry (1 year is reasonable).
-6. Copy the token value.
-7. Go to **repo → Settings → Secrets and variables → Actions → New repository
-   secret**.  Name: `RELEASE_PLEASE_TOKEN`, value: the copied token.
+1. **GitHub → Settings → Developer settings → Fine-grained tokens → Generate**
+2. Resource owner: this repo's owner
+3. Repository access: Only select repositories → `poltertab`
+4. Permissions: **Contents** read/write, **Pull requests** read/write
+5. Name: `poltertab-release-please` (1-year expiry recommended)
+6. **repo → Settings → Secrets → Actions → New repository secret**
+   Name: `RELEASE_PLEASE_TOKEN`, value: the token
 
-If the secret is absent the workflow falls back to `GITHUB_TOKEN` with a comment
-in the run log, but CI will not run on the release PR.
+Without the secret the workflow falls back to `GITHUB_TOKEN` but CI will not
+run on the release PR.
+
+---
 
 ## Branch-protection / ruleset settings (human applies)
 
-The ruleset already in place: PRs only, squash only, required checks listed
-below, up-to-date not required.  Add or confirm these required status checks:
+Required status checks for `main` (squash-only, PRs only, up-to-date not
+required):
 
 | Check name (exact) | Source |
 |--------------------|--------|
@@ -187,6 +176,21 @@ below, up-to-date not required.  Add or confirm these required status checks:
 | `version consistency` | `ci.yml` |
 | `pr title` | `pr-title-check.yml` |
 
-> Add `pr title` to the ruleset **after the first PR runs the check** so GitHub
-> has seen the check name.  The job id is `pr-title`; the display name (what
-> appears in the ruleset picker) is `pr title`.
+Add `pr title` after the first PR runs the check (so GitHub has seen the name).
+
+---
+
+## Excluding paths from release-please
+
+`"exclude-paths": ["site"]` in `release-please-config.json` prevents commits
+that only touch the landing page from opening or advancing a release PR.
+Do not remove it.
+
+---
+
+## GitHub release pre-release flag
+
+release-please sets the Pre-release flag automatically: tags with `-` (betas)
+are marked Pre-release; tags without `-` (finals) are not.  No manual checkbox
+needed.  The guard in `scripts/release-meta.js` that rejects a stable version
+marked Pre-release on GitHub is intentional — do not remove it.

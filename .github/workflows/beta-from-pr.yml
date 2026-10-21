@@ -1,0 +1,169 @@
+name: Beta from release PR
+
+# Publishes a beta to npm whenever the release-please release PR is updated.
+# The version is <release-PR-version>-beta.<N> where N is one past the highest
+# published beta for that base version on npm.
+#
+# Guards:
+#   - Only runs on the release-please PR branch (release-please--branches--main).
+#   - Fork PRs are refused: head.repo.full_name must equal github.repository,
+#     so secrets are never exposed to forked workflows.
+#   - Branch-name check is on the job `if`, not in a step, so the job is skipped
+#     entirely (not failed) for unrelated PRs.
+#   - concurrency per PR number prevents two pushes from publishing the same N.
+#
+# No commit is pushed back to the PR.  The version is set only in the CI
+# checkout, so it leaves no churn on the branch and cannot re-trigger itself.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip npm publish and GitHub release creation (true by default for manual runs)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write       # create the prerelease GitHub release
+  id-token: write       # npm provenance attestation
+  pull-requests: write  # post the result comment
+
+jobs:
+  beta:
+    # For pull_request: refuse forks and only run on the release-please main branch.
+    # For workflow_dispatch: only run when dispatched on the release-please main branch
+    # (prevents a maintainer accidentally dragging @beta backwards by dispatching on main).
+    # Branch pattern: release-please uses 'release-please--branches--main' (no component)
+    # or 'release-please--branches--main--components--<pkg>' — startsWith on the
+    # '--main--' separator catches both without matching 'release-please--branches--main-evil'.
+    if: |
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (startsWith(github.ref_name, 'release-please--branches--main--') || github.ref_name == 'release-please--branches--main')
+      ) ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        (startsWith(github.head_ref, 'release-please--branches--main--') || github.head_ref == 'release-please--branches--main')
+      )
+
+    concurrency:
+      group: beta-pr-${{ github.event.pull_request.number || 'manual' }}
+      cancel-in-progress: true
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      # Compute the next beta version: <package.json version>-beta.<N>
+      # N = (highest published beta.N for this base version on npm) + 1,
+      # or 1 if none exists yet.
+      # Logic lives in scripts/next-beta-n.js (shared with test-next-beta-n.js);
+      # env vars carry registry output so nothing is spliced into JS source.
+      - name: Compute beta version
+        id: version
+        run: |
+          BASE=$(node -e "process.stdout.write(require('./package.json').version)")
+          ALL_VERSIONS=$(npm view poltertab versions --json 2>/dev/null || echo '[]')
+          N=$(BASE="$BASE" ALL_VERSIONS="$ALL_VERSIONS" node scripts/next-beta-n.js)
+          FULL="${BASE}-beta.${N}"
+          echo "base_version=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "beta_n=${N}"         >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "Computed beta version: $FULL"
+
+      # Set version in the CI checkout only — no commit back to the PR.
+      - name: Set version (CI checkout only)
+        run: |
+          npm pkg set version="${{ steps.version.outputs.full_version }}"
+          node scripts/sync-manifest-version.js
+
+      - name: Test
+        run: npm test
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish beta to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --tag beta --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build extension zip
+        run: |
+          (cd chrome-extension && zip -rq \
+            "../poltertab-extension-v${{ steps.version.outputs.full_version }}.zip" \
+            . -x '*.DS_Store')
+
+      # Create a prerelease pointing at the PR head sha (or the dispatched sha).
+      # Skipped on a dry run: creating the tag would squat the name and cause
+      # the next real run to fail at `gh release create` with a tag collision.
+      - name: Create GitHub prerelease
+        id: prerelease
+        if: ${{ !inputs.dry_run }}
+        run: |
+          TAG="v${{ steps.version.outputs.full_version }}"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          NOTES="Beta build from release PR ${PR_URL:-'(manual workflow_dispatch)'}.
+
+          Install: \`npm install -g poltertab@beta\`"
+          gh release create "$TAG" \
+            --prerelease \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes "$NOTES" \
+            "poltertab-extension-v${{ steps.version.outputs.full_version }}.zip"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Dry-run summary: print what would have been published/released.
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "DRY RUN — nothing published or tagged."
+          echo "  npm publish --tag beta  (skipped)"
+          echo "  gh release create v${{ steps.version.outputs.full_version }}  (skipped)"
+          echo "  PR comment  (skipped)"
+          echo "Beta version that would have been published: ${{ steps.version.outputs.full_version }}"
+
+      # Post a comment on the PR with the published version details.
+      # Not relevant on workflow_dispatch (no PR); skipped on dry runs.
+      # Body built via printf + temp file to avoid column-0 '|' characters
+      # that would break YAML block-scalar parsing.
+      - name: Post PR comment
+        if: ${{ !inputs.dry_run && github.event_name == 'pull_request' }}
+        run: |
+          VERSION="${{ steps.version.outputs.full_version }}"
+          SHASUM=$(npm view "poltertab@${VERSION}" dist.shasum 2>/dev/null || echo "pending")
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          TAG="${{ steps.prerelease.outputs.tag }}"
+          BODY=$(mktemp)
+          {
+            printf '**Beta published:** `poltertab@%s`\n\n' "$VERSION"
+            printf '| | |\n'
+            printf '|---|---|\n'
+            printf '| npm tag | `beta` |\n'
+            printf '| shasum | `%s` |\n' "$SHASUM"
+            printf '| head sha | `%s` |\n' "$HEAD_SHA"
+            printf '| install | `npm install -g poltertab@beta` |\n'
+            printf '| release | %s |\n' "$TAG"
+          } > "$BODY"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$BODY"
+          rm -f "$BODY"
+        env:
+          GH_TOKEN: ${{ github.token }}
