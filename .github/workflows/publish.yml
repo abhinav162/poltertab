@@ -50,7 +50,7 @@ jobs:
         run: |
           node scripts/release-meta.js \
             "${{ github.event.release.tag_name || inputs.tag }}" \
-            "${{ github.event.release.prerelease || inputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            "${{ github.event.release.prerelease || 'false' }}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
         run: npm pack

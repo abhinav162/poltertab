@@ -70,23 +70,14 @@ jobs:
       # Compute the next beta version: <package.json version>-beta.<N>
       # N = (highest published beta.N for this base version on npm) + 1,
       # or 1 if none exists yet.
-      # Registry output is passed via env vars, not spliced into JS source.
+      # Logic lives in scripts/next-beta-n.js (shared with test-next-beta-n.js);
+      # env vars carry registry output so nothing is spliced into JS source.
       - name: Compute beta version
         id: version
         run: |
           BASE=$(node -e "process.stdout.write(require('./package.json').version)")
           ALL_VERSIONS=$(npm view poltertab versions --json 2>/dev/null || echo '[]')
-          N=$(BASE="$BASE" ALL_VERSIONS="$ALL_VERSIONS" node - <<'SEMVER'
-const base = process.env.BASE;
-const all  = JSON.parse(process.env.ALL_VERSIONS);
-const prefix = base + '-beta.';
-const ns = all
-  .filter(v => v.startsWith(prefix))
-  .map(v => parseInt(v.slice(prefix.length), 10))
-  .filter(n => Number.isFinite(n));
-process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
-SEMVER
-          )
+          N=$(BASE="$BASE" ALL_VERSIONS="$ALL_VERSIONS" node scripts/next-beta-n.js)
           FULL="${BASE}-beta.${N}"
           echo "base_version=${BASE}" >> "$GITHUB_OUTPUT"
           echo "beta_n=${N}"         >> "$GITHUB_OUTPUT"
@@ -152,21 +143,27 @@ SEMVER
 
       # Post a comment on the PR with the published version details.
       # Not relevant on workflow_dispatch (no PR); skipped on dry runs.
+      # Body built via printf + temp file to avoid column-0 '|' characters
+      # that would break YAML block-scalar parsing.
       - name: Post PR comment
         if: ${{ !inputs.dry_run && github.event_name == 'pull_request' }}
         run: |
           VERSION="${{ steps.version.outputs.full_version }}"
           SHASUM=$(npm view "poltertab@${VERSION}" dist.shasum 2>/dev/null || echo "pending")
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          gh pr comment "${{ github.event.pull_request.number }}" \
-            --body "**Beta published:** \`poltertab@${VERSION}\`
-
-| | |
-|---|---|
-| npm tag | \`beta\` |
-| shasum | \`${SHASUM}\` |
-| head sha | \`${HEAD_SHA}\` |
-| install | \`npm install -g poltertab@beta\` |
-| release | ${{ steps.prerelease.outputs.tag }} |"
+          TAG="${{ steps.prerelease.outputs.tag }}"
+          BODY=$(mktemp)
+          {
+            printf '**Beta published:** `poltertab@%s`\n\n' "$VERSION"
+            printf '| | |\n'
+            printf '|---|---|\n'
+            printf '| npm tag | `beta` |\n'
+            printf '| shasum | `%s` |\n' "$SHASUM"
+            printf '| head sha | `%s` |\n' "$HEAD_SHA"
+            printf '| install | `npm install -g poltertab@beta` |\n'
+            printf '| release | %s |\n' "$TAG"
+          } > "$BODY"
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file "$BODY"
+          rm -f "$BODY"
         env:
           GH_TOKEN: ${{ github.token }}
