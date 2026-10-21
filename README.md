@@ -2,12 +2,14 @@
 
 **PolterTab lets any AI assistant drive and scrape your *existing* Chrome profile — no headless browser, no separate automation setup, no re-logging into anything.**
 
+[![Add to Chrome — available in the Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Add%20to%20Chrome-1A73E8?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd)
+
 A Chrome extension + Model Context Protocol (MCP) server. The AI acts inside the browser you already use: your real profile, your cookies, your logged-in sessions. Install the extension, point your MCP client at the server, done — it works with Claude Desktop, Cursor, or any MCP-compatible agent.
 
 ## Why PolterTab
 
 - **Your real profile** — runs in the Chrome you're already signed into. No fresh headless browser that's logged out of everything.
-- **No complex setup** — load the unpacked extension, add one MCP entry. That's it.
+- **No complex setup** — add the extension from the Chrome Web Store, add one MCP entry. That's it.
 - **Any AI tool** — any MCP-compatible client can connect.
 
 ## How It Works
@@ -55,14 +57,25 @@ Prefer not to install globally? `npx poltertab setup` does the same thing.
 
 ### 2. Install the Chrome Extension
 
-The installer prints this link when it finishes:
+**[Add to Chrome](https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd)** from the Chrome Web Store. Chrome keeps a Store
+extension up to date on its own, so this is the install path for everyone who
+is not developing the extension itself.
+
+Then restart your AI tool so it picks up the new tools.
+
+<details>
+<summary>Or load it unpacked (developer / offline path)</summary>
+
+Use this when you are changing the extension or cannot reach the Web Store.
+An unpacked extension never updates on its own; you reload it from a newer zip
+yourself.
 
 1. Download the latest [release zip](https://github.com/abhinav162/poltertab/releases/latest) and unzip it into its own folder (e.g. `unzip poltertab-extension-vX.zip -d poltertab-extension`, or double-click on macOS — which creates a folder automatically)
 2. Open Chrome → `chrome://extensions/`
 3. Enable **Developer mode** (top right toggle)
 4. Click **Load unpacked** and select that folder (the one containing `manifest.json`)
 
-Then restart your AI tool so it picks up the new tools.
+</details>
 
 ### Other MCP clients
 
@@ -413,11 +426,14 @@ matters — whether the two halves agree:
   npm         1.2.0 available
 ```
 
-The npm package updates when you run `npm update -g poltertab`. The extension,
-loaded unpacked, **never updates on its own** — Chrome only auto-updates what came
-from the Web Store. So the interesting failure is not a missing update, it is
-skew: a newer server sending a command an older extension does not implement,
-which surfaces as an element mysteriously not being found.
+The npm package updates when you run `npm update -g poltertab`. The extension
+installed from the [Chrome Web Store](https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd)
+updates itself, like any Store extension. One loaded unpacked **never updates on
+its own** — Chrome only auto-updates what came from the Web Store. So the
+interesting failure is not a missing update, it is skew: a newer server sending
+a command an older extension does not implement (or the reverse, while Chrome
+has updated the extension and you have not yet run `npm update`), which
+surfaces as an element mysteriously not being found.
 
 Both halves ship as one version, so a mismatch is unambiguous. The extension
 reports its version when it connects; the server compares, logs it, and shows it
