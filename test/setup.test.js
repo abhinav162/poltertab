@@ -19,6 +19,56 @@ const path = require("path");
 const REPO = path.join(__dirname, "..");
 const setup = require(path.join(REPO, "bin", "setup.js"));
 
+// Guard: no test in this suite may reach the network. Individual tests that
+// need a fetch inject their own fetchImpl directly; nothing here should hit
+// the wire.
+//
+// Block globalThis.fetch (undici, used by run()/checkForUpdate).
+globalThis.fetch = async (url) => {
+  throw new Error(`LIVE FETCH BLOCKED — inject fetchImpl in the test (url: ${url})`);
+};
+
+// Also guard https.get/https.request and http.get/http.request — _cwsFetch
+// uses https.get (not globalThis.fetch), so the globalThis.fetch guard above
+// does not cover it. Scope the block to NON-loopback hosts only: the in-process
+// pairing tests (group I, "Ctrl-C in a real terminal") dial a real ws server on
+// 127.0.0.1, and ws's client handshake goes through http(s).request — blocking
+// loopback would break those. Real hosts (clients2.google.com,
+// registry.npmjs.org) still throw, preserving the suite's zero-live-call
+// guarantee. Patching the module object works because Node caches require() and
+// both this file and update-check.js hold a reference to the same object.
+{
+  const _https = require("https");
+  const _http = require("http");
+  const _isLoopback = (h) => {
+    if (!h) return false;
+    let host = String(h).toLowerCase();
+    if (host.startsWith("[")) host = host.slice(1).split("]")[0]; // [::1]:p -> ::1
+    else if (host.includes(":") && !host.includes("::")) host = host.split(":")[0]; // h:port -> h
+    return host === "localhost" || host === "::1" || /^127\./.test(host);
+  };
+  const _hostOf = (arg) => {
+    try {
+      if (typeof arg === "string") return new URL(arg).hostname;
+      if (arg instanceof URL) return arg.hostname;
+      if (arg && typeof arg === "object") return arg.hostname || arg.host || null;
+    } catch (_) { /* fall through */ }
+    return null;
+  };
+  for (const [_mod, _label] of [[_https, "HTTPS"], [_http, "HTTP"]]) {
+    for (const _method of ["get", "request"]) {
+      const _real = _mod[_method].bind(_mod);
+      _mod[_method] = (...args) => {
+        const host = _hostOf(args[0]);
+        if (_isLoopback(host)) return _real(...args);
+        throw new Error(
+          `LIVE ${_label}.${_method.toUpperCase()} BLOCKED — inject fetchImpl in the test (host: ${host}, arg: ${args[0]})`,
+        );
+      };
+    }
+  }
+}
+
 let pass = 0;
 const failures = [];
 
@@ -38,8 +88,15 @@ function test(name, fn) {
       console.log(`  PASS  ${name}`);
       pass++;
     } catch (err) {
-      console.log(`  FAIL  ${name}\n          ${err.message.split("\n")[0]}`);
-      failures.push(name);
+      if (err && err.code === "SKIP") {
+        // A test that cannot run in this environment (e.g. no loopback port
+        // binding in the sandbox) reports SKIP, not PASS — a silent return
+        // would otherwise be counted as a pass it never earned.
+        console.log(`  SKIP  ${name} (${err.message})`);
+      } else {
+        console.log(`  FAIL  ${name}\n          ${err.message.split("\n")[0]}`);
+        failures.push(name);
+      }
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -1159,8 +1216,10 @@ test("H12  non-TTY run skips the pairing step silently", async (box) => {
   const origLog = console.log;
   console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
 
+  // Inject a mock so the Store version lookup doesn't reach https.get.
+  const fetchImpl = async () => null;
   try {
-    await setup.run(["--global"], { home: box, cwd: box, isTTY: false });
+    await setup.run(["--global"], { home: box, cwd: box, isTTY: false, fetchImpl });
   } finally {
     console.log = origLog;
   }
@@ -1179,9 +1238,12 @@ test("H13  runSetupPairingStep with skipped pairFlow prints skip message", async
 
   const mockRl = { question(_q, cb) { cb(""); }, close() {} };
   const mockPairFlow = async () => ({ ok: false, reason: "skipped" });
+  // runSetupPairingStep calls storeExtensionNote unconditionally before pairFlow,
+  // so fetchImpl must be injected to keep the lookup off the live network.
+  const fetchImpl = async () => null;
 
   try {
-    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow });
+    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow, fetchImpl });
   } finally {
     console.log = origLog;
   }
@@ -1200,9 +1262,11 @@ test("H14  runSetupPairingStep success shows first 8 chars of extension id", asy
   const mockRl = { question(_q, cb) { cb(""); }, close() {} };
   const fakeId = "abcdef1234567890abcdef1234567890";
   const mockPairFlow = async () => ({ ok: true, extensionId: fakeId });
+  // Inject a failing fetch so the Store version lookup does not go to the network.
+  const fetchImpl = async () => { throw new Error("no network in tests"); };
 
   try {
-    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow });
+    await setup.runSetupPairingStep(mockRl, { pairFlow: mockPairFlow, fetchImpl });
   } finally {
     console.log = origLog;
   }
@@ -1520,6 +1584,222 @@ test("I8  a pairing that ends normally leaves no SIGINT hook behind", async () =
   const before = process.listenerCount("SIGINT");
   assert.deepStrictEqual(await pairViaRunningServer(ws, rl), { ok: false, reason: "skipped" });
   assert.strictEqual(process.listenerCount("SIGINT"), before, "process SIGINT hook left behind");
+});
+
+group("J  Store extension link");
+
+test("J1  fetchStoreCwsVersion parses the version from CWS XML response", async () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><gupdate xmlns="http://www.google.com/update2/response" protocol="2.0"><app><updatecheck status="ok" version="1.10.0"/></app></gupdate>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  const v = await up.fetchStoreCwsVersion(fetchImpl);
+  assert.strictEqual(v, "1.10.0", `got ${v}`);
+});
+
+test("J2  fetchStoreCwsVersion returns null on network error", async () => {
+  const fetchImpl = async () => { throw new Error("offline"); };
+  assert.strictEqual(await up.fetchStoreCwsVersion(fetchImpl), null);
+});
+
+test("J3  fetchStoreCwsVersion returns null on non-ok response", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 503, text: async () => "" });
+  assert.strictEqual(await up.fetchStoreCwsVersion(fetchImpl), null);
+});
+
+test("J4  fetchStoreCwsVersion returns null when update-check is opted out", async () => {
+  const prev = process.env.POLTERTAB_NO_UPDATE_CHECK;
+  process.env.POLTERTAB_NO_UPDATE_CHECK = "1";
+  let called = false;
+  const fetchImpl = async () => { called = true; return { ok: true, text: async () => "" }; };
+  try {
+    const v = await up.fetchStoreCwsVersion(fetchImpl);
+    assert.strictEqual(v, null);
+    assert.ok(!called, "fetch was called despite opt-out");
+  } finally {
+    if (prev === undefined) delete process.env.POLTERTAB_NO_UPDATE_CHECK;
+    else process.env.POLTERTAB_NO_UPDATE_CHECK = prev;
+  }
+});
+
+test("J5  fetchStoreCwsVersion returns null on malformed XML (no version attr)", async () => {
+  const xml = `<?xml version="1.0"?><gupdate><app><updatecheck status="noupdate"/></app></gupdate>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  assert.strictEqual(await up.fetchStoreCwsVersion(fetchImpl), null);
+});
+
+test("J5b fetchStoreCwsVersion returns null on app status=error (no x.y.z version attr)", async () => {
+  const xml = `<?xml version="1.0"?><gupdate><app><updatecheck status="error-unknownApplication"/></app></gupdate>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  assert.strictEqual(await up.fetchStoreCwsVersion(fetchImpl), null);
+});
+
+test("J6  storeExtensionNote compatible: Store version same major.minor as server", async () => {
+  const xml = `<updatecheck version="1.10.1"/>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  const lines = await setup.storeExtensionNote({ serverVersion: "1.10.0", fetchImpl });
+  const text = lines.join("\n");
+  assert.ok(text.includes("recommended"), `missing 'recommended': ${text}`);
+  assert.ok(text.includes(setup.CWS_STORE_URL), `missing Store URL: ${text}`);
+  assert.ok(text.includes("load unpacked"), `missing 'load unpacked': ${text}`);
+  // Store should come before GitHub in compatible case
+  assert.ok(
+    text.indexOf(setup.CWS_STORE_URL) < text.indexOf("github.com"),
+    "Store URL should appear before GitHub URL in compatible case",
+  );
+});
+
+test("J7  storeExtensionNote Store older / extension-behind: GitHub first with reason", async () => {
+  const xml = `<updatecheck version="1.9.0"/>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  const lines = await setup.storeExtensionNote({ serverVersion: "1.10.0", fetchImpl });
+  const text = lines.join("\n");
+  assert.ok(text.includes("github.com"), `missing GitHub URL: ${text}`);
+  assert.ok(text.includes("1.9.0"), `missing Store version in reason: ${text}`);
+  assert.ok(text.includes("1.10.0"), `missing server version in reason: ${text}`);
+  assert.ok(text.includes("1.10.x"), `missing 1.10.x in reason: ${text}`);
+  // GitHub should come before Store in incompatible case
+  assert.ok(
+    text.indexOf("github.com") < text.indexOf(setup.CWS_STORE_URL),
+    "GitHub URL should appear before Store URL in incompatible case",
+  );
+});
+
+test("J8  storeExtensionNote Store newer / server-behind: GitHub first with reason", async () => {
+  const xml = `<updatecheck version="1.11.0"/>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+  const lines = await setup.storeExtensionNote({ serverVersion: "1.10.0", fetchImpl });
+  const text = lines.join("\n");
+  assert.ok(text.includes("github.com"), `missing GitHub URL: ${text}`);
+  assert.ok(text.includes("1.11.0"), `missing Store version in reason: ${text}`);
+  assert.ok(
+    text.indexOf("github.com") < text.indexOf(setup.CWS_STORE_URL),
+    "GitHub URL should appear before Store URL when server is behind",
+  );
+});
+
+test("J9  storeExtensionNote network error: neutral note with both links", async () => {
+  const fetchImpl = async () => { throw new Error("no network"); };
+  const lines = await setup.storeExtensionNote({ serverVersion: "1.10.0", fetchImpl });
+  const text = lines.join("\n");
+  assert.ok(text.includes(setup.CWS_STORE_URL), `missing Store URL: ${text}`);
+  assert.ok(text.includes("github.com"), `missing GitHub URL: ${text}`);
+  assert.ok(text.includes("always matches"), `missing neutral note: ${text}`);
+});
+
+test("J10  non-TTY setup output includes both Store URL and GitHub release URL, compatible wording", async () => {
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  // Inject a mock that returns the same major.minor as the installed version,
+  // so the compatible ("recommended, updates itself") path is exercised.
+  const pkgVersion = require(path.join(REPO, "package.json")).version;
+  const xml = `<updatecheck version="${pkgVersion}"/>`;
+  const fetchImpl = async () => ({ ok: true, text: async () => xml });
+
+  try {
+    await setup.run(["--global"], {
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-i10-")),
+      cwd: os.tmpdir(),
+      isTTY: false,
+      fetchImpl,
+    });
+  } finally {
+    console.log = origLog;
+  }
+
+  assert.ok(consoleOut.includes(setup.CWS_STORE_URL), `missing Store URL in non-TTY output: ${consoleOut}`);
+  assert.ok(consoleOut.includes("github.com"), `missing GitHub URL in non-TTY output: ${consoleOut}`);
+  assert.ok(consoleOut.includes("recommended"), `expected compatible ("recommended") wording in non-TTY output: ${consoleOut}`);
+});
+
+test("J11  AbortController wiring: run() resolves within CWS timeout + margin", async () => {
+  // Injects a mock fetchImpl that hangs until the AbortSignal fires, then
+  // rejects with AbortError. Verifies that AbortController + CWS_TIMEOUT_MS
+  // causes run() to resolve promptly — not that _cwsFetch or https exits promptly
+  // (that is J12's job).
+  const fetchImpl = (_url, { signal } = {}) =>
+    new Promise((_resolve, reject) => {
+      const onAbort = () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+      if (signal?.aborted) { onAbort(); return; }
+      signal?.addEventListener("abort", onAbort);
+    });
+
+  let consoleOut = "";
+  const origLog = console.log;
+  console.log = (...args) => { consoleOut += args.join(" ") + "\n"; };
+
+  const start = Date.now();
+  try {
+    await setup.run(["--global"], {
+      home: fs.mkdtempSync(path.join(os.tmpdir(), "poltertab-i11-")),
+      cwd: os.tmpdir(),
+      isTTY: false,
+      fetchImpl,
+    });
+  } finally {
+    console.log = origLog;
+  }
+
+  const elapsed = Date.now() - start;
+  // CWS_TIMEOUT_MS is 5000; allow 1500 ms of margin for startup overhead.
+  assert.ok(
+    elapsed < 6500,
+    `run() took ${elapsed}ms with a hung fetch; should resolve within ~5000ms + margin`,
+  );
+  assert.ok(
+    consoleOut.includes(setup.CWS_STORE_URL),
+    `timed-out fetch should produce the neutral note with Store URL: ${consoleOut}`,
+  );
+});
+
+test("J12  _cwsFetch unref: process exits promptly after CWS timeout (child-process)", async () => {
+  // Proves the F2 fix: _cwsFetch's socket.unref() + req.destroy() on abort
+  // allows the process to exit as soon as the 5 s timer fires, with no lingering
+  // https connection-pool or socket. Uses a real child process so there is no
+  // escape from genuine handle leaks. Skips gracefully when port binding is
+  // unavailable (sandbox environment).
+  const net = require("net");
+  const { spawn } = require("child_process");
+
+  // Stalling TCP server: accepts connections, never sends data.
+  let server;
+  try {
+    server = await new Promise((resolve, reject) => {
+      const s = net.createServer(() => {});
+      s.listen(0, "127.0.0.1", () => resolve(s));
+      s.on("error", reject);
+    });
+  } catch (_) {
+    // port binding unavailable (sandbox) — report SKIP, not a silent PASS.
+    throw Object.assign(new Error("no loopback port binding"), { code: "SKIP" });
+  }
+
+  const port = server.address().port;
+  const updateCheckPath = path.join(REPO, "mcp-server", "update-check.js");
+
+  // Child script: call _cwsFetch against the stalling server with a 5 s abort,
+  // then let the process exit naturally. Tests that no handle lingers post-abort.
+  const childScript = `
+    const { _cwsFetch } = require(${JSON.stringify(updateCheckPath)});
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 5000);
+    _cwsFetch('https://127.0.0.1:${port}', { signal: ac.signal });
+  `;
+
+  const start = Date.now();
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(
+      () => reject(new Error(`child did not exit within 6500 ms (lingering handle?)`)),
+      6500,
+    );
+    const child = spawn(process.execPath, ["-e", childScript]);
+    child.on("exit", () => { clearTimeout(deadline); resolve(); });
+    child.on("error", (e) => { clearTimeout(deadline); reject(e); });
+  });
+
+  server.close();
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 6500, `child process exited in ${elapsed} ms; expected < 6500 ms`);
 });
 
 chain.then(() => {

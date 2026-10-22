@@ -2,9 +2,10 @@
 //
 // Two halves ship as one version but update on completely different schedules.
 // The npm package updates when someone remembers to run `npm update -g`; the
-// extension, loaded unpacked, never updates at all — Chrome only auto-updates
-// what came from the Web Store. So the interesting failure is not "an update
-// exists", it is skew: a 1.2 server sending a command a 1.0 extension does not
+// Chrome Web Store extension auto-updates whenever Chrome feels like it (usually
+// within a day of a new version going live), while a load-unpacked extension
+// never updates at all. So the interesting failure is not "an update exists",
+// it is skew: a 1.2 server sending a command a 1.0 extension does not
 // implement. That surfaces as an element mysteriously not being found, which is
 // indistinguishable from the page genuinely not having it.
 //
@@ -12,6 +13,7 @@
 // is a non-event; the browser tools have to keep working with no network.
 
 const fs = require("fs");
+const https = require("https");
 const path = require("path");
 
 const CACHE_FILE = "update-check.json";
@@ -26,6 +28,71 @@ const FAIL_TTL_MS = 60 * 60 * 1000; // retry sooner after a failure
 // so keep a wide margin over the observed cost. Nothing waits on this: the
 // server fires it and forgets, and doctor prints local state first.
 const FETCH_TIMEOUT_MS = 15000;
+
+// --- Chrome Web Store ---------------------------------------------------------
+
+const CWS_EXTENSION_ID = "lcijocampajjmennelacdfehmhndfmbd";
+const CWS_STORE_URL = `https://chromewebstore.google.com/detail/poltertab-browser-control/${CWS_EXTENSION_ID}`;
+const CWS_UPDATE_URL =
+  `https://clients2.google.com/service/update2/crx?response=updatecheck` +
+  `&acceptformat=crx3&prodversion=130.0&x=id%3D${CWS_EXTENSION_ID}%26uc`;
+// Short — setup must not hang waiting for this.
+const CWS_TIMEOUT_MS = 5000;
+
+// Production-only fetch for the CWS update URL. Uses Node's https module
+// so socket.unref() can be called — undici (globalThis.fetch) keeps its
+// connection pool alive after an AbortController fires, which adds ~5 s to
+// the process exit time. Resolves to a fetch-like { ok, text() } object on
+// success, or null on any error (including abort).
+function _cwsFetch(url, { signal } = {}) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(null); return; }
+    const req = https.get(url, (res) => {
+      // Must be first: covers errors during both drain and non-2xx resume.
+      res.on("error", () => resolve(null));
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        return resolve(null);
+      }
+      // Cap at 64 KiB — the real reply is <1 KiB; protects against captive portals.
+      const MAX = 64 * 1024;
+      let xml = "";
+      res.on("data", (d) => {
+        xml += d;
+        if (xml.length > MAX) { req.destroy(); resolve(null); }
+      });
+      res.on("end", () => resolve({ ok: true, text: () => Promise.resolve(xml) }));
+    });
+    req.on("socket", (s) => s.unref());
+    req.on("error", () => resolve(null));
+    if (signal) {
+      signal.addEventListener("abort", () => { req.destroy(); resolve(null); });
+    }
+  });
+}
+
+// Resolves to the version string published in the Web Store, or null for any
+// failure (offline, timeout, malformed XML, opted out).
+async function fetchStoreCwsVersion(fetchImpl = _cwsFetch) {
+  if (disabled()) return null;
+  if (typeof fetchImpl !== "function") return null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), CWS_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(CWS_UPDATE_URL, { signal: ac.signal });
+    if (!res || !res.ok) return null;
+    const xml = await res.text();
+    // The updatecheck element carries a version attribute, e.g. version="1.10.0".
+    // Match only full x.y.z values so the <?xml version="1.0"?> declaration does
+    // not capture first.
+    const m = /\bversion="(\d+\.\d+\.\d+[^"]*)"/.exec(xml);
+    return m && parse(m[1]) ? m[1] : null;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // --- semver ----------------------------------------------------------------
 
@@ -229,7 +296,8 @@ function notice({ current, latest, updateAvailable, skew: sk }) {
     parts.push(
       `The Chrome extension (${sk.extension}) is older than this server (${sk.server}) — ` +
         `browser commands may fail in ways that look like missing elements. ` +
-        `Reload it from ${extensionUrl(sk.server)}`,
+        `Reload it from the Chrome Web Store (${CWS_STORE_URL}) ` +
+        `or from ${extensionUrl(sk.server)}`,
     );
   } else if (sk && sk.kind === "server-behind") {
     parts.push(
@@ -241,7 +309,8 @@ function notice({ current, latest, updateAvailable, skew: sk }) {
     parts.push(
       `PolterTab ${latest} is available (running ${current}). ` +
         `Update with: npm update -g poltertab && poltertab setup, ` +
-        `then reload the extension from ${extensionUrl(latest)}`,
+        `then reload the extension from the Chrome Web Store (${CWS_STORE_URL}) ` +
+        `or from ${extensionUrl(latest)}`,
     );
   }
   if (!parts.length) return null;
@@ -260,6 +329,10 @@ module.exports = {
   notice,
   disabled,
   extensionUrl,
+  fetchStoreCwsVersion,
+  _cwsFetch,
   CACHE_FILE,
   STATE_FILE,
+  CWS_EXTENSION_ID,
+  CWS_STORE_URL,
 };
