@@ -22,24 +22,75 @@ const PKG = path.join(__dirname, "..");
 const SKILL_SRC = path.join(PKG, "skills");
 const SNIPPET_SRC = path.join(PKG, "assets", "claude-md-snippet.md");
 
-// Bump to the Chrome Web Store listing once it clears review. The GitHub
-// release stays valid either way, so this is a one-line switch.
+// EXTENSION_URL is the GitHub release pinned to the version being installed,
+// not /releases/latest. Someone on a prerelease (npm i -g poltertab@beta) who
+// followed a /latest link would get the previous stable extension, because
+// GitHub's /releases/latest skips prereleases — a fresh, correctly-followed
+// setup that lands in version skew. The Chrome Web Store URL is shown alongside
+// it (Store-first when the Store version is compatible with the server).
 //
-// Pinned to the release for the version being installed, not "latest". Someone
-// who installed a prerelease (npm i -g poltertab@beta) and followed a /latest
-// link would get the previous stable extension, because GitHub's
-// /releases/latest skips prereleases — a fresh, correctly-followed setup that
-// lands in version skew.
+// Advice printed for skew must not re-create the fault: extensionUrl() always
+// pins to the named version, never to /latest. (See update-check.js for the
+// full skew-detection logic.)
 const { addAllowlistEntry } = require("../mcp-server/uploads-config.js");
 const { validateAllowlistEntry } = require("../mcp-server/upload-paths.js");
 const updates = require("../mcp-server/update-check.js");
-const EXTENSION_URL = updates.extensionUrl(
-  require("../package.json").version,
-);
+const PKG_VERSION = require("../package.json").version;
+const EXTENSION_URL = updates.extensionUrl(PKG_VERSION);
+const { CWS_STORE_URL } = updates;
 
 // Identifies our section in a CLAUDE.md we do not own. Presence means
 // "already installed" — this is the whole idempotency check for step 2.
 const MARKER = "<!-- poltertab -->";
+
+// Builds the extension installation note shown at the end of setup.
+//
+// Fetches the current Chrome Web Store version and decides compatibility using
+// the same major.minor skew() rule as the server's live skew detection, so the
+// two agree. fetchImpl is injectable for unit tests; it follows the same
+// timeout/opt-out pattern as fetchLatest in update-check.js.
+//
+// Returns an array of lines ready for console.log.
+async function storeExtensionNote({
+  serverVersion = PKG_VERSION,
+  fetchImpl,
+} = {}) {
+  const ghUrl = updates.extensionUrl(serverVersion);
+  const storeVersion = await updates.fetchStoreCwsVersion(fetchImpl);
+
+  if (storeVersion === null) {
+    // Offline, timeout, opted out, or malformed — show both with a neutral note.
+    return [
+      `  ${c.cyan(CWS_STORE_URL)}`,
+      `  or the GitHub release v${serverVersion}: ${c.cyan(ghUrl)}`,
+      c.dim(`      could not check the Store version; the GitHub release v${serverVersion} always matches`),
+    ];
+  }
+
+  const sk = updates.skew(serverVersion, storeVersion);
+  if (sk === null) {
+    // Compatible (same major.minor): Store first; GitHub as load-unpacked option.
+    return [
+      `  Chrome Web Store (recommended, updates itself):`,
+      `  ${c.cyan(CWS_STORE_URL)}`,
+      `  or load unpacked from GitHub release v${serverVersion}: ${c.cyan(ghUrl)}`,
+    ];
+  }
+
+  // Not compatible: put GitHub first with a one-line explanation.
+  const [major, minor] = serverVersion.split(".");
+  let reason;
+  if (sk.kind === "extension-behind") {
+    reason = `the Store has ${storeVersion}; this server ${serverVersion} needs a ${major}.${minor}.x extension until the Store updates`;
+  } else {
+    reason = `the Store has ${storeVersion}; this server ${serverVersion} — update the server: npm update -g poltertab`;
+  }
+  return [
+    `  GitHub release v${serverVersion} (${reason}):`,
+    `  ${c.cyan(ghUrl)}`,
+    `  Chrome Web Store (currently ${storeVersion}): ${c.cyan(CWS_STORE_URL)}`,
+  ];
+}
 
 // Default folder offered in the uploads prompt. Must never be inside
 // buildAlwaysBlocked — a unit test (H7) pins this.
@@ -234,7 +285,8 @@ async function runFolderPrompt(rl, {
 // When not injected, the real server/temp-listener flow is used.
 //
 // Exported for direct unit testing.
-async function runSetupPairingStep(rl, { pairFlow } = {}) {
+// opts.fetchImpl — injectable fetch for Store version lookup (unit tests).
+async function runSetupPairingStep(rl, { pairFlow, fetchImpl } = {}) {
   const {
     resolveWsPort,
     tryConnectToServer,
@@ -243,9 +295,12 @@ async function runSetupPairingStep(rl, { pairFlow } = {}) {
     pairViaTempListener,
   } = require("./pair-flow.js");
 
+  const noteLines = await storeExtensionNote({ fetchImpl });
   console.log(`\n  ${c.bold("Last step — connect the extension:")}`);
-  console.log(`  1. Download and unzip:  ${c.cyan(EXTENSION_URL)}`);
+  console.log(`  1. Install the extension:`);
+  for (const line of noteLines) console.log(`   ${line}`);
   console.log("  2. chrome://extensions → turn on Developer mode → Load unpacked → pick the folder");
+  console.log("     (skip step 2 if you install from the Chrome Web Store)");
   console.log("  3. Click the PolterTab icon in Chrome and type the 4-letter code it shows.");
   console.log("");
 
@@ -325,6 +380,7 @@ async function run(argv = [], {
   cwd = process.cwd(),
   isTTY = process.stdin.isTTY,
   rl: injectedRl = null,
+  fetchImpl,
 } = {}) {
   console.log(`\n  ${c.bold("PolterTab")} — browser control for AI agents\n`);
 
@@ -390,7 +446,7 @@ async function run(argv = [], {
   // Section 3: optional pairing step (TTY only).
   if (isTTY && rl) {
     try {
-      await runSetupPairingStep(rl);
+      await runSetupPairingStep(rl, { fetchImpl });
     } catch (err) {
       if (err.code === "CANCELLED") { if (!injectedRl) rl.close(); throw err; }
       console.log(`  ${c.yellow("!")} pairing step failed — ${err.message}`);
@@ -398,8 +454,9 @@ async function run(argv = [], {
   } else {
     // Non-TTY: show extension instructions so the output is still useful.
     console.log(`\n  ${c.bold("One step left — install the Chrome extension:")}`);
-    console.log(`  ${c.cyan(EXTENSION_URL)}`);
-    console.log(c.dim("      unzip it, then chrome://extensions → Developer mode → Load unpacked\n"));
+    const noteLines = await storeExtensionNote({ fetchImpl });
+    for (const line of noteLines) console.log(line);
+    console.log(c.dim("      (load-unpacked: chrome://extensions → Developer mode → Load unpacked)\n"));
     console.log(`  ${c.dim("Restart Claude Code to pick up the new tools.")}\n`);
   }
 
@@ -414,8 +471,10 @@ module.exports = {
   registerServer,
   runFolderPrompt,
   runSetupPairingStep,
+  storeExtensionNote,
   MARKER,
   EXTENSION_URL,
+  CWS_STORE_URL,
   DEFAULT_UPLOAD_FOLDER,
 };
 
