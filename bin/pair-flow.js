@@ -44,14 +44,30 @@ function tryConnectToServer(port, timeoutMs = 3000) {
 // same way. Treat rl's "SIGINT" and "close", and a real process SIGINT (from
 // `kill -INT` or a non-raw terminal), as a cancel; the returned function
 // removes all three listeners, and must run before the caller closes rl.
+// An rl that is already closed (EOF before this step) cancels on the next tick:
+// its "close" event is gone, and asking it anything would throw.
 function onCancel(rl, handler) {
   const hasRlEvents = rl && typeof rl.on === "function";
   if (hasRlEvents) { rl.on("SIGINT", handler); rl.on("close", handler); }
   process.on("SIGINT", handler);
+  if (rl && rl.closed === true) setImmediate(handler);
   return () => {
     if (hasRlEvents) { rl.removeListener("SIGINT", handler); rl.removeListener("close", handler); }
     process.removeListener("SIGINT", handler);
   };
+}
+
+// Asks for the pairing code, or cancels when rl is already closed: an
+// extension can connect after an EOF that nothing was listening for, and
+// rl.question on a closed interface throws ERR_USE_AFTER_CLOSE.
+function askOrCancel(rl, cancel, onAnswer) {
+  if (rl.closed === true) { cancel(); return; }
+  try {
+    rl.question("  Code (Enter to skip): ", onAnswer);
+  } catch (err) {
+    if (err.code !== "ERR_USE_AFTER_CLOSE") throw err;
+    cancel();
+  }
 }
 
 // ── pair via running Primary server ────────────────────────────────────────
@@ -121,7 +137,8 @@ function pairViaRunningServer(serverWs, rl) {
     });
 
     function askCode() {
-      rl.question("  Code (Enter to skip): ", (ans) => {
+      if (done) return;
+      askOrCancel(rl, () => finish({ ok: false, reason: "cancelled" }), (ans) => {
         const code = (ans || "").trim().toUpperCase().replace(/\s+/g, "");
         if (!code) { finish({ ok: false, reason: "skipped" }); return; }
         serverWs.send(JSON.stringify({ type: "uploads_pair_submit", code }));
@@ -258,7 +275,8 @@ async function pairViaTempListener(port, rl, { onStatus } = {}) {
       ws.on("error", () => pairHost.onSocketClose(ws));
 
       function askCode() {
-        rl.question("  Code (Enter to skip): ", (ans) => {
+        if (resolved) return;
+        askOrCancel(rl, () => finish({ ok: false, reason: "cancelled" }), (ans) => {
           const code = (ans || "").trim().toUpperCase().replace(/\s+/g, "");
           if (!code) { finish({ ok: false, reason: "skipped" }); return; }
 
@@ -334,6 +352,7 @@ async function probeIsPoltertab(port) {
 }
 
 module.exports = {
+  onCancel,
   resolveWsPort,
   tryConnectToServer,
   probeIsPoltertab,

@@ -276,6 +276,41 @@ async function runFolderPrompt(rl, {
 
 // --- Section 3: setup pairing step ------------------------------------------
 
+// The Store lookup can take up to its 5 s timeout. Ctrl-C or Ctrl-D while it
+// is in flight cancels at once and aborts the request; before, the key was
+// lost and readline closed under the pairing step that followed.
+function lookupOrCancel(rl, fetchImpl, onCancel) {
+  const base = fetchImpl === undefined ? updates._cwsFetch : fetchImpl;
+  const ac = new AbortController();
+  const lookupFetch = typeof base === "function"
+    ? (url, opts = {}) => {
+        if (opts.signal) opts.signal.addEventListener("abort", () => ac.abort(), { once: true });
+        return base(url, { ...opts, signal: ac.signal });
+      }
+    : base;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const stopCancel = onCancel(rl, () => {
+      if (settled) return;
+      settled = true;
+      stopCancel();
+      ac.abort();
+      reject(cancelled());
+    });
+    storeExtensionNote({ fetchImpl: lookupFetch }).then((lines) => {
+      if (settled) return;
+      settled = true;
+      stopCancel();
+      resolve(lines);
+    }, (err) => {
+      if (settled) return;
+      settled = true;
+      stopCancel();
+      reject(err);
+    });
+  });
+}
+
 // Shows the extension instructions and runs the pairing code loop.
 // Uses the wizard's existing readline interface (rl).
 // Caller guarantees stdin is a TTY before calling.
@@ -293,9 +328,10 @@ async function runSetupPairingStep(rl, { pairFlow, fetchImpl } = {}) {
     probeIsPoltertab,
     pairViaRunningServer,
     pairViaTempListener,
+    onCancel,
   } = require("./pair-flow.js");
 
-  const noteLines = await storeExtensionNote({ fetchImpl });
+  const noteLines = await lookupOrCancel(rl, fetchImpl, onCancel);
   console.log(`\n  ${c.bold("Last step — connect the extension:")}`);
   console.log(`  1. Install the extension:`);
   for (const line of noteLines) console.log(`   ${line}`);
