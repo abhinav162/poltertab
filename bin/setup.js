@@ -139,8 +139,25 @@ function registerServer(mcpScope) {
 
 // --- wizard ----------------------------------------------------------------
 
+// Ctrl-C or Ctrl-D anywhere in the wizard. On a TTY readline holds the terminal
+// in raw mode, so Ctrl-C is a keypress delivered to rl as "SIGINT", not a
+// signal, and Ctrl-D (EOF) closes rl; either one left the wizard half-run.
+function cancelled() {
+  return Object.assign(new Error("cancelled"), { code: "CANCELLED" });
+}
+
 function ask(rl, question) {
-  return new Promise((resolve) => rl.question(question, resolve));
+  return new Promise((resolve, reject) => {
+    const hasRlEvents = typeof rl.on === "function";
+    const stop = () => {
+      if (!hasRlEvents) return;
+      rl.removeListener("SIGINT", onCancel);
+      rl.removeListener("close", onCancel);
+    };
+    const onCancel = () => { stop(); reject(cancelled()); };
+    if (hasRlEvents) { rl.on("SIGINT", onCancel); rl.on("close", onCancel); }
+    rl.question(question, (answer) => { stop(); resolve(answer); });
+  });
 }
 
 async function chooseScope(rl) {
@@ -282,6 +299,8 @@ async function runSetupPairingStep(rl, { pairFlow } = {}) {
 
   const result = await pairFlow(rl);
 
+  if (result.reason === "cancelled") throw cancelled();
+
   if (result.ok) {
     const shortId = result.extensionId.slice(0, 8);
     console.log(
@@ -363,6 +382,7 @@ async function run(argv = [], {
     try {
       await runFolderPrompt(rl, { homeDir: home });
     } catch (err) {
+      if (err.code === "CANCELLED") { if (!injectedRl) rl.close(); throw err; }
       console.log(`  ${c.yellow("!")} uploads folder skipped — ${err.message}`);
     }
   }
@@ -372,6 +392,7 @@ async function run(argv = [], {
     try {
       await runSetupPairingStep(rl);
     } catch (err) {
+      if (err.code === "CANCELLED") { if (!injectedRl) rl.close(); throw err; }
       console.log(`  ${c.yellow("!")} pairing step failed — ${err.message}`);
     }
   } else {
