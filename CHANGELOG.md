@@ -2,6 +2,24 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.11.0](https://github.com/abhinav162/poltertab/compare/v1.10.1...v1.11.0) (2026-10-23)
+
+
+### Features
+
+* **setup:** offer the Chrome Web Store extension with a compatibility check ([#64](https://github.com/abhinav162/poltertab/issues/64)) ([8fa30e4](https://github.com/abhinav162/poltertab/commit/8fa30e4bd31ab199ecb49c2bbb675f148927cb05))
+
+
+### Bug Fixes
+
+* **setup:** cancel on Ctrl-C / Ctrl-D during the Store lookup ([#67](https://github.com/abhinav162/poltertab/issues/67)) ([1cec9ee](https://github.com/abhinav162/poltertab/commit/1cec9eeef6df8db4d061abab5dd8e2d756f3d29f))
+* **setup:** make Ctrl-C cancel every interactive prompt and the extension wait ([#66](https://github.com/abhinav162/poltertab/issues/66)) ([cc81db1](https://github.com/abhinav162/poltertab/commit/cc81db15495322fb8e2d00b4def42c724988efdf))
+
+
+### Documentation
+
+* make the Chrome Web Store the main extension install path ([#63](https://github.com/abhinav162/poltertab/issues/63)) ([d020b62](https://github.com/abhinav162/poltertab/commit/d020b625fc318b460128d9b4a73865b153ed86de))
+
 ## [1.10.1](https://github.com/abhinav162/poltertab/compare/v1.10.1-beta.1...v1.10.1) (2026-10-19)
 
 
