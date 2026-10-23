@@ -1356,7 +1356,10 @@ function portIsFree(port) {
 // Runs `poltertab <args>` in a pty under a throwaway HOME, with a stub `claude`
 // on PATH so registerServer never touches the real Claude config. steps are
 // [promptRegex, keys] pairs; onPrompt runs when a step's prompt shows up.
-async function runInPty(box, args, steps, { port, during } = {}) {
+// script, when given, is a node file run in place of the CLI (group K uses it
+// to inject a fake Store lookup); the update-check opt-out is then lifted so
+// the lookup actually runs, through the injected fake only.
+async function runInPty(box, args, steps, { port, during, script } = {}) {
   const bin = path.join(box, "bin");
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -1370,15 +1373,20 @@ async function runInPty(box, args, steps, { port, during } = {}) {
     POLTERTAB_NO_UPDATE_CHECK: "1",
   };
   for (const k of ["NO_COLOR", "FORCE_COLOR", "CLAUDE_CONFIG_DIR"]) delete env[k];
+  if (script) delete env.POLTERTAB_NO_UPDATE_CHECK;
   const cfg = {
-    cmd: [process.execPath, path.join(REPO, "bin", "poltertab.js"), ...args],
+    cmd: [process.execPath, script || path.join(REPO, "bin", "poltertab.js"), ...args],
     cwd: box, env, steps, exitTimeout: 3,
   };
   const child = spawn("python3", ["-c", PTY_DRIVER, JSON.stringify(cfg)]);
   let out = "";
   child.stdout.on("data", (d) => { out += d; });
-  if (during) await during();
-  await new Promise((resolve) => child.on("close", resolve));
+  // Listen for close first: a setup that exits while during() still runs
+  // would otherwise leave nothing to wait on.
+  let isClosed = false;
+  const closed = new Promise((resolve) => child.on("close", () => { isClosed = true; resolve(); }));
+  if (during) await during(() => isClosed);
+  await closed;
   const res = JSON.parse(out);
   res.text = res.output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
   return res;
@@ -1800,6 +1808,156 @@ test("J12  _cwsFetch unref: process exits promptly after CWS timeout (child-proc
   server.close();
   const elapsed = Date.now() - start;
   assert.ok(elapsed < 6500, `child process exited in ${elapsed} ms; expected < 6500 ms`);
+});
+
+// --- K  Ctrl-C / Ctrl-D during the Store lookup -----------------------------
+//
+// The pairing step looks the Store version up (up to 5 s) before any cancel
+// listener is attached. A key pressed then was lost, Ctrl-D twice hung for the
+// 5-minute wait, and an extension connecting afterwards crashed setup with
+// ERR_USE_AFTER_CLOSE (askCode on a closed readline). These cases run setup in
+// a pty with an injected fetchImpl: "stall" never answers until aborted, "slow"
+// answers 1.10.0 after 1.5 s; neither touches the network.
+
+function lookupScript(box, mode) {
+  const file = path.join(box, `lookup-${mode}.js`);
+  const mark = path.join(box, "lookup.log");
+  fs.writeFileSync(file, `
+const fs = require("fs");
+const t0 = Date.now();
+const fetchImpl = (url, { signal } = {}) => new Promise((resolve) => {
+  fs.appendFileSync(${JSON.stringify(mark)}, "started\\n");
+  process.stdout.write("  [store lookup in flight]\\n");
+  if (signal) signal.addEventListener("abort", () => {
+    fs.appendFileSync(${JSON.stringify(mark)}, "aborted " + (Date.now() - t0) + "\\n");
+    resolve(null);
+  });
+  if (${JSON.stringify(mode)} === "slow") {
+    setTimeout(() => resolve({ ok: true, text: async () => '<app><updatecheck version="1.10.0"/></app>' }), 1500);
+  }
+});
+require(${JSON.stringify(path.join(REPO, "bin", "setup.js"))}).run(["--global"], { fetchImpl }).catch((err) => {
+  if (err.code === "CANCELLED") { console.log("\\n  Cancelled.\\n"); process.exit(130); }
+  console.error("\\n  setup failed: " + err.message + "\\n");
+  process.exit(1);
+});
+`);
+  return { file, mark };
+}
+
+// Plays the extension: dials the temp listener once it is up and says hello.
+async function dialExtension(port, origin, until) {
+  const WebSocket = require(path.join(REPO, "node_modules", "ws"));
+  let ext = null;
+  for (let i = 0; i < 40 && !ext && !until(); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    ext = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`, { origin });
+      ws.on("open", () => { ws.send(JSON.stringify({ type: "extension_ready", version: "test" })); resolve(ws); });
+      ws.on("error", () => resolve(null));
+    });
+  }
+  return ext;
+}
+
+group("K  Ctrl-C / Ctrl-D during the Store lookup");
+
+for (const [id, name, key] of [["K1", "Ctrl-C", "\x03"], ["K2", "Ctrl-D", "\x04"]]) {
+  ptyTest(`${id}  ${name} during a stalled Store lookup cancels at once and aborts it`, async (box) => {
+    const port = await freePort();
+    const { file, mark } = lookupScript(box, "stall");
+    const res = await runInPty(box, [], [["  > ", "n\r"], ["store lookup in flight", key]], { port, script: file });
+    assertCancelled(res, port, await portIsFree(port));
+    assert.ok(res.secs < 1, `took ${res.secs} s after the key; the lookup must not be waited out`);
+    assert.ok(!/waiting for the extension/.test(res.text), "setup went on to the extension wait");
+    const log = fs.existsSync(mark) ? fs.readFileSync(mark, "utf8") : "";
+    assert.ok(/aborted/.test(log), `the lookup was not aborted (lookup log: ${JSON.stringify(log)})`);
+  });
+}
+
+for (const [id, name, key] of [["K3", "Ctrl-D", "\x04"], ["K4", "Ctrl-C", "\x03"]]) {
+  ptyTest(`${id}  ${name} during the lookup, then an extension connecting, never crashes`, async (box) => {
+    const port = await freePort();
+    const { file } = lookupScript(box, "slow");
+    let ext = null;
+    const res = await runInPty(box, [], [["  > ", "n\r"], ["store lookup in flight", key]], {
+      port, script: file,
+      during: async (exited) => { ext = await dialExtension(port, `chrome-extension://${id.toLowerCase()}test`, exited); },
+    });
+    if (ext) ext.terminate();
+    assert.ok(!/ERR_USE_AFTER_CLOSE|at .*pair-flow\.js/.test(res.text), "setup crashed (readline used after close)");
+    assertCancelled(res, port, await portIsFree(port));
+  });
+}
+
+test("K5  the temp listener cancels when readline closed before it started", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+  const port = await freePort();
+  const useAfterClose = () => { throw Object.assign(new Error("readline was closed"), { code: "ERR_USE_AFTER_CLOSE" }); };
+  const rl = Object.assign(new EventEmitter(), { closed: true, question: useAfterClose, close() {} });
+  const result = await within(2000, pairViaTempListener(port, rl), "temp listener on a closed readline");
+  assert.deepStrictEqual(result, { ok: false, reason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(await portIsFree(port), "temp listener still bound");
+});
+
+test("K6  an extension connecting after readline closed unnoticed cancels instead of crashing", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaTempListener } = require(path.join(REPO, "bin", "pair-flow.js"));
+  const port = await freePort();
+  // closed flips without a "close" event reaching the listener: askCode is the
+  // last place that can notice.
+  const rl = Object.assign(new EventEmitter(), {
+    closed: false,
+    question() { throw Object.assign(new Error("readline was closed"), { code: "ERR_USE_AFTER_CLOSE" }); },
+    close() {},
+  });
+  let crash = null;
+  const onCrash = (e) => { crash = e; };
+  process.on("uncaughtException", onCrash);
+  try {
+    const pending = pairViaTempListener(port, rl);
+    await new Promise((r) => setTimeout(r, 50));
+    rl.closed = true;
+    const ext = await dialExtension(port, "chrome-extension://k6test", () => false);
+    const result = await within(2000, pending, "temp listener after a late closed readline").catch((e) => e);
+    if (ext) ext.terminate();
+    assert.strictEqual(crash, null, `askCode threw: ${crash && crash.code}`);
+    assert.deepStrictEqual(result, { ok: false, reason: "cancelled" });
+  } finally {
+    process.removeListener("uncaughtException", onCrash);
+  }
+});
+
+test("K7  pairing through a running server on a closed readline cancels, never asks", async () => {
+  const { EventEmitter } = require("events");
+  const { pairViaRunningServer } = require(path.join(REPO, "bin", "pair-flow.js"));
+  let closed = false;
+  const ws = Object.assign(new EventEmitter(), { send() {}, close() { closed = true; } });
+  const rl = Object.assign(new EventEmitter(), {
+    closed: true,
+    question() { throw Object.assign(new Error("readline was closed"), { code: "ERR_USE_AFTER_CLOSE" }); },
+    close() {},
+  });
+  const result = await within(2000, Promise.resolve().then(() => pairViaRunningServer(ws, rl)), "running-server pairing on a closed readline");
+  assert.deepStrictEqual(result, { ok: false, reason: "cancelled" });
+  assert.ok(closed, "server socket left open");
+});
+
+test("K8  the lookup leaves no cancel hooks behind when it finishes normally", async () => {
+  const { EventEmitter } = require("events");
+  const rl = Object.assign(new EventEmitter(), { question() {}, close() {} });
+  const before = process.listenerCount("SIGINT");
+  await setup.runSetupPairingStep(rl, {
+    pairFlow: async (r) => {
+      assert.strictEqual(r.listenerCount("SIGINT"), 0, "lookup SIGINT hook still on readline at pairing");
+      assert.strictEqual(r.listenerCount("close"), 0, "lookup close hook still on readline at pairing");
+      assert.strictEqual(process.listenerCount("SIGINT"), before, "lookup process SIGINT hook left behind");
+      return { ok: false, reason: "skipped" };
+    },
+    fetchImpl: async () => ({ ok: true, text: async () => '<updatecheck version="1.10.0"/>' }),
+  });
 });
 
 chain.then(() => {
