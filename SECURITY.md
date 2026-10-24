@@ -30,10 +30,10 @@ Security fixes land in the latest release on npm, installed with
 ## What leaves your machine
 
 No PolterTab servers, no telemetry. The MCP server talks to your AI client over
-stdio; the Chrome extension connects to it over `localhost`, and the server
-accepts browser connections only from the PolterTab extension's
-`chrome-extension://` origin. Page content is returned only to your own MCP
-client. By default the running server makes one outbound request, a daily npm
+stdio; the Chrome extension connects to it over `localhost`. The server refuses
+web-page origins (only Chrome extension origins are accepted), and upload
+settings and logs are restricted to the extension you paired. Page content is
+returned only to your own MCP client. By default the running server makes one outbound request, a daily npm
 version check (`registry.npmjs.org`); `poltertab setup` additionally does a
 one-time Chrome Web Store version lookup (`clients2.google.com`). Turn both off
 with `POLTERTAB_NO_UPDATE_CHECK=1`.
