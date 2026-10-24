@@ -19,6 +19,10 @@ const WebSocket = require("ws");
 const REPO = path.join(__dirname, "..", "..");
 
 const EXT = path.join(REPO, "chrome-extension");
+// A real extension always sends a chrome-extension:// Origin, and only the Store
+// id or a paired id may hold the bridge slot. The stand-in extensions below use
+// the Store id so they are trusted without pairing, like a Store install.
+const CWS_TEST_ORIGIN = "chrome-extension://lcijocampajjmennelacdfehmhndfmbd";
 
 const SERVER = path.join(REPO, "mcp-server", "index.js");
 
@@ -439,7 +443,7 @@ async function initialize(server) {
 }
 
 function fakeExtension() {
-  const ws = new WebSocket(`ws://localhost:${PORT}`);
+  const ws = new WebSocket(`ws://localhost:${PORT}`, { origin: CWS_TEST_ORIGIN });
   const state = { ws, open: false, seen: [] };
   ws.on("open", () => {
     state.open = true;
@@ -1166,7 +1170,7 @@ const AGENT_FIELDS = {
 // An extension that serves scripted pages. `pageRows(n)` returns the records
 // for page n; returning null means "this page does not exist".
 function scriptedExtension(pageRows) {
-  const ws = new WebSocket(`ws://localhost:${PORT}`);
+  const ws = new WebSocket(`ws://localhost:${PORT}`, { origin: CWS_TEST_ORIGIN });
   const state = { ws, open: false, navigations: [], extracts: 0, page: 1 };
   ws.on("open", () => {
     state.open = true;

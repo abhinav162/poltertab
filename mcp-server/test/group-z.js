@@ -1061,6 +1061,124 @@ async function groupZ() {
       cleanup(home);
     }
   });
+
+  // ── Z28–Z30: only an authorized origin may hold the extension slot ─────────
+  // The slot carries every agent command and page result. Until fix/ext-slot-
+  // identity, any chrome-extension:// socket (and any no-origin local socket)
+  // took it on its first ping/extension_ready, so a second installed extension
+  // received the commands. These pin: only the Store id or a paired/trusted id
+  // may take or hold the slot; an unpaired extension still gets a pair code;
+  // pairing transfers the slot at once.
+  //
+  // openExt connects as an extension and collects its messages.
+  async function openExt(port, origin) {
+    const msgs = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin ? { origin } : {});
+    await new Promise((res, rej) => { ws.on("open", res); ws.on("error", rej); });
+    ws.on("message", (raw) => msgs.push(JSON.parse(raw)));
+    return { ws, msgs, actions: () => msgs.filter((m) => m.action) };
+  }
+  // Drives one command through a fresh Secondary; whichever socket holds the
+  // slot receives the envelope (it carries `action`). Returns after the send.
+  async function driveCommand(port, action = "navigate", params = { url: "https://example.com/" }) {
+    const sec = new WebSocket(`ws://127.0.0.1:${port}`); // no origin: a Secondary MCP node
+    await new Promise((res, rej) => { sec.on("open", res); sec.on("error", rej); });
+    const secMsgs = [];
+    sec.on("message", (raw) => secMsgs.push(JSON.parse(raw)));
+    sec.send(JSON.stringify({ type: "secondary_mcp", nodeId: "slot-drv-" + crypto.randomBytes(3).toString("hex"), version: "test", pid: 1 }));
+    await waitFor("secondary accepted", () => secMsgs.some((m) => m.type === "secondary_accepted"), 3000);
+    sec.send(JSON.stringify({ type: "proxy_command", id: "drv-" + crypto.randomBytes(3).toString("hex"), action, params }));
+    await sleep(600);
+    return sec;
+  }
+  const CWS_ID = "lcijocampajjmennelacdfehmhndfmbd";
+
+  await test("Z28 an unpaired extension gets no slot and no commands, but still a pair code", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    let real, other, sec;
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+      real = await openExt(port, `chrome-extension://${CWS_ID}`);
+      real.ws.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("real holds slot", () => srv.stderr.includes("Chrome extension connected"), 3000);
+
+      // An unpaired extension connects AFTER the real one.
+      other = await openExt(port, "chrome-extension://unpaired-z28");
+      other.ws.send(JSON.stringify({ type: "extension_ready", version: "9.9.9" }));
+      await waitFor("other pair_code", () => other.msgs.some((m) => m.type === "pair_code"), 3000);
+
+      sec = await driveCommand(port);
+      assert.ok(real.actions().length >= 1, "the authorized extension must receive the command");
+      assert.strictEqual(other.actions().length, 0, "an unpaired extension must receive no command");
+    } finally {
+      for (const e of [real, other]) if (e) e.ws.close();
+      if (sec) sec.close();
+      stop(srv); cleanup(home);
+    }
+  });
+
+  await test("Z29 a no-origin socket never takes the extension slot", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    let real, bare, sec;
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+      real = await openExt(port, `chrome-extension://${CWS_ID}`);
+      real.ws.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("real holds slot", () => srv.stderr.includes("Chrome extension connected"), 3000);
+
+      // A local process with no Origin pretends to be the extension.
+      bare = await openExt(port, null);
+      bare.ws.send(JSON.stringify({ type: "extension_ready", version: "9.9.9" }));
+      await sleep(400);
+
+      sec = await driveCommand(port);
+      assert.ok(real.actions().length >= 1, "the authorized extension must receive the command");
+      assert.strictEqual(bare.actions().length, 0, "a no-origin socket must receive no command");
+    } finally {
+      for (const e of [real, bare]) if (e) e.ws.close();
+      if (sec) sec.close();
+      stop(srv); cleanup(home);
+    }
+  });
+
+  await test("Z30 pairing an unpaired extension transfers the slot to it at once", async () => {
+    const port = await freePort();
+    const home = makeTmpHome();
+    const srv = startServer({ port, home });
+    let ext, cli, sec;
+    try {
+      await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
+      ext = await openExt(port, "chrome-extension://unpaired-z30");
+      ext.ws.send(JSON.stringify({ type: "extension_ready", version: "test" }));
+      await waitFor("pair_code", () => ext.msgs.some((m) => m.type === "pair_code"), 3000);
+      const code = ext.msgs.find((m) => m.type === "pair_code").code;
+
+      // The CLI (no origin) submits the code to the running bridge.
+      cli = new WebSocket(`ws://127.0.0.1:${port}`);
+      const cliMsgs = [];
+      await new Promise((res, rej) => { cli.on("open", res); cli.on("error", rej); });
+      cli.on("message", (raw) => cliMsgs.push(JSON.parse(raw)));
+      cli.send(JSON.stringify({ type: "uploads_pair_submit", code }));
+      await waitFor("pair result", () => cliMsgs.some((m) => m.type === "uploads_pair_result"), 3000);
+      const res = cliMsgs.find((m) => m.type === "uploads_pair_result");
+      assert.ok(res.ok, `pairing must succeed; got ${JSON.stringify(res)}`);
+
+      // No keepalive ping is sent here, so the slot must have transferred on the
+      // pair itself for this command to reach the extension.
+      sec = await driveCommand(port);
+      assert.ok(ext.actions().length >= 1, "the just-paired extension must now hold the slot");
+    } finally {
+      if (ext) ext.ws.close();
+      if (cli) cli.close();
+      if (sec) sec.close();
+      stop(srv); cleanup(home);
+    }
+  });
+
 }
 
 module.exports = groupZ;

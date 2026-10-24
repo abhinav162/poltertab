@@ -31,7 +31,7 @@ const accepted = (f) => f.seen.some((m) => m.type === "secondary_accepted");
 // A Chrome extension on a real Primary. A command carrying `hold` is answered
 // that many ms late, to keep it in flight.
 function extensionOn(port) {
-  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://test" });
+  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
   const st = { ws, seen: [] };
   ws.on("open", () => ws.send(JSON.stringify({ type: "extension_ready", version: "test" })));
   ws.on("message", (raw) => {

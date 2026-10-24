@@ -21,7 +21,7 @@
 //   Y19 Disabled-upload error text points to CLI
 //   Y20 logUpload called in index.js
 
-const { REPO, assert, fs, path, test, WebSocket, startServer, waitFor } = require("./harness.js");
+const { REPO, assert, fs, path, test, WebSocket, startServer, waitFor, sleep } = require("./harness.js");
 const { freePort, stop } = require("./group-s.js");
 const os = require("os");
 const crypto = require("crypto");
@@ -280,7 +280,9 @@ async function groupY() {
       const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://anyid" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
-      await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
+      // An unpaired extension gets no slot (no "Chrome extension connected"), but
+      // uploads_get_config is still answered; just let the handshake settle.
+      await sleep(400);
 
       let reply = null;
       ext.on("message", (raw) => {
@@ -452,7 +454,7 @@ async function groupY() {
       await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
 
       // Attach a fake extension so the Primary is connected.
-      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
       await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);
@@ -493,7 +495,7 @@ async function groupY() {
     try {
       await waitFor("bridge up", () => srv.stderr.includes("WebSocket server listening"), 5000);
 
-      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://legit" });
+      const ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
       await new Promise((res) => ext.on("open", res));
       ext.send(JSON.stringify({ type: "extension_ready", version: "test" }));
       await waitFor("ext ready", () => srv.stderr.includes("Chrome extension connected."), 3000);

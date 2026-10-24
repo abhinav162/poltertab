@@ -34,7 +34,7 @@ async function groupH() {
 
     // An ancient but *parseable* version, unlike the shared fake extension's
     // "test" — skew can only be computed from real semver on both sides.
-    const ws = new WebSocket(`ws://localhost:${PORT}`);
+    const ws = new WebSocket(`ws://localhost:${PORT}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
     const seen = [];
     await new Promise((res, rej) => {
       ws.on("open", res);
