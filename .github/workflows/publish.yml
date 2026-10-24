@@ -140,3 +140,41 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # After a *stable* npm publish, register/update the entry in the official MCP
+  # Registry so discovery tools track the release. Authenticates with GitHub
+  # OIDC (id-token) — no new secret. Stable-only (the tag carries no '-<pre>'
+  # suffix) and skipped on a dry run, mirroring move-beta-tag's guard, so a beta
+  # never reaches the registry. `needs: publish` means it runs only after npm.
+  publish-mcp-registry:
+    needs: publish
+    if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for `mcp-publisher login github-oidc`
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tagged tree's server.json is already in sync (release-please runs
+      # sync-server-version.js on the release PR), but re-run it so a hand-cut
+      # tag can never publish stale metadata — the registry rejects a version
+      # that does not match the npm package it points at.
+      - name: Sync server.json version
+        run: node scripts/sync-server-version.js
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server.json to the MCP Registry
+        run: ./mcp-publisher publish

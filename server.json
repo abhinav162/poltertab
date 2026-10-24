@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.abhinav162/poltertab",
+  "description": "Drive and scrape your existing Chrome profile from any AI assistant — no headless browser.",
+  "version": "1.11.0",
+  "repository": {
+    "url": "https://github.com/abhinav162/poltertab",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "poltertab",
+      "version": "1.11.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
