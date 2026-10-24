@@ -197,7 +197,7 @@ async function runPair(argv) {
     console.log(
       `\n  No poltertab server found. Starting a temporary pairing listener on port ${port}.`,
     );
-    console.log("  Open the extension popup — it will connect automatically and show a 4-letter code.\n");
+    console.log("  Open the extension popup — it will connect automatically and show a 4-character code.\n");
     process.stdout.write("  waiting for the extension to connect…\n");
 
     try {

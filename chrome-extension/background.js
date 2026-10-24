@@ -153,7 +153,7 @@ importScripts(
         return;
       }
 
-      // pair_code — server pushes a 4-letter code to unpaired extensions.
+      // pair_code — server pushes a 4-character code to unpaired extensions.
       // Store it for the popup/options page; never log or persist it.
       if (msg.type === "pair_code") {
         currentPairCode = msg.code || null;
