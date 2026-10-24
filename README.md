@@ -38,11 +38,11 @@ the WebSocket port serves the extension and the rest proxy through it. See
 
 PolterTab runs entirely on your machine. There is no PolterTab server, account, or telemetry.
 
-- **The MCP server is local.** It talks to your AI client over stdio and to the extension over a WebSocket bound to `localhost` (port 7822 by default). Every hop stays on your machine. ([architecture](#how-it-works))
+- **The MCP server is local.** It talks to your AI client over stdio. The Chrome extension connects to it over `localhost` (port 7822 by default), and the server accepts browser connections only from the PolterTab extension's `chrome-extension://` origin. ([architecture](#how-it-works))
 - **Page content goes only where your agent sends it.** PolterTab returns what it reads or scrapes to your MCP client; your client forwards it to whatever model provider *you* have configured. PolterTab itself transmits page content nowhere.
 - **File uploads are off until you allow a folder.** `browser_upload_file` refuses every path until you add a folder with `poltertab uploads allow <dir>`, and sensitive locations are always blocked and cannot be allowlisted. Run `poltertab uploads` to see the current list.
 - **npm provenance.** Releases are published with `npm publish --provenance`, so npm records a signed, verifiable link from the published tarball back to the GitHub Actions build that produced it.
-- **One exception — the version check.** At startup/setup PolterTab makes two outbound requests to warn about a version mismatch between the server and the extension: to the npm registry (`registry.npmjs.org`) and the Chrome Web Store update service (`clients2.google.com`). No page content or personal data is sent. Turn it off with `POLTERTAB_NO_UPDATE_CHECK=1`.
+- **One exception — the version check.** The running server makes one outbound request, a daily npm version check (`registry.npmjs.org`); `poltertab setup` additionally does a one-time Chrome Web Store version lookup (`clients2.google.com`). Both only compare versions to warn about a server/extension mismatch — no page content or personal data is sent. Turn both off with `POLTERTAB_NO_UPDATE_CHECK=1`.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 

@@ -29,12 +29,14 @@ Security fixes land in the latest release on npm, installed with
 
 ## What leaves your machine
 
-PolterTab runs locally — there is no PolterTab server, account, or telemetry.
-The MCP server talks to your AI client over stdio and to the Chrome extension
-over a WebSocket bound to `localhost`; page content is returned only to your own
-MCP client. The one thing that leaves your machine by default is an optional
-version check to `registry.npmjs.org` and the Chrome Web Store update service
-(`clients2.google.com`), which you can turn off with `POLTERTAB_NO_UPDATE_CHECK=1`.
+No PolterTab servers, no telemetry. The MCP server talks to your AI client over
+stdio; the Chrome extension connects to it over `localhost`, and the server
+accepts browser connections only from the PolterTab extension's
+`chrome-extension://` origin. Page content is returned only to your own MCP
+client. By default the running server makes one outbound request, a daily npm
+version check (`registry.npmjs.org`); `poltertab setup` additionally does a
+one-time Chrome Web Store version lookup (`clients2.google.com`). Turn both off
+with `POLTERTAB_NO_UPDATE_CHECK=1`.
 
 See [What leaves your machine](README.md#what-leaves-your-machine) in the README
 for the full picture, including how file uploads are gated.

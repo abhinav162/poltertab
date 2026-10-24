@@ -67,7 +67,7 @@
             <a class="btn btn-primary" href="https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd" rel="noopener">Add to Chrome<span class="vh"> (Chrome Web Store)</span></a>
             <a class="btn btn-secondary" href="#install">Install in two steps</a>
           </div>
-          <p class="fine">Open source, ISC. The server makes one outbound call a day, a version check, and <a href="#security">you can turn it off</a>.</p>
+          <p class="fine">Open source, ISC. The server's one runtime call is a daily npm version check, and <a href="#security">you can turn it off</a>. Setup looks up the Chrome Web Store version once.</p>
         </div>
 
         <div class="scene hero-scene" role="img" aria-label="A Chrome window where the PolterTab ghost files a support ticket: it fills the customer, priority and subject fields, attaches a CSV, and clicks Create ticket. A log beneath the window shows each tool call succeeding.">
@@ -479,11 +479,11 @@
       <div class="wrap">
         <div class="sec-head">
           <h2 id="sec-h">The whole thing makes one network call.</h2>
-          <p class="section-intro">It’s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/abhinav162/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
+          <p class="section-intro">It’s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. poltertab setup also looks up the Chrome Web Store version once, so it can tell you when the extension and server disagree. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/abhinav162/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
         </div>
         <div class="sec-grid">
           <div class="sec-item">
-            <h3>Everything stays local</h3>
+            <h3>No PolterTab servers</h3>
             <p>Agent, server, and extension all run on your machine, and page content moves between them over <code>localhost</code>. PolterTab has no servers of its own and nothing to send data to.</p>
           </div>
           <div class="sec-item">
@@ -564,7 +564,7 @@ poltertab setup</code>
         <div class="faq">
           <details>
             <summary>Does PolterTab send my browsing data anywhere?</summary>
-            <div class="answer"><p>No. Commands and page content travel from agent to server to extension over stdio and a <code>localhost</code> WebSocket. The server’s only outbound request is the daily version check described above, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> disables it.</p></div>
+            <div class="answer"><p>No. Commands and page content travel from agent to server to extension over stdio and a <code>localhost</code> WebSocket. At runtime the server’s only outbound request is the daily version check described above, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> disables it.</p></div>
           </details>
           <details>
             <summary>Can the agent read my passwords or cookies?</summary>
