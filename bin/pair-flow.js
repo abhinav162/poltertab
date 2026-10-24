@@ -50,6 +50,8 @@ function onCancel(rl, handler) {
   const hasRlEvents = rl && typeof rl.on === "function";
   if (hasRlEvents) { rl.on("SIGINT", handler); rl.on("close", handler); }
   process.on("SIGINT", handler);
+  // `rl.closed` is set by Node internally but is not documented public API; K5
+  // and K7 in test/setup.test.js guard it, so a future Node renaming it fails CI.
   if (rl && rl.closed === true) setImmediate(handler);
   return () => {
     if (hasRlEvents) { rl.removeListener("SIGINT", handler); rl.removeListener("close", handler); }
