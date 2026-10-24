@@ -41,7 +41,7 @@
         <p class="lead">PolterTab runs entirely on your computer. We have no servers, no accounts, no analytics, and no way to see what you browse. Nothing about your browsing, pages, URLs, keystrokes, or screenshots ever leaves your machine.</p>
 
         <h2>How data moves</h2>
-        <p>PolterTab has two halves: an MCP server (a Node.js process you run) and a Chrome extension. Your AI agent sends commands to the server over stdio; the server relays them to the extension over a WebSocket bound to localhost (port 7822 by default); the extension performs them in your browser and returns the result the same way back. Every hop is on your machine. The server&rsquo;s <code>/status</code> endpoint answers only loopback callers.</p>
+        <p>PolterTab has two halves: an MCP server (a Node.js process you run) and a Chrome extension. Your AI agent sends commands to the server over stdio; the Chrome extension connects to the server over localhost (port 7822 by default) and the server relays commands to it; the extension performs them in your browser and returns the result the same way back. The server&rsquo;s <code>/status</code> endpoint answers only loopback callers.</p>
         <p>What the AI agent itself does with page content is governed by that agent&rsquo;s own privacy policy (e.g. Anthropic&rsquo;s for Claude). PolterTab just hands the content to the client you connected.</p>
 
         <h2>The one network call, exactly</h2>
