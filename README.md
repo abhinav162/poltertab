@@ -1,6 +1,6 @@
 # PolterTab — Browser Control for Any AI
 
-**PolterTab lets any AI assistant drive and scrape your *existing* Chrome profile — no headless browser, no separate automation setup, no re-logging into anything.**
+**Let any AI agent use the Chrome you're already logged into.** PolterTab is a Chrome extension plus a local MCP (Model Context Protocol) server.
 
 [![Add to Chrome — available in the Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Add%20to%20Chrome-1A73E8?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd)
 [![npm version](https://img.shields.io/npm/v/poltertab?logo=npm&color=cb3837)](https://www.npmjs.com/package/poltertab)
