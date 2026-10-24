@@ -3,6 +3,9 @@
 **PolterTab lets any AI assistant drive and scrape your *existing* Chrome profile — no headless browser, no separate automation setup, no re-logging into anything.**
 
 [![Add to Chrome — available in the Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Add%20to%20Chrome-1A73E8?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd)
+[![npm version](https://img.shields.io/npm/v/poltertab?logo=npm&color=cb3837)](https://www.npmjs.com/package/poltertab)
+[![npm downloads](https://img.shields.io/npm/dm/poltertab?logo=npm&color=cb3837)](https://www.npmjs.com/package/poltertab)
+[![license](https://img.shields.io/npm/l/poltertab)](https://www.npmjs.com/package/poltertab)
 
 A Chrome extension + Model Context Protocol (MCP) server. The AI acts inside the browser you already use: your real profile, your cookies, your logged-in sessions. Install the extension, point your MCP client at the server, done — it works with Claude Desktop, Cursor, or any MCP-compatible agent.
 
@@ -30,6 +33,18 @@ PolterTab Chrome Extension
 Several agents can point at the same browser at once — the first server to claim
 the WebSocket port serves the extension and the rest proxy through it. See
 [Running several agents at once](#troubleshooting--options).
+
+## What leaves your machine
+
+PolterTab runs entirely on your machine. There is no PolterTab server, account, or telemetry.
+
+- **The MCP server is local.** It talks to your AI client over stdio and to the extension over a WebSocket bound to `localhost` (port 7822 by default). Every hop stays on your machine. ([architecture](#how-it-works))
+- **Page content goes only where your agent sends it.** PolterTab returns what it reads or scrapes to your MCP client; your client forwards it to whatever model provider *you* have configured. PolterTab itself transmits page content nowhere.
+- **File uploads are off until you allow a folder.** `browser_upload_file` refuses every path until you add a folder with `poltertab uploads allow <dir>`, and sensitive locations are always blocked and cannot be allowlisted. Run `poltertab uploads` to see the current list.
+- **npm provenance.** Releases are published with `npm publish --provenance`, so npm records a signed, verifiable link from the published tarball back to the GitHub Actions build that produced it.
+- **One exception — the version check.** At startup/setup PolterTab makes two outbound requests to warn about a version mismatch between the server and the extension: to the npm registry (`registry.npmjs.org`) and the Chrome Web Store update service (`clients2.google.com`). No page content or personal data is sent. Turn it off with `POLTERTAB_NO_UPDATE_CHECK=1`.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Setup
 
@@ -91,6 +106,10 @@ The wizard targets Claude Code. Any other MCP client works too — register
   }
 }
 ```
+
+**Using [Cursor](https://cursor.com)?** One-click install (adds the stdio entry above):
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=poltertab&config=eyJjb21tYW5kIjoicG9sdGVydGFiIn0%3D)
 
 Running from a clone instead of npm? Point the client at the file directly:
 `{"command": "node", "args": ["/absolute/path/to/poltertab/mcp-server/index.js"]}`
