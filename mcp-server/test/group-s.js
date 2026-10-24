@@ -352,7 +352,7 @@ async function groupS() {
     let ext = null;
     try {
       await waitFor("primary listening", () => primary.stderr.includes("WebSocket server listening"));
-      ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://test" });
+      ext = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
       const commands = [];
       ext.on("open", () => ext.send(JSON.stringify({ type: "extension_ready", version: "test" })));
       ext.on("message", (raw) => {

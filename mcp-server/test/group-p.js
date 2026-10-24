@@ -596,7 +596,7 @@ async function groupP() {
   // a model-supplied one — and hands back the element fingerprints redaction
   // reads.
   function recipeExtension(cfg = {}) {
-    const ws = new WebSocket(`ws://localhost:${PORT}`);
+    const ws = new WebSocket(`ws://localhost:${PORT}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
     const rowsFor =
       cfg.rows ||
       ((state) =>

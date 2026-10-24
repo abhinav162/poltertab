@@ -202,7 +202,7 @@ function getStatusNoHost(port) {
 }
 
 function extensionOn(port) {
-  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://test" });
+  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
   ws.on("open", () => ws.send(JSON.stringify({ type: "extension_ready", version: "test" })));
   ws.on("error", () => {});
   return ws;
