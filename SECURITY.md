@@ -30,11 +30,12 @@ Security fixes land in the latest release on npm, installed with
 ## What leaves your machine
 
 No PolterTab servers, no telemetry. The MCP server talks to your AI client over
-stdio; the Chrome extension connects to it over `localhost`. The server refuses
+stdio; the Chrome extension connects to it over `localhost`, and that WebSocket
+listens only on this machine (`127.0.0.1` and `::1`). The server refuses
 connections from web pages — browser connections must come from a Chrome
-extension (`chrome-extension://`) origin — and upload settings and logs are
-restricted to the PolterTab extension (its Web Store build is trusted
-automatically) or one you explicitly paired. Page content is returned only to
+extension (`chrome-extension://`) origin — and only the Chrome Web Store build
+(trusted automatically) or an extension you have paired can hold that connection,
+change upload settings, or read the logs. Page content is returned only to
 your own MCP client. By default the running server makes one outbound request, a daily npm
 version check (`registry.npmjs.org`); `poltertab setup` additionally does a
 one-time Chrome Web Store version lookup (`clients2.google.com`). Turn both off
