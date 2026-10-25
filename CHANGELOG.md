@@ -2,6 +2,24 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.12.0](https://github.com/abhinav162/poltertab/compare/v1.11.0...v1.12.0) (2026-10-25)
+
+
+### Features
+
+* **registry:** publish to the official MCP Registry on stable releases ([#71](https://github.com/abhinav162/poltertab/issues/71)) ([f61e807](https://github.com/abhinav162/poltertab/commit/f61e807631777e3ea82606d15fd2fdd667589321))
+
+
+### Bug Fixes
+
+* **bridge:** bind the WebSocket server to loopback only ([#74](https://github.com/abhinav162/poltertab/issues/74)) ([d6fa272](https://github.com/abhinav162/poltertab/commit/d6fa2724392931b268f0c89594f28e42e945f509))
+* **copy:** correct options footer outbound-call claim and 4-character pair code ([#73](https://github.com/abhinav162/poltertab/issues/73)) ([b61ef2a](https://github.com/abhinav162/poltertab/commit/b61ef2ac51ace56109d33be7158eb2abcf8b67b8))
+
+
+### Documentation
+
+* **pair-flow:** note onCancel's reliance on undocumented rl.closed ([#68](https://github.com/abhinav162/poltertab/issues/68)) ([68cd92a](https://github.com/abhinav162/poltertab/commit/68cd92a20d8c384e3ec92511845fa6833c34051c))
+
 ## [1.11.0](https://github.com/abhinav162/poltertab/compare/v1.10.1...v1.11.0) (2026-10-23)
 
 
