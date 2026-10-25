@@ -140,3 +140,53 @@ jobs:
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # After a *stable* npm publish, register/update the entry in the official MCP
+  # Registry so discovery tools track the release. Authenticates with GitHub
+  # OIDC (id-token) — no new secret. Stable-only (the tag carries no '-<pre>'
+  # suffix) and skipped on a dry run, mirroring move-beta-tag's guard, so a beta
+  # never reaches the registry. `needs: publish` means it runs only after npm.
+  publish-mcp-registry:
+    needs: publish
+    if: ${{ !inputs.dry_run && !contains(github.event.release.tag_name || inputs.tag, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for `mcp-publisher login github-oidc`
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tagged tree's server.json is already in sync (release-please runs
+      # sync-server-version.js on the release PR), but re-run it so a hand-cut
+      # tag can never publish stale metadata — the registry rejects a version
+      # that does not match the npm package it points at.
+      - name: Sync server.json version
+        run: node scripts/sync-server-version.js
+
+      - name: Install mcp-publisher
+        env:
+          # Pin the release instead of tracking releases/latest: this job holds
+          # an OIDC token for the whole io.github.abhinav162/* namespace, so an
+          # upstream release compromise must not auto-apply. The sha256 is pinned
+          # here (not read from the release's own checksums file) so a tampered
+          # re-release of the same tag is rejected too. Bump both together; the
+          # value is for mcp-publisher_linux_amd64.tar.gz (runner is ubuntu).
+          MCP_PUBLISHER_VERSION: v1.8.4
+          MCP_PUBLISHER_SHA256: 5dc2fd415369c73551259f31cd33e2aacc9e0d1021e7f08fef1492d93b781628
+        run: |
+          asset="mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSL -o "$asset" "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${asset}"
+          echo "${MCP_PUBLISHER_SHA256}  ${asset}" | sha256sum -c -
+          tar xzf "$asset" mcp-publisher
+
+      - name: Authenticate to the MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server.json to the MCP Registry
+        run: ./mcp-publisher publish

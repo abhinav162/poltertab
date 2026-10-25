@@ -11,26 +11,24 @@ const {
 } = require("./harness.js");
 const { freePort, stop } = require("./group-s.js");
 
-// Legacy-bind regression tests (DAG-23 fix/legacy-bind).
+// Bind regression tests (DAG-23 fix/legacy-bind, then fix/ws-loopback-bind).
 //
-// Regression (1.8.0-beta.2 / fbd9c25): the primary binds 127.0.0.1:P and
-// ::1:P (two specific addresses).  On macOS/BSD, SO_REUSEADDR allows a
-// wildcard bind (listen(P) with no host = ::) to succeed alongside specific-
-// address binds.  A legacy 1.7.x/beta.1 server starting after ours therefore
-// binds the port, has no extension, and acts as a false primary.
+// History: 1.8.0-beta.2 bound 127.0.0.1 + ::1, and on macOS/BSD a legacy
+// 1.7.x server's wildcard listen(P) succeeded beside it (SO_REUSEADDR), so the
+// primary moved to a wildcard bind. That made the bridge reachable from every
+// network the machine is on, and a client that sends no Origin (as Secondaries
+// and the CLI do) passes allowOrigin. The primary now binds loopback only
+// again; election against an older wildcard-bound primary rests on the
+// probe-before-listen, which dials 127.0.0.1 and demotes on any answer.
 //
-// Also: handleRequest serves /status to any caller; a LAN address must be
-// refused so a page the user is visiting cannot probe the primary's state.
-//
-// V1   Legacy wildcard bind gets EADDRINUSE while our primary runs.
-//      FAILS on fbd9c25 (macOS SO_REUSEADDR; legacy bind succeeds alongside
-//      specific-address binds); passes after wildcard fix.
+// V1   A server started beside an older wildcard-bound primary (1.8-1.11)
+//      becomes a Secondary instead of a second primary.
 // V2a  /status from 127.0.0.1 returns 200.
-//      Passes on fbd9c25 (handler exists); stays green after fix.
-// V2b  /status from a non-loopback address is refused (404).
-//      FAILS on fbd9c25 (no remoteAddress guard); passes after fix.
+// V2b  /status from a non-loopback address is refused (404 or no connection).
 // V3   Primary is reachable via ::1 (Node 18 localhost = ::1).
-//      Passes on fbd9c25 via httpServer6; must stay green after wildcard fix.
+// V4   Nothing on a non-loopback address of this machine can open a WebSocket
+//      to the primary; 127.0.0.1 and ::1 still can.
+//      FAILS on 47fbf96 (wildcard bind accepts the LAN address).
 
 function httpGetStatus(host, port) {
   return new Promise((resolve) => {
@@ -61,50 +59,39 @@ async function groupV() {
     "\nV. legacy-bind regression (macOS SO_REUSEADDR, /status loopback-only)",
   );
 
-  // ── V1: legacy wildcard bind must fail when our primary is running ──
+  // ── V1: an older wildcard-bound primary already holds the port ──
   {
     const port = await freePort();
-    const primary = startServer({ port });
+    // 1.8.0-1.11.x listen(port) with no host: the IPv6 wildcard, dual-stack.
+    // Any answer on 127.0.0.1 is enough for the probe to demote the newcomer.
+    const held = new Set();
+    const legacy = net.createServer((s) => {
+      held.add(s);
+      s.on("error", () => {});
+    });
+    await new Promise((r) => legacy.listen(port, r));
+    const node = startServer({ port });
     try {
       await waitFor(
-        "primary listening",
-        () => primary.stderr.includes("WebSocket server listening"),
+        "newcomer demoted",
+        () => node.stderr.includes("switching to Secondary Mode"),
         10000,
       );
-
-      // A 1.7.x/beta.1 server does listen(port) with no host argument,
-      // which binds :: (IPv6 wildcard, dual-stack).  On macOS with
-      // SO_REUSEADDR, this succeeds alongside specific-address binds
-      // (127.0.0.1 + ::1), letting the old server become a false primary.
-      // With our wildcard bind the old server must fail with EADDRINUSE.
-      const legacyErr = await new Promise((resolve) => {
-        const srv = net.createServer();
-        srv.on("error", (e) => {
-          srv.close();
-          resolve(e);
-        });
-        srv.once("listening", () => {
-          srv.close(() => resolve(null));
-        });
-        srv.listen(port); // no host — the legacy shape
-      });
-
       await test(
-        "V1 legacy wildcard bind fails with EADDRINUSE when our primary is running",
+        "V1 a server started beside an older wildcard-bound primary becomes a Secondary",
         () => {
           assert.ok(
-            legacyErr !== null,
-            "legacy server bound the port — it would become a false primary on macOS",
-          );
-          assert.strictEqual(
-            legacyErr.code,
-            "EADDRINUSE",
-            `expected EADDRINUSE, got ${legacyErr && legacyErr.code}`,
+            !node.stderr.includes("WebSocket server listening"),
+            "the newcomer also became a primary beside the older one",
           );
         },
       );
     } finally {
-      await stop(primary);
+      await stop(node);
+      // close() waits for every connection, and the newcomer's last
+      // handshake attempt is still held open here.
+      for (const s of held) s.destroy();
+      await new Promise((r) => legacy.close(r));
     }
   }
 
@@ -126,11 +113,11 @@ async function groupV() {
 
       const lanIp = getLanIp();
       if (lanIp) {
-        await test("V2b /status from LAN IP is refused (404)", async () => {
+        await test("V2b /status from LAN IP is refused (no connection, 404 or 403)", async () => {
           const code = await httpGetStatus(lanIp, port);
           assert.ok(
-            code === 404 || code === 403,
-            `/status from ${lanIp} returned ${code}; expected 404 or 403`,
+            code === null || code === 404 || code === 403,
+            `/status from ${lanIp} returned ${code}; expected no answer, 404 or 403`,
           );
         });
       } else {
@@ -193,6 +180,47 @@ async function groupV() {
           );
         },
       );
+    } finally {
+      await stop(primary);
+    }
+  }
+  // ── V4: loopback only. A non-loopback address of this machine stands in
+  // for another host on the same network: the socket's source and target are
+  // both that address, so it never touches lo0/lo. ──
+  {
+    const port = await freePort();
+    const primary = startServer({ port });
+    const dial = (host, localAddress) =>
+      new Promise((resolve) => {
+        const url = `ws://${host.includes(":") ? `[${host}]` : host}:${port}`;
+        // No Origin header: the shape of a Secondary or the CLI, which
+        // allowOrigin lets through.
+        const ws = new WebSocket(url, { handshakeTimeout: 2000, localAddress });
+        ws.once("open", () => {
+          ws.terminate();
+          resolve("open");
+        });
+        ws.once("error", (e) => resolve(e.code || e.message));
+      });
+    try {
+      await waitFor(
+        "primary listening",
+        () => primary.stderr.includes("WebSocket server listening"),
+        10000,
+      );
+      const lanIp = getLanIp();
+      if (lanIp) {
+        await test(`V4a a WebSocket from a non-loopback address (${lanIp}) is refused`, async () => {
+          const r = await dial(lanIp, lanIp);
+          assert.notStrictEqual(r, "open", `the primary accepted a WebSocket on ${lanIp}`);
+        });
+      } else {
+        console.log("  SKIP  V4a no non-loopback IPv4 address on this machine");
+      }
+      await test("V4b 127.0.0.1 and ::1 still open a WebSocket", async () => {
+        assert.strictEqual(await dial("127.0.0.1"), "open", "127.0.0.1");
+        assert.strictEqual(await dial("::1"), "open", "::1");
+      });
     } finally {
       await stop(primary);
     }

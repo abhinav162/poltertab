@@ -458,29 +458,28 @@ async function groupU() {
         assert.strictEqual(res.headers["access-control-allow-origin"], undefined);
       });
 
-      await test("U16 from a non-loopback address /status is refused and the bridge rejects a foreign origin", async () => {
+      await test("U16 from a non-loopback address /status and the bridge are refused, with or without an origin", async () => {
         const lan = Object.values(os.networkInterfaces()).flat()
           .find((i) => i && i.family === "IPv4" && !i.internal);
         if (!lan) return console.log("          (no non-loopback IPv4 address; skipped)");
 
-        // /status from LAN IP: refused at the application layer (wildcard TCP
-        // bind is intentional — it makes legacy servers get EADDRINUSE — but
-        // /status data must never leak to pages on the network).
-        const statusRes = await getStatus(port, { host: lan.address });
-        assert.strictEqual(statusRes.status, 404, `/status from ${lan.address} must be 404`);
-        assert.strictEqual(statusRes.body, "", "no body leaked to non-loopback caller");
+        // The primary binds loopback only, so a LAN address gets no
+        // connection at all: no /status, no WebSocket, whatever the Origin.
+        const statusRes = await getStatus(port, { host: lan.address }).catch((e) => ({ error: e.code || e.message }));
+        assert.ok(
+          statusRes.error || statusRes.status === 404,
+          `/status from ${lan.address} answered ${statusRes.status}`,
+        );
+        assert.ok(!statusRes.body, "no body leaked to non-loopback caller");
 
-        // WebSocket upgrade from LAN with a foreign page origin must be rejected
-        // (allowOrigin guard), so LAN reachability cannot drive the bridge.
-        const rejected = await new Promise((resolve) => {
-          const ws = new WebSocket(`ws://${lan.address}:${port}`, {
-            headers: { Origin: "http://evil.example.com" },
-            handshakeTimeout: 3000,
+        for (const headers of [{ Origin: "http://evil.example.com" }, {}]) {
+          const rejected = await new Promise((resolve) => {
+            const ws = new WebSocket(`ws://${lan.address}:${port}`, { headers, handshakeTimeout: 3000 });
+            ws.once("open", () => { ws.terminate(); resolve(false); });
+            ws.once("error", () => resolve(true));
           });
-          ws.once("open", () => { ws.terminate(); resolve(false); });
-          ws.once("error", () => resolve(true));
-        });
-        assert.ok(rejected, "WebSocket with foreign origin from LAN must be rejected");
+          assert.ok(rejected, `WebSocket from LAN with ${headers.Origin ? "a foreign" : "no"} origin must be rejected`);
+        }
 
         // Loopback /status still works.
         const local = await getStatus(port, { host: "127.0.0.1" });

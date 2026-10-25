@@ -61,15 +61,16 @@ jobs:
         with:
           node-version: 22
 
-      - name: Sync manifest version
+      - name: Sync manifest and server.json versions
         run: |
           node scripts/sync-manifest-version.js
+          node scripts/sync-server-version.js
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add chrome-extension/manifest.json
-          git diff --staged --quiet && echo "manifest already in sync" || \
-            git commit -m "chore: sync chrome manifest version"
+          git add chrome-extension/manifest.json server.json
+          git diff --staged --quiet && echo "versions already in sync" || \
+            git commit -m "chore: sync chrome manifest and server.json versions"
 
-      - name: Push manifest update
+      - name: Push version updates
         run: git push origin HEAD
 

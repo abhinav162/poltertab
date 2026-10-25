@@ -283,8 +283,9 @@ async function groupS() {
           p.on("exit", () => resolve(s.trim()));
         });
         const r = JSON.parse(out.split("\n").pop());
-        assert.strictEqual(r.made, 1, `created ${r.made} servers`);
-        assert.strictEqual(r.closed, 1, "the server that hit EADDRINUSE was never closed");
+        // One per loopback address (127.0.0.1, ::1); every one is closed.
+        assert.strictEqual(r.made, 2, `created ${r.made} servers`);
+        assert.strictEqual(r.closed, 2, "a server made for the failed bind was never closed");
         assert.strictEqual(r.servers, 0, `${r.servers} http.Server handles still open`);
       });
     } finally {
