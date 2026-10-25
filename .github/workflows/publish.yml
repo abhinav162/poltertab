@@ -205,7 +205,7 @@ jobs:
             echo "  not visible yet (attempt ${i}/40); sleeping 15s…"
             sleep 15
           done
-          echo "::error::poltertab@${version} still not visible on npm after ~10 min; aborting MCP Registry publish." >&2
+          echo "::error::poltertab@${version} still not visible on npm after ~10 min; aborting MCP Registry publish."
           exit 1
 
       - name: Publish server.json to the MCP Registry
