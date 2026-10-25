@@ -38,11 +38,13 @@ the WebSocket port serves the extension and the rest proxy through it. See
 
 PolterTab runs entirely on your machine. There is no PolterTab server, account, or telemetry.
 
-- **The MCP server is local.** It talks to your AI client over stdio. The Chrome extension connects to it over `localhost` (port 7822 by default); the server refuses connections from web pages — browser connections must come from a Chrome extension (`chrome-extension://`) origin — and upload settings and logs are restricted to the PolterTab extension (its Web Store build is trusted automatically) or one you explicitly paired. ([architecture](#how-it-works))
+- **The MCP server is local.** It talks to your AI client over stdio, and the WebSocket the extension uses listens only on this machine (`127.0.0.1` and `::1`, port 7822 by default). The server refuses connections from web pages — browser connections must come from a Chrome extension (`chrome-extension://`) origin — and only the Chrome Web Store build (trusted automatically) or an extension you have paired can hold that connection, change upload settings, or read the logs. ([architecture](#how-it-works))
 - **Page content goes only where your agent sends it.** PolterTab returns what it reads or scrapes to your MCP client; your client forwards it to whatever model provider *you* have configured. PolterTab itself transmits page content nowhere.
 - **File uploads are off until you allow a folder.** `browser_upload_file` refuses every path until you add a folder with `poltertab uploads allow <dir>`, and sensitive locations are always blocked and cannot be allowlisted. Run `poltertab uploads` to see the current list.
 - **npm provenance.** Releases are published with `npm publish --provenance`, so npm records a signed, verifiable link from the published tarball back to the GitHub Actions build that produced it.
 - **One exception — the version check.** The running server makes one outbound request, a daily npm version check (`registry.npmjs.org`); `poltertab setup` additionally does a one-time Chrome Web Store version lookup (`clients2.google.com`). Both only compare versions to warn about a server/extension mismatch — no page content or personal data is sent. Turn both off with `POLTERTAB_NO_UPDATE_CHECK=1`.
+
+> **From 1.12.0,** only the Chrome Web Store extension or one you have paired can control the browser; an unpacked install pairs once with `poltertab uploads pair`.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
@@ -89,6 +91,7 @@ yourself.
 2. Open Chrome → `chrome://extensions/`
 3. Enable **Developer mode** (top right toggle)
 4. Click **Load unpacked** and select that folder (the one containing `manifest.json`)
+5. Pair it once so it can control the browser: run `poltertab uploads pair` and enter the 4-character code the extension shows. (Store installs are trusted automatically and skip this.)
 
 </details>
 
