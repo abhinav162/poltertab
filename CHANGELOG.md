@@ -2,6 +2,18 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.11.1](https://github.com/abhinav162/poltertab/compare/v1.11.0...v1.11.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **bridge:** bind the WebSocket server to loopback only ([#74](https://github.com/abhinav162/poltertab/issues/74)) ([d6fa272](https://github.com/abhinav162/poltertab/commit/d6fa2724392931b268f0c89594f28e42e945f509))
+
+
+### Documentation
+
+* **pair-flow:** note onCancel's reliance on undocumented rl.closed ([#68](https://github.com/abhinav162/poltertab/issues/68)) ([68cd92a](https://github.com/abhinav162/poltertab/commit/68cd92a20d8c384e3ec92511845fa6833c34051c))
+
 ## [1.11.0](https://github.com/abhinav162/poltertab/compare/v1.10.1...v1.11.0) (2026-10-23)
 
 
