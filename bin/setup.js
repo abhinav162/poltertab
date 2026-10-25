@@ -337,7 +337,7 @@ async function runSetupPairingStep(rl, { pairFlow, fetchImpl } = {}) {
   for (const line of noteLines) console.log(`   ${line}`);
   console.log("  2. chrome://extensions → turn on Developer mode → Load unpacked → pick the folder");
   console.log("     (skip step 2 if you install from the Chrome Web Store)");
-  console.log("  3. Click the PolterTab icon in Chrome and type the 4-letter code it shows.");
+  console.log("  3. Click the PolterTab icon in Chrome and type the 4-character code it shows.");
   console.log("");
 
   // Use the injected flow (tests) or the real connection flow.
