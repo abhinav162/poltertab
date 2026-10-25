@@ -1,6 +1,7 @@
 {
   "name": "poltertab",
   "version": "1.11.0",
+  "mcpName": "io.github.abhinav162/poltertab",
   "description": "Let any AI assistant drive and scrape your existing Chrome profile — no headless browser, no complex setup.",
   "bin": {
     "poltertab": "./bin/poltertab.js"
