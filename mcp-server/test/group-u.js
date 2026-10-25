@@ -42,7 +42,7 @@ const accepted = (f) => f.seen.some((m) => m.type === "secondary_accepted");
 // in what order, and how many were open at once. `holdFor(m)` says how long to
 // sit on a command; by default a command's own `hold` param.
 function extensionOn(port, holdFor = (m) => m.hold || 0) {
-  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://test" });
+  const ws = new WebSocket(`ws://localhost:${port}`, { origin: "chrome-extension://lcijocampajjmennelacdfehmhndfmbd" });
   const st = { ws, seen: [], open: 0, maxOpen: 0 };
   ws.on("open", () => ws.send(JSON.stringify({ type: "extension_ready", version: "test" })));
   ws.on("message", (raw) => {

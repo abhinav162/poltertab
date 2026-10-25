@@ -912,6 +912,30 @@ function _dispatchProxyNow(callerWs, id, action, params) {
   }
 }
 
+// The extension slot carries every agent command (URLs, selectors, fill values)
+// and every page result, so only an extension whose origin is the Store id or a
+// paired/trusted id may hold it. A socket with any other origin, or none (a
+// local process, the CLI, a would-be Secondary before it registers), stays
+// connected but never becomes the extension. Unpaired extensions are still
+// pushed a pair code, so a dev-unpacked build can be paired once and then hold
+// the slot.
+function claimExtensionSlot(ws) {
+  if (
+    extensionSocket &&
+    extensionSocket !== ws &&
+    extensionSocket.readyState === WebSocket.OPEN
+  ) {
+    console.error(
+      "[PolterTab MCP] Another extension trying to connect. Dropping old connection.",
+    );
+    extensionSocket.close();
+  }
+  if (extensionSocket !== ws) {
+    extensionSocket = ws;
+    console.error("[PolterTab MCP] Chrome extension connected.");
+  }
+}
+
 function setupPrimaryWss(wss) {
   wss.on("connection", (ws, req) => {
     ws.isAlive = true;
@@ -1156,46 +1180,38 @@ function setupPrimaryWss(wss) {
         // Handle keepalive pings
         if (msg.type === "ping" || msg.type === "extension_ready") {
           if (!ws.nodeId) {
-            // if it's the extension
-            if (
-              extensionSocket &&
-              extensionSocket !== ws &&
-              extensionSocket.readyState === WebSocket.OPEN
-            ) {
-              console.error(
-                "[PolterTab MCP] Another extension trying to connect. Dropping old connection.",
-              );
-              extensionSocket.close();
-            }
-            if (extensionSocket !== ws) {
-              extensionSocket = ws;
-              console.error("[PolterTab MCP] Chrome extension connected.");
-            }
-            // The extension has always sent its version here and we always
-            // dropped it, so the one mismatch that actually breaks commands was
-            // invisible to both halves.
-            if (msg.version && msg.version !== extensionVersion) {
-              extensionVersion = msg.version;
-              updates.recordExtension(POLTERTAB_HOME, msg.version);
-              const sk = updates.skew(OWN_VERSION, msg.version);
-              console.error(
-                `[PolterTab MCP] Extension v${msg.version} (server v${OWN_VERSION})` +
-                  (sk ? ` — VERSION SKEW: ${sk.kind}` : ""),
-              );
-              // Let the extension show the mismatch in its popup; it cannot
-              // know the server's version otherwise.
-              try {
-                ws.send(
-                  JSON.stringify({ type: "server_version", version: OWN_VERSION }),
+            // The slot goes only to an authorized origin (Store id or a
+            // paired/trusted id). Everything else — another extension, a
+            // no-origin local socket — is denied it.
+            if (isUploadsAuthorized(ws.handshakeOrigin)) {
+              claimExtensionSlot(ws);
+              // The extension sends its version here. Record it only from the
+              // real extension, so an unauthorized socket cannot rewrite it.
+              if (msg.version && msg.version !== extensionVersion) {
+                extensionVersion = msg.version;
+                updates.recordExtension(POLTERTAB_HOME, msg.version);
+                const sk = updates.skew(OWN_VERSION, msg.version);
+                console.error(
+                  `[PolterTab MCP] Extension v${msg.version} (server v${OWN_VERSION})` +
+                    (sk ? ` — VERSION SKEW: ${sk.kind}` : ""),
                 );
-              } catch (_) {
-                // A socket that died mid-handshake reconnects on its own.
+                // Let the extension show the mismatch in its popup; it cannot
+                // know the server's version otherwise.
+                try {
+                  ws.send(
+                    JSON.stringify({ type: "server_version", version: OWN_VERSION }),
+                  );
+                } catch (_) {
+                  // A socket that died mid-handshake reconnects on its own.
+                }
               }
-            }
-            // Push a pair code to unpaired extensions so the UI can display it
-            // without the user running any CLI command first.
-            // Per-origin check: an already-trusted extension must not receive a code.
-            if (pairHost && ws.handshakeOrigin && !pairHost._socketCodes.has(ws) && !isUploadsAuthorized(ws.handshakeOrigin)) {
+            } else if (
+              pairHost &&
+              ws.handshakeOrigin &&
+              !pairHost._socketCodes.has(ws)
+            ) {
+              // An unpaired extension gets no slot, but is pushed a pair code so
+              // its UI can show it and the user can pair it once.
               pairHost.generateForSocket(ws, ws.handshakeOrigin);
             }
           }
@@ -1240,6 +1256,9 @@ function setupPrimaryWss(wss) {
             }
             if (result.extWs && result.extWs.readyState === WebSocket.OPEN) {
               result.extWs.send(JSON.stringify({ type: "uploads_paired" }));
+              // It is trusted now, so give it the slot without waiting for its
+              // next keepalive ping.
+              if (!result.extWs.nodeId) claimExtensionSlot(result.extWs);
             }
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "uploads_pair_result", ok: true, extensionId: bareId }));
