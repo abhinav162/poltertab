@@ -14,6 +14,7 @@ All notable changes to PolterTab are documented here.
 
 * **bridge:** bind the WebSocket server to loopback only ([#74](https://github.com/abhinav162/poltertab/issues/74)) ([d6fa272](https://github.com/abhinav162/poltertab/commit/d6fa2724392931b268f0c89594f28e42e945f509))
 * **bridge:** require a paired or Store extension to hold the browser connection ([#75](https://github.com/abhinav162/poltertab/issues/75)) ([0ec8428](https://github.com/abhinav162/poltertab/commit/0ec8428095986729e99dddfbfe2ba89bcc31e9f7))
+    * Unpacked installs must pair once: `poltertab uploads pair`.
 * **copy:** correct options footer outbound-call claim and 4-character pair code ([#73](https://github.com/abhinav162/poltertab/issues/73)) ([b61ef2a](https://github.com/abhinav162/poltertab/commit/b61ef2ac51ace56109d33be7158eb2abcf8b67b8))
 
 
