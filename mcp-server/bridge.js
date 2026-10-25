@@ -94,7 +94,7 @@ let isSecondary = false;
 let nodeId = null;
 let wss = null;
 let httpServer = null;
-// (httpServer6 removed — wildcard bind covers ::1; see fix/legacy-bind)
+let httpServer6 = null;
 
 // Secondary-side retry state. One counter for the whole reconnect/probe/promote
 // cycle, reset only by a Primary's secondary_accepted; `refusal` and
@@ -362,50 +362,90 @@ function setupPrimaryServer() {
     res.writeHead(404);
     res.end();
   };
+  // Loopback only: 127.0.0.1 and ::1, never the wildcard. A wildcard bind is
+  // reachable from every network the machine is on, and a client that sends
+  // no Origin (as Secondaries and the CLI do) passes allowOrigin, so anyone on
+  // the same Wi-Fi could drive the browser. ::1 is its own listener because
+  // Node 18 resolves localhost to ::1 first, with no fallback to 127.0.0.1.
   httpServer = http.createServer(handleRequest);
+  httpServer6 = http.createServer(handleRequest);
+  // One WebSocketServer behind both listeners, so wss.clients stays the whole
+  // set. An upgrade that lands in the moment before it exists is dropped.
+  const onUpgrade = (req, socket, head) => {
+    if (!wss) return socket.destroy();
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  };
+  httpServer.on("upgrade", onUpgrade);
+  httpServer6.on("upgrade", onUpgrade);
+
+  const closeBoth = () => {
+    // A server that never bound is still a handle; every lost promotion race
+    // used to leave one behind.
+    for (const srv of [httpServer, httpServer6]) if (srv) srv.close();
+    httpServer = null;
+    httpServer6 = null;
+  };
 
   httpServer.on("error", (e) => {
     if (e.code === "EADDRINUSE") {
       console.error(
         `[PolterTab MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
       );
-      // A server that never bound is still a handle; every lost promotion race
-      // used to leave one behind.
-      httpServer.close();
-      httpServer = null;
+      closeBoth();
       startSecondaryMode();
     } else {
       console.error(`[PolterTab MCP] HTTP server error: ${e.message}`);
     }
   });
 
-  // Why probe-first (SHOULD-1 narrative):
-  // We bind :: (IPv6 wildcard, dual-stack) so a second wildcard bind from a
-  // legacy 1.7.x/beta.1 server gets EADDRINUSE on every platform.  But on
-  // macOS SO_REUSEADDR, a wildcard bind does NOT give EADDRINUSE when the
-  // existing listener is a specific-address bind (127.0.0.1/::1) — the old
-  // regression this PR fixes.  The probe detects a real primary already
-  // serving 127.0.0.1 and demotes us before we call listen(), avoiding a
-  // race in the milliseconds between a successful probe and our own bind.
-  // The EADDRINUSE handler above covers the symmetric case.
-  // The one window left: on macOS, a beta.2-style server binding 127.0.0.1/::1
-  // specifically *between* our probe and our listen. Our wildcard listen then
-  // succeeds beside it and its specific bind wins loopback traffic, leaving us
-  // a silent Primary. It needs two starts within milliseconds, one of them
-  // the superseded beta.2, whose own probe-first makes it lose that race.
+  // Election. Two loopback binds on the same address collide everywhere, so
+  // two current servers settle it with EADDRINUSE on 127.0.0.1 (above). An
+  // older primary (1.8.0-1.11.x) holds the wildcard instead, and on macOS
+  // SO_REUSEADDR lets a specific-address bind succeed beside a wildcard one,
+  // so EADDRINUSE alone would make us a second primary there. The probe dials
+  // 127.0.0.1 first and demotes us if anything answers, which covers a primary
+  // of any version that is already running. Those older servers probe before
+  // they listen too, so one started after us finds us and becomes a
+  // Secondary. Left open: a pre-1.8 server (no probe) started after us on
+  // macOS binds the wildcard beside us; loopback traffic still reaches us,
+  // since the more specific bind wins, and it sits as a primary nobody dials.
   probePrimary().then((alive) => {
     if (alive) {
       console.error(
         `[PolterTab MCP] Port ${WS_PORT} in use, switching to Secondary Mode...`,
       );
-      httpServer.close();
-      httpServer = null;
+      closeBoth();
       startSecondaryMode();
       return;
     }
-    httpServer.listen(WS_PORT, () => {
+    httpServer.listen(WS_PORT, "127.0.0.1", () => {
+      httpServer6.once("error", (e) => {
+        // No IPv6 loopback on this machine (EADDRNOTAVAIL, EAFNOSUPPORT):
+        // nothing can dial ::1 here either, so 127.0.0.1 is the whole set.
+        // EADDRINUSE: some other process holds [::1]:port alone. Stay primary
+        // on 127.0.0.1, where Secondaries, the CLI and the probe dial, and
+        // say so: a client resolving localhost to ::1 will reach that process.
+        console.error(
+          `[PolterTab MCP] Not listening on [::1]:${WS_PORT} (${e.code}); ` +
+            `serving 127.0.0.1 only.`,
+        );
+        httpServer6.close();
+        httpServer6 = null;
+        startWss();
+      });
+      httpServer6.listen(WS_PORT, "::1", () => {
+        httpServer6.removeAllListeners("error");
+        httpServer6.on("error", (e) =>
+          console.error(`[PolterTab MCP] HTTP server error: ${e.message}`),
+        );
+        startWss();
+      });
+    });
+  });
+
+  function startWss() {
     wss = new WebSocket.WebSocketServer({
-      server: httpServer,
+      noServer: true,
       verifyClient: allowOrigin,
       perMessageDeflate: {
         zlibDeflateOptions: {
@@ -514,15 +554,10 @@ function setupPrimaryServer() {
 
     setupPrimaryWss(wss);
 
-    // Wildcard bind (:: dual-stack) covers both 127.0.0.1 and ::1, so Node 18
-    // clients that resolve localhost → ::1 reach the primary without a separate
-    // httpServer6.  A legacy server attempting listen(port) with no host gets
-    // EADDRINUSE because two wildcard binds on the same port always collide.
     console.error(
       `[PolterTab MCP] Primary WebSocket server listening on ws://localhost:${WS_PORT}`,
     );
-    });
-  });
+  }
 }
 
 function startSecondaryMode() {
@@ -1444,6 +1479,7 @@ function shutdown() {
   console.error("[PolterTab MCP] Shutting down...");
   if (wss) wss.close();
   if (httpServer) httpServer.close();
+  if (httpServer6) httpServer6.close();
   process.exit(0);
 }
 // Helper to wait for WebSocket connection
