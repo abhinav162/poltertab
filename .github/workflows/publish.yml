@@ -188,5 +188,42 @@ jobs:
       - name: Authenticate to the MCP Registry (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
 
+      # npm's publish returns before the new version is queryable, and the MCP
+      # Registry rejects a server.json whose npm package/version it cannot yet
+      # see (400 "version X was not found (status: 404) ... Wait and retry").
+      # It raced on the 1.12.0 run (publish ~12s before npm exposed it). Block
+      # until npm actually serves this version before we publish.
+      - name: Wait for npm to expose the published version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "Waiting for npm to serve poltertab@${version}…"
+          for i in $(seq 1 40); do
+            if [ "$(npm view "poltertab@${version}" version 2>/dev/null)" = "${version}" ]; then
+              echo "npm serves poltertab@${version} (after $(( (i - 1) * 15 ))s)."
+              exit 0
+            fi
+            echo "  not visible yet (attempt ${i}/40); sleeping 15s…"
+            sleep 15
+          done
+          echo "::error::poltertab@${version} still not visible on npm after ~10 min; aborting MCP Registry publish."
+          exit 1
+
       - name: Publish server.json to the MCP Registry
-        run: ./mcp-publisher publish
+        # Belt-and-suspenders for the same race: even once `npm view` succeeds,
+        # the registry's own npm lookup can briefly still 404, so retry once on
+        # exactly that 400 — any other failure fails the step immediately.
+        run: |
+          set +e
+          out="$(./mcp-publisher publish 2>&1)"
+          code=$?
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if echo "$out" | grep -q "was not found (status: 404)"; then
+            echo "Registry could not see the npm version yet; retrying once in 30s…"
+            sleep 30
+            ./mcp-publisher publish
+          else
+            exit "$code"
+          fi
