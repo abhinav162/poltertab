@@ -293,14 +293,14 @@ test("E6  the extension link names this build's own release, not /latest", () =>
   const version = require(path.join(REPO, "package.json")).version;
   assert.strictEqual(
     setup.EXTENSION_URL,
-    `https://github.com/abhinav162/poltertab/releases/tag/v${version}`,
+    `https://github.com/rhenon/poltertab/releases/tag/v${version}`,
     "setup does not link the release matching the version it installs",
   );
 });
 
 test("E7  extensionUrl pins a prerelease, and falls back only when unparseable", () => {
   const up = require(path.join(REPO, "mcp-server", "update-check.js"));
-  const tag = (v) => `https://github.com/abhinav162/poltertab/releases/tag/v${v}`;
+  const tag = (v) => `https://github.com/rhenon/poltertab/releases/tag/v${v}`;
   assert.strictEqual(up.extensionUrl("1.5.0-beta.1"), tag("1.5.0-beta.1"));
   assert.strictEqual(up.extensionUrl("1.4.0"), tag("1.4.0"));
   assert.strictEqual(up.extensionUrl("v1.4.0"), tag("1.4.0"), "leading v doubled up");
@@ -309,7 +309,7 @@ test("E7  extensionUrl pins a prerelease, and falls back only when unparseable",
   for (const bad of ["", null, undefined, "garbage"]) {
     assert.strictEqual(
       up.extensionUrl(bad),
-      "https://github.com/abhinav162/poltertab/releases/latest",
+      "https://github.com/rhenon/poltertab/releases/latest",
       `unparseable ${JSON.stringify(bad)} should fall back`,
     );
   }

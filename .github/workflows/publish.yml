@@ -172,7 +172,7 @@ jobs:
       - name: Install mcp-publisher
         env:
           # Pin the release instead of tracking releases/latest: this job holds
-          # an OIDC token for the whole io.github.abhinav162/* namespace, so an
+          # an OIDC token for the whole io.github.rhenon/* namespace, so an
           # upstream release compromise must not auto-apply. The sha256 is pinned
           # here (not read from the release's own checksums file) so a tampered
           # re-release of the same tag is rejected too. Bump both together; the

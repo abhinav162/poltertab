@@ -35,7 +35,7 @@
         <a class="nav-link" href="#security">Security</a>
         <a class="nav-link" href="#install">Install</a>
         <a class="nav-link" href="#faq">FAQ</a>
-        <a class="btn-pill" href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+        <a class="btn-pill" href="https://github.com/rhenon/poltertab" rel="noopener">GitHub</a>
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-sheet" aria-label="Open menu">
           <svg class="bars" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
           <svg class="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -479,7 +479,7 @@
       <div class="wrap">
         <div class="sec-head">
           <h2 id="sec-h">The whole thing makes one network call.</h2>
-          <p class="section-intro">It’s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. poltertab setup also looks up the Chrome Web Store version once, so it can tell you when the extension and server disagree. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/abhinav162/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
+          <p class="section-intro">It’s a version check against <code>registry.npmjs.org</code>, at most once a day, cached locally, and <code>POLTERTAB_NO_UPDATE_CHECK=1</code> turns it off. poltertab setup also looks up the Chrome Web Store version once, so it can tell you when the extension and server disagree. The extension makes no outbound requests at all. You can verify both claims in the source; the check lives in <a href="https://github.com/rhenon/poltertab/blob/main/mcp-server/update-check.js" rel="noopener">one small file</a>.</p>
         </div>
         <div class="sec-grid">
           <div class="sec-item">
@@ -506,7 +506,7 @@
     <section class="band band-mint" aria-labelledby="clients-h">
       <div class="wrap">
         <h2 id="clients-h">Any MCP client.</h2>
-        <p class="section-intro"><code>poltertab setup</code> registers the server with Claude Code for you. Claude Desktop, Cursor, and anything else that speaks MCP take one entry in their config file; the <a href="https://github.com/abhinav162/poltertab#readme" rel="noopener">README</a> shows each one.</p>
+        <p class="section-intro"><code>poltertab setup</code> registers the server with Claude Code for you. Claude Desktop, Cursor, and anything else that speaks MCP take one entry in their config file; the <a href="https://github.com/rhenon/poltertab#readme" rel="noopener">README</a> shows each one.</p>
         <ul class="clients" aria-label="Clients">
           <li class="client"><span class="dot"></span>Claude Code</li>
           <li class="client"><span class="dot"></span>Claude Desktop</li>
@@ -544,7 +544,7 @@ poltertab setup</code>
             <details class="alt-install">
               <summary>Developer or offline? Load the unpacked zip instead.</summary>
               <ol class="step-list">
-                <li>Download the latest <a href="https://github.com/abhinav162/poltertab/releases" rel="noopener">release zip</a> and unzip it.</li>
+                <li>Download the latest <a href="https://github.com/rhenon/poltertab/releases" rel="noopener">release zip</a> and unzip it.</li>
                 <li>Open <code>chrome://extensions/</code> and switch on Developer mode.</li>
                 <li>Click “Load unpacked” and pick the unzipped folder, the one containing <code>manifest.json</code>.</li>
                 <li>Restart your AI tool.</li>
@@ -606,7 +606,7 @@ poltertab setup</code>
           </div>
           <div class="hero-ctas">
             <a class="btn btn-primary" href="https://chromewebstore.google.com/detail/poltertab-browser-control/lcijocampajjmennelacdfehmhndfmbd" rel="noopener">Add to Chrome<span class="vh"> (Chrome Web Store)</span></a>
-            <a class="btn btn-secondary" href="https://github.com/abhinav162/poltertab" rel="noopener">Read the source</a>
+            <a class="btn btn-secondary" href="https://github.com/rhenon/poltertab" rel="noopener">Read the source</a>
           </div>
         </div>
         <div class="final-ghost" aria-hidden="true">
@@ -629,9 +629,9 @@ poltertab setup</code>
         <span>PolterTab</span>
       </a>
       <nav class="footer-links" aria-label="Footer">
-        <a href="https://github.com/abhinav162/poltertab" rel="noopener">GitHub</a>
+        <a href="https://github.com/rhenon/poltertab" rel="noopener">GitHub</a>
         <a href="https://www.npmjs.com/package/poltertab" rel="noopener">npm</a>
-        <a href="https://github.com/abhinav162/poltertab/releases" rel="noopener">Releases</a>
+        <a href="https://github.com/rhenon/poltertab/releases" rel="noopener">Releases</a>
         <a href="privacy.html">Privacy</a>
       </nav>
       <p class="footer-note">PolterTab runs locally and drives your own browser. Use it only on sites and accounts you’re authorized to access.</p>

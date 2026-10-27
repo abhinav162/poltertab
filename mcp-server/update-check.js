@@ -263,7 +263,7 @@ function skew(serverVersion, extensionVersion) {
 
 // --- the one-line notice ---------------------------------------------------
 
-const RELEASES = "https://github.com/abhinav162/poltertab/releases";
+const RELEASES = "https://github.com/rhenon/poltertab/releases";
 
 // Which extension build to send someone to.
 //

@@ -87,7 +87,7 @@ Use this when you are changing the extension or cannot reach the Web Store.
 An unpacked extension never updates on its own; you reload it from a newer zip
 yourself.
 
-1. Download the latest [release zip](https://github.com/abhinav162/poltertab/releases/latest) and unzip it into its own folder (e.g. `unzip poltertab-extension-vX.zip -d poltertab-extension`, or double-click on macOS — which creates a folder automatically)
+1. Download the latest [release zip](https://github.com/rhenon/poltertab/releases/latest) and unzip it into its own folder (e.g. `unzip poltertab-extension-vX.zip -d poltertab-extension`, or double-click on macOS — which creates a folder automatically)
 2. Open Chrome → `chrome://extensions/`
 3. Enable **Developer mode** (top right toggle)
 4. Click **Load unpacked** and select that folder (the one containing `manifest.json`)

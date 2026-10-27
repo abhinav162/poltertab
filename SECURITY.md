@@ -6,7 +6,7 @@ Please report security issues **privately** — do not open a public issue for
 anything exploitable.
 
 - **Preferred:** open a private report through GitHub Security Advisories —
-  **[Report a vulnerability](https://github.com/abhinav162/poltertab/security/advisories/new)**
+  **[Report a vulnerability](https://github.com/rhenon/poltertab/security/advisories/new)**
   (the repository's **Security** tab → **Report a vulnerability**). Only the
   maintainers can see it.
 - If that is unavailable, open a minimal public issue asking a maintainer to
