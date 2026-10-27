@@ -2,6 +2,13 @@
 
 All notable changes to PolterTab are documented here.
 
+## [1.12.1](https://github.com/abhinav162/poltertab/compare/v1.12.0...v1.12.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **ci:** wait for npm to expose the version before MCP Registry publish ([#77](https://github.com/abhinav162/poltertab/issues/77)) ([7f80f7d](https://github.com/abhinav162/poltertab/commit/7f80f7dba912b81658136416ebe45b16448d5600))
+
 ## [1.12.0](https://github.com/abhinav162/poltertab/compare/v1.11.0...v1.12.0) (2026-10-25)
 
 
