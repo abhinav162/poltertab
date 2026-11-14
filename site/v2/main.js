@@ -146,7 +146,7 @@ else {
   requestAnimationFrame(loop);
 }
 
-/* ---------- scroll choreography (reveals live in reveal.js) ---------- */
+/* ---------- scroll choreography (reveals live in site.js) ---------- */
 
 if (!reduce && window.gsap && window.ScrollTrigger) {
   gsap.registerPlugin(ScrollTrigger);
@@ -268,7 +268,7 @@ if (!reduce && window.gsap && window.ScrollTrigger) {
       stepped = true; if (!gliding) go(y, dir); }, { capture: true, passive: false });
     const keyDir = { ArrowDown: 1, PageDown: 1, " ": 1, ArrowUp: -1, PageUp: -1 };
     addEventListener("keydown", (e) => { const y = scrollY, dir = e.key === " " && e.shiftKey ? -1 : keyDir[e.key];
-      if (!dir || e.altKey || e.ctrlKey || e.metaKey || e.target.closest("input, textarea, [contenteditable]") || !inStory(y) || released(y, dir)) return;
+      if (!dir || e.altKey || e.ctrlKey || e.metaKey || e.target.closest("a, button, summary, input, textarea, select, [contenteditable]") || !inStory(y) || released(y, dir)) return;
       e.preventDefault(); if (!gliding) go(y, dir); }, { capture: true });
     let touchY = null; // desktop touchscreens: one swipe = one step (native scroll is prevented inside the story)
     addEventListener("touchstart", (e) => { touchY = e.touches[0].clientY; }, { capture: true, passive: true });
